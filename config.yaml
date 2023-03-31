@@ -1,0 +1,1 @@
+postgresql_connection_uri: 'postgresql://dbadmin:1234@localhost/postgres'

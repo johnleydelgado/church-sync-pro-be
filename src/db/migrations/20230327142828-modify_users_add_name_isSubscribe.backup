@@ -1,0 +1,46 @@
+'use strict';
+
+/** @type {import('sequelize-cli').Migration} */
+module.exports = {
+  async up (queryInterface, Sequelize) {
+    return Promise.all([
+      queryInterface.addColumn(
+        'thirdparty_users', // table name
+        'firstName',
+        {
+          type: Sequelize.STRING(32),
+        },
+      ),
+      queryInterface.addColumn(
+        'thirdparty_users', // table name
+        'lastName', 
+        {
+          type: Sequelize.STRING(32),
+        },
+      ),
+      queryInterface.addColumn(
+        'thirdparty_users', // table name
+        'churchName', 
+        {
+          type: Sequelize.STRING(32),
+        },
+      ),
+      queryInterface.addColumn(
+        'thirdparty_users',
+        'isSubscribe',
+        {
+          type: Sequelize.STRING(1),
+        },
+      ),
+    ]);
+  },
+
+  async down (queryInterface, Sequelize) {
+    return Promise.all([
+      queryInterface.removeColumn('thirdparty_users', 'firstName'),
+      queryInterface.removeColumn('thirdparty_users', 'lastName'),
+      queryInterface.removeColumn('thirdparty_users', 'churchName'),
+      queryInterface.removeColumn('thirdparty_users', 'isSubscribe'),
+    ]);
+  }
+};
