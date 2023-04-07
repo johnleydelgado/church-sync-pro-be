@@ -96,7 +96,7 @@ export const callBackPC = async (req: Request, res: Response) => {
     const tokenJwt = jwt.sign({ accessToken: responseJson.access_token }, storageKey.QBQ_ACCESS_TOKEN, {
       expiresIn: '1h',
     });
-
+    console.log('responseJson.refresh_token', responseJson.refresh_token);
     res.json({
       access_token: responseJson.access_token,
       refresh_token: responseJson.refresh_token,

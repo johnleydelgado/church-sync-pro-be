@@ -3,7 +3,7 @@ import express from 'express';
 import routes from './routes';
 import { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-
+import cron from 'node-cron';
 const supertokens = require('supertokens-node');
 const Session = require('supertokens-node/recipe/session');
 const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
@@ -12,6 +12,7 @@ import EmailVerification from 'supertokens-node/recipe/emailverification';
 
 import User from './db/models/user';
 import { formFields } from './constant/forms';
+import { getallUsers } from './controller/automation';
 const { middleware, errorHandler } = require('supertokens-node/framework/express');
 
 const apiPort = process.env.API_PORT || 8080;
@@ -176,6 +177,12 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 });
 
 app.use('/csp', routes);
+
+cron.schedule('* * * * *', () => {
+  // This function will run every minute
+  getallUsers();
+  console.log('Running cron job...');
+});
 
 app.use((err: errorObj, req: Request, res: Response, next: NextFunction) => {
   if (err.name === 'UnauthorizedError') {

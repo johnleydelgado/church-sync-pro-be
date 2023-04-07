@@ -3,7 +3,7 @@ import { REALM_ID } from '../constant/config';
 
 const QuickBooks = require('node-quickbooks');
 
-interface props {
+export interface tokenProps {
   ACCESS_TOKEN: string;
   REFRESH_TOKEN: string;
   REALM_ID: string;
@@ -11,7 +11,7 @@ interface props {
 
 const { QBO_KEY: KEY, QBO_SECRET: SECRET } = process.env;
 
-const quickBookApi = ({ ACCESS_TOKEN, REFRESH_TOKEN, REALM_ID }: props) =>
+const quickBookApi = ({ ACCESS_TOKEN, REFRESH_TOKEN, REALM_ID }: tokenProps) =>
   new QuickBooks(
     KEY,
     SECRET,
