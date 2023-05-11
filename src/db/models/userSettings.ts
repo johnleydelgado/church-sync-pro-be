@@ -6,6 +6,7 @@ import User from './user';
 export interface UserSettingsAttributes {
   id?: number;
   settingsData?: Json;
+  settingRegistrationData?: Json;
   isAutomationEnable?: boolean;
   userId?: number;
 }
@@ -13,6 +14,7 @@ export interface UserSettingsAttributes {
 class UserSettings extends Model<UserSettingsAttributes> implements UserSettingsAttributes {
   public id!: number;
   public settingsData!: Json;
+  public settingRegistrationData!: Json;
   public isAutomationEnable!: boolean;
   public userId!: number;
 
@@ -34,6 +36,9 @@ UserSettings.init(
       primaryKey: true,
     },
     settingsData: {
+      type: DataTypes.JSON,
+    },
+    settingRegistrationData: {
       type: DataTypes.JSON,
     },
     isAutomationEnable: {

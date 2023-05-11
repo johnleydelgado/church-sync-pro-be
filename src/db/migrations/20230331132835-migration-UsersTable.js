@@ -19,6 +19,8 @@ module.exports = {
       refresh_token_pc: Sequelize.DataTypes.TEXT,
       access_token_qbo: Sequelize.DataTypes.TEXT,
       refresh_token_qbo: Sequelize.DataTypes.TEXT,
+      access_token_stripe: Sequelize.DataTypes.TEXT,
+      refresh_token_stripe: Sequelize.DataTypes.TEXT,
       realm_id: Sequelize.DataTypes.TEXT,
       createdAt: {
         type: Sequelize.DATE,
@@ -38,6 +40,10 @@ module.exports = {
         primaryKey: true
       },
       settingsData: {
+        type: Sequelize.JSON,
+        allowNull: true
+      },
+      settingRegistrationData:{
         type: Sequelize.JSON,
         allowNull: true
       },

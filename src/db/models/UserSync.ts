@@ -5,7 +5,7 @@ import User from './user';
 
 export interface UserSyncAttributes {
   id?: number;
-  syncedData?: Json;
+  syncedData?: Json | any[];
   batchId?: string;
   userId?: number;
   createdAt?: Date;

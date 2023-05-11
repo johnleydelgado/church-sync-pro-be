@@ -13,6 +13,8 @@ export interface UserAttributes {
   refresh_token_pc?: string;
   access_token_qbo?: string;
   refresh_token_qbo?: string;
+  access_token_stripe?: string;
+  refresh_token_stripe?: string;
   realm_id?: string;
 }
 
@@ -27,6 +29,8 @@ class User extends Model<UserAttributes> implements UserAttributes {
   public refresh_token_pc!: string;
   public access_token_qbo!: string;
   public refresh_token_qbo!: string;
+  public access_token_stripe!: string;
+  public refresh_token_stripe!: string;
   public realm_id!: string;
 }
 
@@ -63,6 +67,12 @@ User.init(
       type: DataTypes.TEXT,
     },
     refresh_token_qbo: {
+      type: DataTypes.TEXT,
+    },
+    access_token_stripe: {
+      type: DataTypes.TEXT,
+    },
+    refresh_token_stripe: {
       type: DataTypes.TEXT,
     },
     realm_id: {

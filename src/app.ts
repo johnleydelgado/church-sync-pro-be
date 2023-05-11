@@ -19,17 +19,37 @@ const apiPort = process.env.API_PORT || 8080;
 const apiDomain = process.env.API_URL || `http://localhost:${apiPort}`;
 const websitePort = process.env.WEBSITE_PORT || 3000;
 const websiteDomain = process.env.WEBSITE_URL || `http://localhost:${websitePort}`;
+const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, API_KEYS } = process.env;
 
 interface ResultObject {
   [key: string]: string;
 }
 
+console.log('apiDomain', {
+  framework: 'express',
+  supertokens: {
+    // TODO: This is a core hosted for demo purposes. You can use this, but make sure to change it to your core instance URI eventually.
+    // connectionURI: 'http://localhost:3567',
+    connectionURI: apiDomain,
+    apiKey: API_KEYS, // OR can be undefined
+  },
+  appInfo: {
+    // learn more about this on https://supertokens.com/docs/thirdpartyemailpassword/appinfo
+    appName: 'Church Sync Pro', // TODO: Your app name
+    apiDomain, // TODO: Change to your app's API domain
+    websiteDomain, // TODO: Change to your app's website domain
+    apiBasePath: '/auth',
+    websiteBasePath: '/auth',
+  },
+});
+
 supertokens.init({
   framework: 'express',
   supertokens: {
     // TODO: This is a core hosted for demo purposes. You can use this, but make sure to change it to your core instance URI eventually.
-    connectionURI: 'http://localhost:3567',
-    apiKey: 'someKey', // OR can be undefined
+    // connectionURI: 'http://localhost:3567',
+    connectionURI: apiDomain,
+    apiKey: API_KEYS, // OR can be undefined
   },
   appInfo: {
     // learn more about this on https://supertokens.com/docs/thirdpartyemailpassword/appinfo
@@ -48,8 +68,8 @@ supertokens.init({
         // We have provided you with development keys which you can use for testsing.
         // IMPORTANT: Please replace them with your own OAuth keys for production use.
         ThirdPartyEmailPassword.Google({
-          clientId: '756944481264-bf2de2441a60g1l53eeejknsrttkjtno.apps.googleusercontent.com',
-          clientSecret: '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',
+          clientId: GOOGLE_CLIENT_ID,
+          clientSecret: GOOGLE_CLIENT_SECRET,
         }),
       ],
       override: {
@@ -87,9 +107,7 @@ supertokens.init({
               if (originalImplementation.emailPasswordSignInPOST === undefined) {
                 throw Error('Should never come here');
               }
-
               const response = await originalImplementation.emailPasswordSignInPOST(input);
-
               if (response.status === 'OK') {
                 // TODO: some post sign in logic
               }
@@ -180,7 +198,7 @@ app.use('/csp', routes);
 
 cron.schedule('* * * * *', () => {
   // This function will run every minute
-  getallUsers();
+  // getallUsers();
   console.log('Running cron job...');
 });
 

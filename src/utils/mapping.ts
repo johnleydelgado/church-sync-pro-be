@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 interface MappingPcToQboProps {
   donationAmount: string;
   batchName: string;
@@ -6,6 +7,7 @@ interface MappingPcToQboProps {
   AccountRef: string;
   ReceivedFrom: string;
   ClassRef: string;
+  tempPaymentMethod?: string;
 }
 
 export interface SettingsJsonProps {
@@ -16,17 +18,22 @@ export interface SettingsJsonProps {
 }
 
 const numberWithToFix = (number: number) => {
-  const num = (number / 100).toFixed(2);
-  return num as string;
+  if (number) {
+    const num = (number / 100).toFixed(2);
+    return num as string;
+  }
+  return '';
 };
 
-const mapping = (data: []): MappingPcToQboProps[] => {
+const mapping = (data: any[]): MappingPcToQboProps[] => {
   const tempData: MappingPcToQboProps[] = [];
   data.map((item: any) => {
     tempData.push({
+      tempPaymentMethod:
+        item.attributes.payment_method === 'card' ? item.attributes.payment_brand : item.attributes.payment_method,
       donationAmount: numberWithToFix(item.attributes.amount_cents),
-      batchName: item.batch.attributes.description,
-      batchCreated: item.batch.attributes.created_at,
+      batchName: item.batch.attributes.description || '',
+      batchCreated: item.batch.attributes.created_at || '',
       batchTotalAmount: numberWithToFix(item.batch.attributes.total_cents),
       AccountRef: item.accountRef,
       ReceivedFrom: item.receivedFrom,
@@ -37,12 +44,13 @@ const mapping = (data: []): MappingPcToQboProps[] => {
   return tempData;
 };
 
-const requestPayload = (data: any) => {
+const requestPayload = (data: any[]) => {
   const mappingPayload = mapping(data);
   const finalData = mappingPayload.map((item) => {
     return {
       // TxnDate: item.batchCreated,
       // TotalAmt: item.batchTotalAmount,
+      tempPaymentMethod: item.tempPaymentMethod,
       Line: [
         {
           Amount: item.donationAmount,

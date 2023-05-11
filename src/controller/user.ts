@@ -35,20 +35,23 @@ export const createUser = async (req: Request, res: Response) => {
 };
 
 export const createSettings = async (req: Request, res: Response) => {
-  const { email, settingsData, isAutomationEnable } = req.body;
+  const { email, settingsData, isAutomationEnable, settingRegistrationData } = req.body;
   try {
     const userData = await Users.findOne({ where: { email } });
     if (userData !== null) {
       const user = userData.toJSON();
 
       const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
+      const dataToUpdateOrCreate = settingRegistrationData
+        ? { settingRegistrationData, isAutomationEnable }
+        : { settingsData, isAutomationEnable };
 
       if (userSettingsExist) {
-        await UserSettings.update({ settingsData, isAutomationEnable }, { where: { userId: user.id } });
-        return responseSuccess(res, 'success');
+        await UserSettings.update(dataToUpdateOrCreate, { where: { userId: user.id } });
+      } else {
+        await UserSettings.create({ ...dataToUpdateOrCreate, userId: user.id });
       }
 
-      await UserSettings.create({ settingsData, userId: user.id, isAutomationEnable });
       return responseSuccess(res, 'success');
     }
     res.status(500).json({ error: 'Email not exist' });
@@ -61,7 +64,6 @@ export const createSettings = async (req: Request, res: Response) => {
 export const getUserRelated = async (req: Request, res: Response) => {
   const { email } = req.query;
   try {
-    console.log('=========');
     const userData = await Users.findOne({
       where: { email: email as string },
       include: [UserSettings],

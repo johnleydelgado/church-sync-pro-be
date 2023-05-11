@@ -1,8 +1,8 @@
-import App from "./src/app";
+import App from './src/app';
 
 const { NODE_ENV } = process.env;
 // eslint-disable-next-line global-require
-const APP_PORT = process.env.PORT || "8080";
+const APP_PORT = process.env.PORT || '8080';
 
 App.listen(APP_PORT, () => {
   // eslint-disable-next-line no-console

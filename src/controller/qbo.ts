@@ -4,7 +4,6 @@ import { responseError, responseSuccess } from '../utils/response';
 import User from '../db/models/user';
 import quickbookAuth from '../utils/quickbookAuth';
 import { generateQBOToken } from './automation';
-import { isEmpty } from 'lodash';
 
 export interface QBODataProps {
   accessToken: string;
@@ -21,10 +20,10 @@ export const getAllQboData = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Empty user data' });
   }
 
-  const userJson = userData.toJSON();
-
+  let userJson = userData.toJSON();
   if (!quickbookAuth.isAccessTokenValid()) {
-    await generateQBOToken(userJson.refresh_token_qbo, email);
+    const newUSer = await generateQBOToken(userJson.refresh_token_qbo, email);
+    userJson = newUSer;
   }
 
   const qboTokens = {

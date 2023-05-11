@@ -1,10 +1,16 @@
 const pcRoutes = {
   getBatches: '/pc/getBatches',
   getFunds: '/pc/getFunds',
+  getRegistrationEvents: '/pc/getRegistrationEvents',
 };
 
 const qboRoutes = {
   getAllQboData: '/qbo/getAllQboData',
+};
+
+const stripeRoutes = {
+  getStripePayouts: '/stripe/getStripePayouts',
+  syncStripePayout: '/stripe/syncStripePayout',
 };
 
 const userRoutes = {
@@ -13,6 +19,7 @@ const userRoutes = {
   addTokenInUser: '/user/addTokenInUser',
   createSettings: '/user/createSettings',
   getUserRelated: '/user/getUserRelated',
+  manualSync: '/user/manualSync',
 };
 
-export { pcRoutes, userRoutes, qboRoutes };
+export { pcRoutes, userRoutes, qboRoutes, stripeRoutes };

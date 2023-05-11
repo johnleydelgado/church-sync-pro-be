@@ -3,86 +3,81 @@ import User, { UserAttributes } from '../db/models/user';
 import quickBookApi, { tokenProps } from '../utils/quickBookApi';
 import quickbookAuth from '../utils/quickbookAuth';
 import axios from 'axios';
-import { isEmpty } from 'lodash';
+import { isEmpty, omit } from 'lodash';
 const { PC_CLIENT_ID, PC_SECRET_APP, QBO_KEY, QBO_SECRET } = process.env;
-import { isToday, parseISO } from 'date-fns';
+import { isSameDay, isToday, isWithinInterval, parseISO, startOfToday } from 'date-fns';
 import { zonedTimeToUtc } from 'date-fns-tz';
 
 import UserSettings from '../db/models/userSettings';
 import { SettingsJsonProps, requestPayload } from '../utils/mapping';
 import UserSync, { UserSyncAttributes } from '../db/models/UserSync';
 import { Op } from 'sequelize';
+import { getDayBoundary } from '../utils/helper';
 
+interface PaymentMethodsResponse {
+  QueryResponse: {
+    PaymentMethod: Array<{
+      Id: string;
+      Name: string;
+      // Add other properties as needed
+    }>;
+  };
+}
+const base64encode = (str) => Buffer.from(str).toString('base64');
 export const generateQBOToken = async (refreshToken: string, email: string) => {
   // if (!oauthClient.isAccessTokenValid()) {
+  const authHeader = 'Basic ' + base64encode(QBO_KEY + ':' + QBO_SECRET);
+  const requestBody = `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`;
   try {
-    const response = await axios.post(
-      'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer',
-      JSON.stringify({
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-      }),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        auth: {
-          username: QBO_KEY,
-          password: QBO_SECRET,
-        },
+    const response = await axios.post('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', requestBody, {
+      headers: {
+        Accept: 'application/json',
+        Authorization: authHeader,
+        'Content-Type': 'application/x-www-form-urlencoded',
       },
-    );
+    });
 
-    await User.update({ access_token_qbo: response.data.access_token }, { where: { email: email } });
-    console.log('qbo', response.data.access_token);
+    await User.update(
+      { access_token_qbo: response.data.access_token, refresh_token_qbo: response.data.refresh_token },
+      { where: { email: email } },
+    );
+    const updatedUser = (await User.findOne({ where: { email: email } })).toJSON();
+    return updatedUser;
   } catch (error) {
-    console.error(error);
+    console.log('====ERROR:====', error);
   }
 };
 
 export const getallUsers = async () => {
   try {
     const users = await User.findAll();
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-
-    users.map(async (item: UserAttributes) =>
-      // await isQboTokenValid({
-      //   ACCESS_TOKEN: item.access_token_qbo,
-      //   REALM_ID: item.realm_id,
-      //   REFRESH_TOKEN: item.refresh_token_qbo,
-      // }),
-      {
-        const userSettingsExist = await UserSettings.findOne({ where: { userId: item.id } });
-        const userSyncData = await UserSync.findAll({
-          where: {
-            userId: item.id,
-            createdAt: {
-              [Op.between]: [todayStart, todayEnd],
-            },
+    users.map(async (item: UserAttributes) => {
+      const userSettingsExist = await UserSettings.findOne({ where: { userId: item.id } });
+      const userSyncData = await UserSync.findAll({
+        where: {
+          userId: item.id,
+          createdAt: {
+            [Op.between]: [getDayBoundary(0, 0, 0, 0), getDayBoundary(23, 59, 59, 999)],
           },
-        });
+        },
+      });
 
-        if (userSettingsExist) {
-          // only automate if setting is exist
-          if (userSettingsExist.isAutomationEnable) {
-            console.log('userSyncData', userSyncData);
-            await generatePcToken(item.refresh_token_pc, item.email);
-            // // await generateQBOToken(item.refresh_token_qbo, item.email);
-            await generateTodayBatches({
-              userId: item.id,
-              email: item.email,
-              access_token: item.access_token_pc,
-              settingsJson: userSettingsExist.settingsData,
-              syncedData: userSyncData,
-            });
-          }
+      if (userSettingsExist) {
+        // only automate if setting is exist
+        if (userSettingsExist.isAutomationEnable) {
+          console.log('userSyncData', userSyncData);
+          await generatePcToken(item.refresh_token_pc, item.email);
+          // // await generateQBOToken(item.refresh_token_qbo, item.email);
+          await generateTodayBatches({
+            userId: item.id,
+            email: item.email,
+            access_token: item.access_token_pc,
+            settingsJson: userSettingsExist.settingsData,
+            syncedData: userSyncData,
+          });
         }
-      },
-    );
+      }
+    });
   } catch (e) {}
 };
 
@@ -125,20 +120,17 @@ export const getBatchInDonation = async ({
     },
   };
   try {
-    const url = `https://api.planningcenteronline.com/giving/v2/batches`;
+    const url = `https://api.planningcenteronline.com/giving/v2/batches?filter=committed`;
     const getBatchesRes = await axios.get(url, config);
     const tempData = getBatchesRes.data.data;
 
     if (isEmpty(tempData)) {
       return [];
     }
+
     const data = tempData.filter((item) => {
-      const created_at = zonedTimeToUtc(parseISO(item.attributes.created_at), 'UTC');
-      return (
-        isEmpty(syncedData.find((a) => a.batchId === item.id)) &&
-        item.attributes.status === 'committed' &&
-        isToday(created_at)
-      );
+      const created_at = parseISO(item.attributes.created_at);
+      return isEmpty(syncedData.find((a) => a.batchId === item.id)) && isSameDay(created_at, startOfToday());
     });
 
     return data;
@@ -169,9 +161,10 @@ export const generateTodayBatches = async ({
   const jsonRes = { donation: [] as any }; //this is an array object
 
   try {
+    // get todays batches
     const batchesData = await getBatchInDonation({ access_token: String(access_token), syncedData });
-
     for (const dataOfBatches of batchesData) {
+      // get donation per batch
       const donationUrl = `https://api.planningcenteronline.com/giving/v2/batches/${dataOfBatches.id}/donations`;
       const responseDonation = await axios.get(donationUrl, config);
       // jsonRes.donation = {...jsonRes.donation, responseDonation.data.data}
@@ -181,11 +174,10 @@ export const generateTodayBatches = async ({
           access_token: String(access_token),
         });
         const fundName = fundsData[0].attributes.name;
-        const {
-          account: { value: accountRef },
-          customer: { value: receivedFrom },
-          class: { value: classRef },
-        } = settingsJson.find((item: SettingsJsonProps) => item.fundName === fundName);
+        const settingsItem = settingsJson.find((item: SettingsJsonProps) => item.fundName === fundName);
+        const accountRef = settingsItem?.account?.value ?? '';
+        const receivedFrom = settingsItem?.customer?.value ?? '';
+        const classRef = settingsItem?.class?.value ?? '';
 
         jsonRes.donation = [
           ...jsonRes.donation,
@@ -208,11 +200,10 @@ export const generateTodayBatches = async ({
   }
 };
 
-const automationDeposit = async (email: string, json: any) => {
+export const automationDeposit = async (email: string, json: any) => {
   const userData = await User.findOne({ where: { email: email } });
-
+  let fJson = { ...json };
   const userJson = userData.toJSON();
-
   if (!quickbookAuth.isAccessTokenValid()) {
     await generateQBOToken(userJson.refresh_token_qbo, email);
   }
@@ -223,23 +214,55 @@ const automationDeposit = async (email: string, json: any) => {
     REFRESH_TOKEN: userJson.refresh_token_qbo,
   };
 
-  return new Promise(async (resolve, reject) => {
-    await quickBookApi(qboTokens).createDeposit(json, function (err, createdData) {
-      if (err) {
-        reject(err);
-      }
-      const data = isEmpty(createdData) ? createdData : [];
-      resolve(data);
+  try {
+    const paymentMethods = await new Promise<PaymentMethodsResponse>((resolve, reject) => {
+      quickBookApi(qboTokens).findPaymentMethods({}, function (err, paymentMethods) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(paymentMethods);
+        }
+      });
     });
-  });
+
+    if (!isEmpty(paymentMethods)) {
+      const paymentMethodsList = paymentMethods.QueryResponse.PaymentMethod;
+
+      const paymentMethod = paymentMethodsList.find(
+        (el) => el.Name.toLowerCase() === fJson.tempPaymentMethod.toLowerCase(),
+      );
+      fJson.Line[0].DepositLineDetail.PaymentMethodRef = { value: paymentMethod.Id };
+
+      fJson = omit(fJson, 'tempPaymentMethod');
+    }
+    return new Promise(async (resolve, reject) => {
+      await quickBookApi(qboTokens).createDeposit(fJson, function (err, createdData) {
+        if (err) {
+          reject(err);
+        }
+        const data = isEmpty(createdData) ? createdData : [];
+        resolve(data);
+      });
+    });
+  } catch (err) {
+    console.log('automationDeposit ERROR:', err);
+    throw new Error(err);
+  }
 
   // try {
   //   await createDepositInQBO();
   // } catch (err) {}
 };
 
-const generatePcToken = async (refreshToken: string, email: string) => {
+export const generatePcToken = async (refreshToken: string, email: string) => {
+  let refresh_token = refreshToken ?? '';
+
   try {
+    if (!refresh_token) {
+      const user = (await User.findOne({ where: { email: email } })).toJSON();
+      refresh_token = user.refresh_token_pc;
+    }
+
     const response = await axios({
       method: 'post',
       url: 'https://api.planningcenteronline.com/oauth/token',
@@ -249,7 +272,7 @@ const generatePcToken = async (refreshToken: string, email: string) => {
       data: {
         client_id: PC_CLIENT_ID,
         client_secret: PC_SECRET_APP,
-        refresh_token: refreshToken,
+        refresh_token,
         grant_type: 'refresh_token',
       },
     });
@@ -258,6 +281,10 @@ const generatePcToken = async (refreshToken: string, email: string) => {
       { access_token_pc: response.data.access_token, refresh_token_pc: response.data.refresh_token },
       { where: { email: email } },
     );
+
+    // Retrieve the updated user data
+    const updatedUser = (await User.findOne({ where: { email: email } })).toJSON();
+    return updatedUser;
   } catch (error) {
     console.error(error);
   }
