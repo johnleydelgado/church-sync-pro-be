@@ -7,7 +7,7 @@ export const addTokenInUser = async (req: Request, res: Response) => {
 
   try {
     const test = await User.update(rest, { where: { email: email } });
-    console.log('email', test, email, rest);
+    console.log('...rest', test, email, rest);
     return responseSuccess(res, 'success');
   } catch (e) {
     return responseError({ res, code: 204, data: e });

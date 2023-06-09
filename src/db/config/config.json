@@ -1,16 +1,10 @@
 {
     "development": {
-      "username": "johnley00",
-      "password": "b8Zm2eclUqMn",
+      "username": "admin",
+      "password": "1234",
       "database": "supertokens",
-      "host": "ep-shy-art-278296.us-east-2.aws.neon.tech",
+      "host": "localhost",
       "dialect": "postgres",
-      "ssl": true,
-      "dialectOptions": {
-        "ssl": {
-          "require": true
-        }
-      },
       "pool": {
         "max": 5,
         "min": 0,
@@ -19,17 +13,11 @@
       }
     },
     "test": {
-      "username": "johnley00",
-      "password": "b8Zm2eclUqMn",
+      "username": "postgres",
+      "password": "asd123asd",
       "database": "supertokens",
-      "host": "ep-shy-art-278296.us-east-2.aws.neon.tech",
+      "host": "34.27.255.216",
       "dialect": "postgres",
-      "ssl": true,
-      "dialectOptions": {
-        "ssl": {
-          "require": true
-        }
-      },
       "pool": {
         "max": 5,
         "min": 0,
@@ -38,17 +26,11 @@
       }
     },
     "staging": {
-      "username": "johnley00",
-      "password": "b8Zm2eclUqMn",
+      "username": "postgres",
+      "password": "asd123asd",
       "database": "supertokens",
-      "host": "ep-shy-art-278296.us-east-2.aws.neon.tech",
+      "host": "10.94.96.3",
       "dialect": "postgres",
-      "ssl": true,
-      "dialectOptions": {
-        "ssl": {
-          "require": true
-        }
-      },
       "pool": {
         "max": 5,
         "min": 0,

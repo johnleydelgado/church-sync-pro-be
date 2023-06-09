@@ -4,6 +4,9 @@ import { responseError, responseSuccess } from '../utils/response';
 import User from '../db/models/user';
 import quickbookAuth from '../utils/quickbookAuth';
 import { generateQBOToken } from './automation';
+import tokenEntity from '../db/models/tokenEntity';
+import tokens from '../db/models/tokens';
+import { isEmpty } from 'lodash';
 
 export interface QBODataProps {
   accessToken: string;
@@ -15,21 +18,32 @@ export interface QBODataProps {
 export const getAllQboData = async (req: Request, res: Response) => {
   const { email } = req.body;
 
-  const userData = await User.findOne({ where: { email: email } });
-  if (!userData) {
+  const data = await tokenEntity.findOne({
+    where: { email: email as string, isEnabled: true },
+    include: tokens,
+  });
+
+  if (!data) {
     return res.status(500).json({ error: 'Empty user data' });
   }
 
-  let userJson = userData.toJSON();
+  const arr = data.tokens.find((item) => item.token_type === 'qbo');
+
+  if (!arr) {
+    return responseError({ res, code: 500, data: 'No qbo token' });
+  }
+
+  let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
+
   if (!quickbookAuth.isAccessTokenValid()) {
-    const newUSer = await generateQBOToken(userJson.refresh_token_qbo, email);
-    userJson = newUSer;
+    const result = await generateQBOToken(arr.refresh_token, email);
+    tokenJson = result;
   }
 
   const qboTokens = {
-    ACCESS_TOKEN: userJson.access_token_qbo,
-    REALM_ID: userJson.realm_id,
-    REFRESH_TOKEN: userJson.refresh_token_qbo,
+    ACCESS_TOKEN: tokenJson.access_token,
+    REALM_ID: tokenJson.realm_id,
+    REFRESH_TOKEN: tokenJson.refresh_token,
   };
 
   const fetchAccounts = async () => {
@@ -96,6 +110,7 @@ export const getAllQboData = async (req: Request, res: Response) => {
     };
     return responseSuccess(res, jsonObject);
   } catch (err) {
+    console.log('fasdasdasd', err);
     res.status(500).json({ error: err.message });
   }
 

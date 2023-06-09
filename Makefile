@@ -14,9 +14,13 @@ STAGING_PROJECT=church-sync-pro-385703
 # postgresql://username:password@/dbname?host=/cloudsql/instance-connection-name
 # docker run -p 3567:3567 -e POSTGRESQL_CONNECTION_URI="postgresql://postgres:n6yZ535P@/csp?host=/cloudsql/church-sync-pro-385703:us-central1:db-csp" gcr.io/church-sync-pro-385703/supertokens-postgresql:4.6
 
+# NOTE once 
+
 deploy-stg:
-	make deploy-supertoken GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging
-	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging
+	make deploy-supertoken GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging \
+	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
+	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging \
+	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
 
 deploy-supertoken:
 	docker build --platform linux/amd64 --cache-from gcr.io/${GOOGLE_CLOUD_PROJECT}/supertokens-postgresql:4.4 -t gcr.io/${GOOGLE_CLOUD_PROJECT}/supertokens-postgresql:4.4  -f DockerfileST .
@@ -32,7 +36,8 @@ deploy-supertoken:
 		--timeout 1200 \
 		--ingress all \
 		--allow-unauthenticated \
-		--set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://johnley00:b8Zm2eclUqMn@ep-shy-art-278296.us-east-2.aws.neon.tech/supertokens',SUPERTOKENS_PORT=3567,API_KEYS=18be6f53-2e23-4fcc-bd17-2fecb798106e \
+		${VPC_CONNECTOR} \
+		--set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://postgres:asd123asd@10.94.96.3/supertokens',SUPERTOKENS_PORT=3567,API_KEYS=18be6f53-2e23-4fcc-bd17-2fecb798106e \
 		--project ${GOOGLE_CLOUD_PROJECT}
 
 deploy-backend:
@@ -49,5 +54,6 @@ deploy-backend:
 	--timeout 1200 \
 	--ingress all \
 	--allow-unauthenticated \
+	${VPC_CONNECTOR} \
 	--set-env-vars `cat .env.staging | xargs | tr ' ' ','` \
 	--project ${GOOGLE_CLOUD_PROJECT}

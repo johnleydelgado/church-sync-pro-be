@@ -20,6 +20,14 @@ const userRoutes = {
   createSettings: '/user/createSettings',
   getUserRelated: '/user/getUserRelated',
   manualSync: '/user/manualSync',
+  isUserHaveTokens: '/user/isUserHaveTokens',
+  getTokenList: '/user/getTokenList',
+  updateUserToken: '/user/updateUserToken',
+  deleteUserToken: '/user/deleteUserToken',
+  sendEmailInvitation: '/user/sendEmailInvitation',
+  checkValidInvitation: '/user/checkValidInvitation',
+  updateInvitationStatus: '/user/updateInvitationStatus',
+  bookkeeperList: '/user/bookkeeperList',
 };
 
 export { pcRoutes, userRoutes, qboRoutes, stripeRoutes };

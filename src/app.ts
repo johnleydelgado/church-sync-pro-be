@@ -13,6 +13,7 @@ import EmailVerification from 'supertokens-node/recipe/emailverification';
 import User from './db/models/user';
 import { formFields } from './constant/forms';
 import { getallUsers } from './controller/automation';
+// import { getallUsers } from './controller/automation';
 const { middleware, errorHandler } = require('supertokens-node/framework/express');
 
 const apiPort = process.env.API_PORT || 8080;
@@ -198,7 +199,7 @@ app.use('/csp', routes);
 
 cron.schedule('* * * * *', () => {
   // This function will run every minute
-  // getallUsers();
+  getallUsers();
   console.log('Running cron job...');
 });
 

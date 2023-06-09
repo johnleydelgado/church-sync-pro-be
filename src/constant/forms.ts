@@ -1,6 +1,7 @@
 const formFields = [
   {
     id: 'churchName',
+    optional: true,
   },
   {
     id: 'firstName',
@@ -10,6 +11,9 @@ const formFields = [
   },
   {
     id: 'isSubscribe',
+  },
+  {
+    id: 'role',
   },
 ];
 

@@ -10,23 +10,27 @@ import UserSync from '../db/models/UserSync';
 import UserSettings from '../db/models/userSettings';
 import { SettingsJsonProps, requestPayload } from '../utils/mapping';
 import axios from 'axios';
+import tokens from '../db/models/tokens';
+import tokenEntity from '../db/models/tokenEntity';
 const { PC_CLIENT_ID, PC_SECRET_APP, PC_REDIRECT, STRIPE_SECRET_KEY, STRIPE_PUB_KEY, STRIPE_CLIENT_ID } = process.env;
 
 export const getStripePayouts = async (req: Request, res: Response) => {
   const { email } = req.query;
   try {
-    const user = await User.findOne({ where: { email: email as string } });
-
+    const user = await User.findOne({ where: { email: email as string }, include: [tokens] });
     if (user) {
-      let userJson = user.toJSON();
+      const userJson = user.toJSON();
 
-      if (!(await checkAccessTokenValidity(userJson.access_token_stripe))) {
+      const tokensJson = userJson.tokens.find((item) => item.token_type === 'stripe');
+      let tokensFinalJson = { access_token: '', refresh_token: '' };
+
+      if (!(await checkAccessTokenValidity(tokensJson.access_token))) {
         console.log('goes here ==== ?');
-        const userResult = await refreshAccessToken(email as string);
-        userJson = userResult;
+        const result = await refreshAccessToken(email as string);
+        tokensFinalJson = result;
       }
 
-      const stripe = new Stripe(userJson.access_token_stripe, { apiVersion: '2022-11-15' });
+      const stripe = new Stripe(tokensFinalJson.access_token, { apiVersion: '2022-11-15' });
       const finalData = [];
       const payouts = await stripe.payouts.list();
 
@@ -67,7 +71,12 @@ export const getStripePayouts = async (req: Request, res: Response) => {
 export const syncStripePayout = async (req: Request, res: Response) => {
   const { email, donationId, fundName, payoutDate, refreshToken } = req.query; //refreshToken is just an empty value
   try {
-    const user = await generatePcToken(refreshToken as string, email as string);
+    const tokenEntity = await generatePcToken(email as string);
+    const user = await User.findOne({
+      where: { email: email as string },
+    });
+
+    const { access_token } = tokenEntity;
 
     if (isEmpty(user)) {
       return responseError({ res, code: 500, data: 'Empty User' });
@@ -79,7 +88,7 @@ export const syncStripePayout = async (req: Request, res: Response) => {
       method: 'get',
       url: `https://api.planningcenteronline.com/giving/v2/donations/${donationId}`,
       headers: {
-        Authorization: `Bearer ${user.access_token_pc}`,
+        Authorization: `Bearer ${access_token}`,
       },
     };
     const response = await axios(config);
@@ -141,25 +150,30 @@ const checkAccessTokenValidity = async (accessToken: string) => {
 
 // Add this function
 const refreshAccessToken = async (email: string) => {
-  const user = (await User.findOne({ where: { email: email } })).toJSON();
+  const data = await tokenEntity.findOne({
+    where: { email: email as string, isEnabled: true },
+    include: tokens,
+  });
+
+  const arr = data.tokens.find((item) => item.token_type === 'stripe');
 
   try {
     const response = await axios.post('https://connect.stripe.com/oauth/token', {
       grant_type: 'refresh_token',
       client_id: STRIPE_CLIENT_ID,
       client_secret: STRIPE_SECRET_KEY,
-      refresh_token: user.refresh_token_stripe,
+      refresh_token: arr.refresh_token,
     });
 
     // console.log('New access token:', response.data.access_token);
     // console.log('New refresh token:', response.data.refresh_token);
 
-    await User.update(
-      { access_token_stripe: response.data.access_token, refresh_token_stripe: response.data.refresh_token },
-      { where: { email: email } },
+    await tokens.update(
+      { access_token: response.data.access_token, refresh_token: response.data.refresh_token },
+      { where: { id: arr.id } },
     );
-    const updatedUser = (await User.findOne({ where: { email: email } })).toJSON();
-    return updatedUser;
+
+    return { access_token: response.data.access_token, refresh_token: response.data.refresh_token };
   } catch (error) {
     console.error('Error refreshing access token:', error);
     return null;

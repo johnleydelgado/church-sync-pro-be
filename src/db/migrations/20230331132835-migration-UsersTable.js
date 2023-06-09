@@ -12,16 +12,12 @@ module.exports = {
       },
       firstName: Sequelize.DataTypes.STRING(32),
       lastName: Sequelize.DataTypes.STRING(32),
-      churchName: Sequelize.DataTypes.STRING(32),
+      churchName: { type:Sequelize.DataTypes.STRING(32),allowNull:true },
       isSubscribe: Sequelize.DataTypes.STRING(1),
       email: Sequelize.DataTypes.STRING(256),
-      access_token_pc: Sequelize.DataTypes.TEXT,
-      refresh_token_pc: Sequelize.DataTypes.TEXT,
-      access_token_qbo: Sequelize.DataTypes.TEXT,
-      refresh_token_qbo: Sequelize.DataTypes.TEXT,
-      access_token_stripe: Sequelize.DataTypes.TEXT,
-      refresh_token_stripe: Sequelize.DataTypes.TEXT,
-      realm_id: Sequelize.DataTypes.TEXT,
+      role: Sequelize.DataTypes.ENUM({
+        values: ['client', 'bookkeeper']
+      }),
       createdAt: {
         type: Sequelize.DATE,
         defaultValue: Sequelize.fn('NOW'),
@@ -111,7 +107,7 @@ module.exports = {
 
   async down (queryInterface, Sequelize) {
     await queryInterface.dropTable('UserSettings');
-    await queryInterface.dropTable('Users');
     await queryInterface.dropTable('UserSync');
+    await queryInterface.dropTable('Users');
   }
 };

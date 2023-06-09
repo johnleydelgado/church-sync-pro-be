@@ -6,6 +6,8 @@ import { isEmpty } from 'lodash';
 import User from '../db/models/user';
 import { generatePcToken } from './automation';
 import UserSync from '../db/models/UserSync';
+import tokenEntity from '../db/models/tokenEntity';
+import tokens from '../db/models/tokens';
 
 const BASE_URL = 'https://api.planningcenteronline.com/giving/v2';
 
@@ -54,18 +56,21 @@ const fetchFund = async (fundId: string, headers: any) => {
 };
 
 export const getBatches = async (req: Request, res: Response) => {
-  const { email, refreshToken } = req.query;
+  const { email } = req.query;
 
   const jsonRes = { batches: [], synchedBatches: [] };
 
   try {
-    const user = await generatePcToken(refreshToken as string, email as string);
+    const tokenEntity = await generatePcToken(email as string);
+    const user = await User.findOne({
+      where: { email: email as string },
+    });
 
-    if (isEmpty(user)) {
-      return responseError({ res, code: 500, data: 'Empty User' });
+    if (isEmpty(tokenEntity)) {
+      return responseError({ res, code: 202, data: 'PCO token is null' });
     }
 
-    const { access_token_pc } = user;
+    const { access_token } = tokenEntity;
     const synchedBatchesData = await UserSync.findAll({
       where: { userId: user.id },
       attributes: ['id', 'batchId', 'createdAt'],
@@ -74,10 +79,10 @@ export const getBatches = async (req: Request, res: Response) => {
     jsonRes.synchedBatches = synchedBatchesData;
 
     const headers = {
-      Authorization: `Bearer ${access_token_pc}`,
+      Authorization: `Bearer ${access_token}`,
     };
 
-    const batchesData = await getBatchInDonation({ accessToken: String(access_token_pc) });
+    const batchesData = await getBatchInDonation({ accessToken: String(access_token) });
 
     for (const batch of batchesData) {
       const batchId = batch.id;
@@ -112,13 +117,14 @@ export const getFunds = async (req: Request, res: Response) => {
   const { email } = req.query;
 
   try {
-    const isEmailExist = await User.findOne({ where: { email: email as string } });
-    if (isEmailExist) {
+    const tokenEntity = await generatePcToken(email as string);
+    const { access_token } = tokenEntity;
+    if (access_token) {
       const config = {
         method: 'get',
         url: 'https://api.planningcenteronline.com/giving/v2/funds',
         headers: {
-          Authorization: `Bearer ${isEmailExist.dataValues.access_token_pc}`,
+          Authorization: `Bearer ${access_token}`,
         },
       };
 
@@ -136,13 +142,15 @@ export const getRegistrationEvents = async (req: Request, res: Response) => {
   const { email } = req.query;
 
   try {
-    const isEmailExist = await User.findOne({ where: { email: email as string } });
-    if (isEmailExist) {
+    const tokenEntity = await generatePcToken(email as string);
+
+    const { access_token } = tokenEntity;
+    if (!isEmpty(tokenEntity)) {
       const config = {
         method: 'get',
         url: 'https://api.planningcenteronline.com/calendar/v2/events',
         headers: {
-          Authorization: `Bearer ${isEmailExist.dataValues.access_token_pc}`,
+          Authorization: `Bearer ${access_token}`,
         },
       };
 

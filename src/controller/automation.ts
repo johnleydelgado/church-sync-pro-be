@@ -13,6 +13,9 @@ import { SettingsJsonProps, requestPayload } from '../utils/mapping';
 import UserSync, { UserSyncAttributes } from '../db/models/UserSync';
 import { Op } from 'sequelize';
 import { getDayBoundary } from '../utils/helper';
+import tokenEntity from '../db/models/tokenEntity';
+import tokens from '../db/models/tokens';
+import { responseError } from '../utils/response';
 
 interface PaymentMethodsResponse {
   QueryResponse: {
@@ -24,11 +27,19 @@ interface PaymentMethodsResponse {
   };
 }
 const base64encode = (str) => Buffer.from(str).toString('base64');
+
 export const generateQBOToken = async (refreshToken: string, email: string) => {
   // if (!oauthClient.isAccessTokenValid()) {
   const authHeader = 'Basic ' + base64encode(QBO_KEY + ':' + QBO_SECRET);
   const requestBody = `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`;
   try {
+    const data = await tokenEntity.findOne({
+      where: { email: email as string, isEnabled: true },
+      include: tokens,
+    });
+
+    const arr = data.tokens.find((item) => item.token_type === 'qbo');
+
     const response = await axios.post('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', requestBody, {
       headers: {
         Accept: 'application/json',
@@ -37,12 +48,16 @@ export const generateQBOToken = async (refreshToken: string, email: string) => {
       },
     });
 
-    await User.update(
-      { access_token_qbo: response.data.access_token, refresh_token_qbo: response.data.refresh_token },
-      { where: { email: email } },
+    await tokens.update(
+      { access_token: response.data.access_token, refresh_token: response.data.refresh_token },
+      { where: { id: arr.id } },
     );
-    const updatedUser = (await User.findOne({ where: { email: email } })).toJSON();
-    return updatedUser;
+
+    return {
+      access_token: response.data.access_token,
+      refresh_token: response.data.refresh_token,
+      realm_id: arr.realm_id,
+    };
   } catch (error) {
     console.log('====ERROR:====', error);
   }
@@ -65,16 +80,18 @@ export const getallUsers = async () => {
       if (userSettingsExist) {
         // only automate if setting is exist
         if (userSettingsExist.isAutomationEnable) {
-          console.log('userSyncData', userSyncData);
-          await generatePcToken(item.refresh_token_pc, item.email);
-          // // await generateQBOToken(item.refresh_token_qbo, item.email);
-          await generateTodayBatches({
-            userId: item.id,
-            email: item.email,
-            access_token: item.access_token_pc,
-            settingsJson: userSettingsExist.settingsData,
-            syncedData: userSyncData,
-          });
+          const tokenEntity = await generatePcToken(String(item.email));
+          const { access_token } = tokenEntity;
+          if (access_token) {
+            // // await generateQBOToken(item.refresh_token_qbo, item.email);
+            await generateTodayBatches({
+              userId: item.id,
+              email: item.email,
+              access_token: access_token,
+              settingsJson: userSettingsExist.settingsData,
+              syncedData: userSyncData,
+            });
+          }
         }
       }
     });
@@ -201,17 +218,26 @@ export const generateTodayBatches = async ({
 };
 
 export const automationDeposit = async (email: string, json: any) => {
-  const userData = await User.findOne({ where: { email: email } });
   let fJson = { ...json };
-  const userJson = userData.toJSON();
+
+  const data = await tokenEntity.findOne({
+    where: { email: email as string, isEnabled: true },
+    include: tokens,
+  });
+
+  const arr = data.tokens.find((item) => item.token_type === 'qbo');
+
+  let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
+
   if (!quickbookAuth.isAccessTokenValid()) {
-    await generateQBOToken(userJson.refresh_token_qbo, email);
+    const result = await generateQBOToken(arr.refresh_token, email);
+    tokenJson = result;
   }
 
   const qboTokens = {
-    ACCESS_TOKEN: userJson.access_token_qbo,
-    REALM_ID: userJson.realm_id,
-    REFRESH_TOKEN: userJson.refresh_token_qbo,
+    ACCESS_TOKEN: tokenJson.access_token,
+    REALM_ID: tokenJson.realm_id,
+    REFRESH_TOKEN: tokenJson.refresh_token,
   };
 
   try {
@@ -254,14 +280,26 @@ export const automationDeposit = async (email: string, json: any) => {
   // } catch (err) {}
 };
 
-export const generatePcToken = async (refreshToken: string, email: string) => {
-  let refresh_token = refreshToken ?? '';
+export const generatePcToken = async (email: string) => {
+  let refresh_token = '';
 
   try {
-    if (!refresh_token) {
-      const user = (await User.findOne({ where: { email: email } })).toJSON();
-      refresh_token = user.refresh_token_pc;
+    const data = await tokenEntity.findOne({
+      where: { email: email as string, isEnabled: true },
+      include: tokens,
+    });
+
+    const arr = data.tokens.find((item) => item.token_type === 'pco');
+
+    if (isEmpty(arr)) {
+      throw new Error('Not found !');
     }
+
+    if (!refresh_token) {
+      refresh_token = arr.refresh_token;
+    }
+
+    console.log('asdasdasd', refresh_token);
 
     const response = await axios({
       method: 'post',
@@ -277,15 +315,16 @@ export const generatePcToken = async (refreshToken: string, email: string) => {
       },
     });
 
-    await User.update(
-      { access_token_pc: response.data.access_token, refresh_token_pc: response.data.refresh_token },
-      { where: { email: email } },
+    await tokens.update(
+      { access_token: response.data.access_token, refresh_token: response.data.refresh_token },
+      { where: { id: arr.id } },
     );
 
     // Retrieve the updated user data
-    const updatedUser = (await User.findOne({ where: { email: email } })).toJSON();
-    return updatedUser;
+    // const updatedUser = (await User.findOne({ where: { email: email } })).toJSON();
+    return { access_token: response.data.access_token, refresh_token: response.data.refresh_token };
   } catch (error) {
-    console.error(error);
+    // await tokens.destroy({ where: { id: tokenEntityId } });
+    throw new Error('invalid refresh token');
   }
 };

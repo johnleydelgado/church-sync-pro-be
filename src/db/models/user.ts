@@ -1,5 +1,6 @@
 import { Model, DataTypes, Sequelize } from 'sequelize';
 import sequelize from '..';
+import tokens from './tokens';
 
 export interface UserAttributes {
   id?: number;
@@ -9,13 +10,8 @@ export interface UserAttributes {
   lastName?: string;
   churchName?: string;
   isSubscribe: string;
-  access_token_pc?: string;
-  refresh_token_pc?: string;
-  access_token_qbo?: string;
-  refresh_token_qbo?: string;
-  access_token_stripe?: string;
-  refresh_token_stripe?: string;
-  realm_id?: string;
+  role?: 'client' | 'bookkeeper';
+  tokens?: tokens[];
 }
 
 class User extends Model<UserAttributes> implements UserAttributes {
@@ -25,13 +21,7 @@ class User extends Model<UserAttributes> implements UserAttributes {
   public lastName!: string;
   public churchName!: string;
   public isSubscribe!: string;
-  public access_token_pc!: string;
-  public refresh_token_pc!: string;
-  public access_token_qbo!: string;
-  public refresh_token_qbo!: string;
-  public access_token_stripe!: string;
-  public refresh_token_stripe!: string;
-  public realm_id!: string;
+  public role!: 'client' | 'bookkeeper';
 }
 
 User.init(
@@ -57,27 +47,9 @@ User.init(
     isSubscribe: {
       type: DataTypes.STRING(1),
     },
-    access_token_pc: {
-      type: DataTypes.TEXT,
-    },
-    refresh_token_pc: {
-      type: DataTypes.TEXT,
-    },
-    access_token_qbo: {
-      type: DataTypes.TEXT,
-    },
-    refresh_token_qbo: {
-      type: DataTypes.TEXT,
-    },
-    access_token_stripe: {
-      type: DataTypes.TEXT,
-    },
-    refresh_token_stripe: {
-      type: DataTypes.TEXT,
-    },
-    realm_id: {
-      type: DataTypes.TEXT,
-    },
+    role: DataTypes.ENUM({
+      values: ['client', 'bookkeeper'],
+    }),
   },
   {
     sequelize,

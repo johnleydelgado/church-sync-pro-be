@@ -4,3 +4,4 @@ sendgrid.env
 yarn-error.log
 .env.production
 .env.staging
+src/db/config/config.json

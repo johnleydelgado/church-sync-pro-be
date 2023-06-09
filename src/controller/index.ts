@@ -11,26 +11,40 @@ import { isEmpty } from 'lodash';
 import UserSync from '../db/models/UserSync';
 import { SettingsJsonProps, requestPayload } from '../utils/mapping';
 import UserSettings from '../db/models/userSettings';
-const sgMail = require('@sendgrid/mail');
+import User from '../db/models/user';
+import crypto from 'crypto';
+import bookkeeper from '../db/models/bookkeeper';
+import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
 
-export const sendEmail = async (req: Request, res: Response) => {
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-  const htmlFile = await fs.promises.readFile('src/template/msg.html', 'utf-8');
-  const msg = {
-    to: 'johnley00@gmail.com', // Change to your recipient
-    from: 'support@churchsyncpro.com', // Change to your verified sender
-    subject: 'Sending with SendGrid is Fun',
-    text: 'and easy to do anywhere, even with Node.js',
-    html: htmlFile,
-  };
-  sgMail
-    .send(msg)
-    .then(() => {
-      console.log('Email sent');
-    })
-    .catch((error: any) => {
-      console.error(error);
-    });
+const sgMail = require('@sendgrid/mail');
+const { SENDGRID_API_KEY, INVITATION_URL } = process.env;
+
+export const sendEmailInvitation = async (req: Request, res: Response) => {
+  const { name, emailTo, clientId } = req.body;
+  const rand = crypto.randomBytes(16).toString('hex');
+
+  sgMail.setApiKey(SENDGRID_API_KEY);
+  const inviteLink = INVITATION_URL + `?bookkeeperEmail=${emailTo}&invitationToken=${rand}`;
+  // const htmlFile = await fs.promises.readFile('src/template/msg.html', 'utf-8');
+
+  try {
+    await bookkeeper.create({ email: emailTo, inviteSent: true, invitationToken: rand, clientId });
+    const msg = {
+      to: emailTo, // Change to your recipient
+      from: 'support@churchsyncpro.com', // Change to your verified sender
+      subject: 'Invitation in Church Sync Pro',
+      // text: 'and easy to do anywhere, even with Node.js',
+      templateId: 'd-4529481214ab4c4e85018b4dfb3b6f20',
+      dynamicTemplateData: {
+        name,
+        inviteLink,
+      },
+    };
+    await sgMail.send(msg);
+    return responseSuccess(res, 'email sent');
+  } catch (e) {
+    return responseError({ res, code: 500, data: e });
+  }
 };
 
 export const getBatches = async (req: Request, res: Response, next: NextFunction) => {
@@ -85,25 +99,32 @@ export const createPayment = async (req: Request, res: Response) => {
 
 export const manualSync = async (req: Request, res: Response) => {
   const { email, dataBatch, batchId = '0' } = req.body; // refresh token if for pc
-  console.log('aaa', email);
   const jsonRes = { donation: [] as any }; //this is an array object
 
   try {
-    const user = await generatePcToken('', String(email));
-    const { access_token_pc, id } = user;
+    const tokenEntity = await generatePcToken(String(email));
+    const user = await User.findOne({
+      where: { email: email as string },
+    });
+
+    const { access_token } = tokenEntity;
 
     const config = {
       headers: {
-        Authorization: `Bearer ${access_token_pc}`,
+        Authorization: `Bearer ${access_token}`,
       },
     };
+
+    if (batchId === '0') {
+      return responseError({ res, code: 204, data: 'Dont have batch id' });
+    }
 
     const synchedBatchesData = await UserSync.findAll({
       where: { userId: user.id, batchId: batchId as string },
       attributes: ['id', 'batchId', 'createdAt'],
     });
 
-    const settingsJson = await UserSettings.findOne({ where: { userId: id } });
+    const settingsJson = await UserSettings.findOne({ where: { userId: user.id } });
     const settingsData = settingsJson.settingsData as any;
 
     if (!isEmpty(synchedBatchesData)) {
@@ -124,7 +145,7 @@ export const manualSync = async (req: Request, res: Response) => {
     for (const donationsData of responseDonation.data.data) {
       const fundsData = await getFundInDonation({
         donationId: Number(donationsData.id),
-        access_token: String(access_token_pc),
+        access_token: String(access_token),
       });
       const fundName = fundsData[0].attributes.name;
       const settingsItem = settingsData.find((item: SettingsJsonProps) => item.fundName === fundName);
@@ -154,5 +175,15 @@ export const manualSync = async (req: Request, res: Response) => {
     return responseSuccess(res, 'success');
   } catch (e) {
     console.log('error', e);
+  }
+};
+
+export const healthCheck = async (req: SessionRequest, res: Response) => {
+  if (req.session!.getUserId()) {
+    return res.status(200).json(true);
+    // session exists
+  } else {
+    return res.status(500).json(false);
+    // session doesn't exist
   }
 };
