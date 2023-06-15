@@ -66,6 +66,28 @@ export const createSettings = async (req: Request, res: Response) => {
   }
 };
 
+export const enableAutoSyncSetting = async (req: Request, res: Response) => {
+  const { email, isAutomationEnable } = req.body;
+
+  try {
+    const userData = await Users.findOne({ where: { email } });
+    if (userData !== null) {
+      const user = userData.toJSON();
+      const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
+      if (userSettingsExist) {
+        await UserSettings.update({ isAutomationEnable }, { where: { userId: user.id } });
+      } else {
+        await UserSettings.create({ isAutomationEnable, userId: user.id });
+      }
+
+      return responseSuccess(res, 'success');
+    }
+  } catch (e) {
+    console.log('ERROR: ', e);
+    res.status(500).json({ error: e.message });
+  }
+};
+
 export const getUserRelated = async (req: Request, res: Response) => {
   const { email } = req.query;
   try {

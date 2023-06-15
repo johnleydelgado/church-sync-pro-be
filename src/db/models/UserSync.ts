@@ -7,6 +7,7 @@ export interface UserSyncAttributes {
   id?: number;
   syncedData?: Json | any[];
   batchId?: string;
+  donationId?: string;
   userId?: number;
   createdAt?: Date;
   updatedAt?: Date;
@@ -16,6 +17,7 @@ class UserSync extends Model<UserSyncAttributes> implements UserSyncAttributes {
   public id!: number;
   public syncedData!: Json;
   public batchId!: string;
+  public donationId!: string;
   public userId!: number;
   public createdAt!: Date;
   public updatedAt!: Date;
@@ -46,6 +48,9 @@ UserSync.init(
     },
     userId: {
       type: DataTypes.INTEGER,
+    },
+    donationId: {
+      type: DataTypes.STRING,
     },
     createdAt: {
       type: DataTypes.DATE,

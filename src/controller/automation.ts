@@ -16,6 +16,7 @@ import { getDayBoundary } from '../utils/helper';
 import tokenEntity from '../db/models/tokenEntity';
 import tokens from '../db/models/tokens';
 import { responseError } from '../utils/response';
+import { getBatchInDonationPCO } from './planning-center';
 
 interface PaymentMethodsResponse {
   QueryResponse: {
@@ -266,7 +267,8 @@ export const automationDeposit = async (email: string, json: any) => {
         if (err) {
           reject(err);
         }
-        const data = isEmpty(createdData) ? createdData : [];
+
+        const data = isEmpty(createdData) ? [] : createdData;
         resolve(data);
       });
     });
@@ -297,6 +299,11 @@ export const generatePcToken = async (email: string) => {
 
     if (!refresh_token) {
       refresh_token = arr.refresh_token;
+    }
+
+    if (!isEmpty(await getBatchInDonationPCO({ accessToken: arr.access_token as string }))) {
+      console.log('asdasdasdasd');
+      return { access_token: arr.access_token, refresh_token: arr.refresh_token };
     }
 
     console.log('asdasdasd', refresh_token);

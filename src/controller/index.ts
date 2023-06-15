@@ -100,7 +100,6 @@ export const createPayment = async (req: Request, res: Response) => {
 export const manualSync = async (req: Request, res: Response) => {
   const { email, dataBatch, batchId = '0' } = req.body; // refresh token if for pc
   const jsonRes = { donation: [] as any }; //this is an array object
-
   try {
     const tokenEntity = await generatePcToken(String(email));
     const user = await User.findOne({
@@ -162,12 +161,19 @@ export const manualSync = async (req: Request, res: Response) => {
       const data = requestPayload(jsonRes.donation);
       let count = 0;
       for (const payloadJson of data) {
-        await automationDeposit(email as string, payloadJson);
-        await UserSync.create({
-          syncedData: jsonRes.donation,
-          userId: user.id,
-          batchId: jsonRes.donation[count].batch.id,
-        });
+        const bqoCreatedDataId = await automationDeposit(email as string, payloadJson);
+        console.log('bqoCreatedDataId', bqoCreatedDataId);
+        const batchId = jsonRes.donation[count].batch.id;
+        const batchExist = synchedBatchesData.find((a) => a.batchId === batchId && a.userId === user.id);
+
+        if (isEmpty(batchExist)) {
+          await UserSync.create({
+            syncedData: jsonRes.donation,
+            userId: user.id,
+            batchId: batchId,
+            donationId: bqoCreatedDataId['Id'] || '',
+          });
+        }
         count += 1;
       }
     }
@@ -175,6 +181,7 @@ export const manualSync = async (req: Request, res: Response) => {
     return responseSuccess(res, 'success');
   } catch (e) {
     console.log('error', e);
+    return responseError({ res, code: 500, data: e });
   }
 };
 

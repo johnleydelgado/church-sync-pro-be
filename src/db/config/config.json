@@ -38,6 +38,19 @@
         "idle": 10000
       }
     },
+    "uat": {
+      "username": "postgres",
+      "password": "asd123asd",
+      "database": "supertokens",
+      "host": "34.27.255.216",
+      "dialect": "postgres",
+      "pool": {
+        "max": 5,
+        "min": 0,
+        "acquire": 30000,
+        "idle": 10000
+      }
+    },
     "production": {
       "username": "johnley00",
       "password": "1234",

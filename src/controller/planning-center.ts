@@ -6,12 +6,10 @@ import { isEmpty } from 'lodash';
 import User from '../db/models/user';
 import { generatePcToken } from './automation';
 import UserSync from '../db/models/UserSync';
-import tokenEntity from '../db/models/tokenEntity';
-import tokens from '../db/models/tokens';
 
 const BASE_URL = 'https://api.planningcenteronline.com/giving/v2';
 
-export const getBatchInDonation = async ({ accessToken }: { accessToken: string }) => {
+export const getBatchInDonationPCO = async ({ accessToken, dateRange }: { accessToken: string; dateRange?: any }) => {
   const config = {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -26,16 +24,24 @@ export const getBatchInDonation = async ({ accessToken }: { accessToken: string 
       //return empty here
       return [];
     }
+    if (!dateRange?.startDate && !dateRange?.endDate) {
+      return tempData;
+    }
 
-    // const startDate = new Date('2023-04-04');
-    // const endDate = new Date('2023-04-05');
+    const startDate = new Date(dateRange?.startDate);
+    const endDate = new Date(dateRange?.endDate);
+    endDate.setHours(23, 59, 59, 999);
 
-    // const data = tempData.filter((item) => {
-    //   const created_at = new Date(item.attributes.created_at);
-    //   return created_at >= startDate && created_at <= endDate;
-    // });
+    const data = tempData.filter((item) => {
+      const created_at = new Date(item.attributes.created_at);
+      return created_at >= startDate && created_at <= endDate;
+    });
 
-    return tempData;
+    if (!isEmpty(data)) {
+      return data;
+    }
+
+    return [];
   } catch (e) {
     return [];
   }
@@ -56,8 +62,7 @@ const fetchFund = async (fundId: string, headers: any) => {
 };
 
 export const getBatches = async (req: Request, res: Response) => {
-  const { email } = req.query;
-
+  const { email, dateRange } = req.body;
   const jsonRes = { batches: [], synchedBatches: [] };
 
   try {
@@ -73,7 +78,7 @@ export const getBatches = async (req: Request, res: Response) => {
     const { access_token } = tokenEntity;
     const synchedBatchesData = await UserSync.findAll({
       where: { userId: user.id },
-      attributes: ['id', 'batchId', 'createdAt'],
+      attributes: ['id', 'batchId', 'createdAt', 'donationId'],
     });
 
     jsonRes.synchedBatches = synchedBatchesData;
@@ -82,7 +87,7 @@ export const getBatches = async (req: Request, res: Response) => {
       Authorization: `Bearer ${access_token}`,
     };
 
-    const batchesData = await getBatchInDonation({ accessToken: String(access_token) });
+    const batchesData = await getBatchInDonationPCO({ accessToken: String(access_token), dateRange: dateRange || '' });
 
     for (const batch of batchesData) {
       const batchId = batch.id;

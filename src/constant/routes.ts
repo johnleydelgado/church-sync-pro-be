@@ -6,6 +6,7 @@ const pcRoutes = {
 
 const qboRoutes = {
   getAllQboData: '/qbo/getAllQboData',
+  deleteQboDeposit: '/qbo/deleteQboDeposit',
 };
 
 const stripeRoutes = {
@@ -18,6 +19,7 @@ const userRoutes = {
   createUser: '/user/createUser',
   addTokenInUser: '/user/addTokenInUser',
   createSettings: '/user/createSettings',
+  enableAutoSyncSetting: '/user/createSettings',
   getUserRelated: '/user/getUserRelated',
   manualSync: '/user/manualSync',
   isUserHaveTokens: '/user/isUserHaveTokens',
