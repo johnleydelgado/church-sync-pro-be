@@ -98,11 +98,19 @@ export const getBatches = async (req: Request, res: Response) => {
         const designation = donations.included[index];
         const fundId = designation.relationships.fund.data.id;
         const fund = await fetchFund(fundId, headers);
+        let tempDataPerson = null;
+        const person = donation.relationships.person.data;
+        if (person) {
+          const urlPerson = `https://api.planningcenteronline.com/giving/v2/people/${person.id}`;
+          const getPersonDetails = await axios.get(urlPerson, { headers });
+          tempDataPerson = getPersonDetails.data;
+        }
 
         batchDonations.push({
           donation: donation,
           designation,
           fund,
+          person: tempDataPerson,
         });
       }
 

@@ -7,6 +7,7 @@ interface MappingPcToQboProps {
   AccountRef: string;
   ReceivedFrom: string;
   ClassRef: string;
+  CheckNum: string;
   tempPaymentMethod?: string;
 }
 
@@ -38,6 +39,7 @@ const mapping = (data: any[]): MappingPcToQboProps[] => {
       AccountRef: item.accountRef,
       ReceivedFrom: item.receivedFrom,
       ClassRef: item.classRef,
+      CheckNum: item.attributes.payment_method === 'card' ? '' : item.paymentCheck,
     });
   });
 
@@ -68,6 +70,7 @@ const requestPayload = (data: any[]) => {
             ClassRef: {
               value: item.ClassRef,
             },
+            CheckNum: item.CheckNum,
           },
           Description: item.batchName,
         },

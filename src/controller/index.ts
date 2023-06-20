@@ -151,10 +151,19 @@ export const manualSync = async (req: Request, res: Response) => {
       const accountRef = settingsItem?.account?.value ?? '';
       const receivedFrom = settingsItem?.customer?.value ?? '';
       const classRef = settingsItem?.class?.value ?? '';
+      const paymentCheck = donationsData.attributes.payment_check_number || '';
 
       jsonRes.donation = [
         ...jsonRes.donation,
-        { ...donationsData, fund: fundsData[0] || {}, batch: dataBatch, accountRef, receivedFrom, classRef },
+        {
+          ...donationsData,
+          fund: fundsData[0] || {},
+          batch: dataBatch,
+          accountRef,
+          receivedFrom,
+          classRef,
+          paymentCheck,
+        },
       ];
     }
     if (!isEmpty(jsonRes.donation)) {

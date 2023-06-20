@@ -17,14 +17,17 @@ const { PC_CLIENT_ID, PC_SECRET_APP, PC_REDIRECT, STRIPE_SECRET_KEY, STRIPE_PUB_
 export const getStripePayouts = async (req: Request, res: Response) => {
   const { email } = req.query;
   try {
-    const user = await User.findOne({ where: { email: email as string }, include: [tokens] });
-    if (user) {
-      const userJson = user.toJSON();
+    const data = await tokenEntity.findOne({
+      where: { email: email as string, isEnabled: true },
+      include: tokens,
+    });
 
-      const tokensJson = userJson.tokens.find((item) => item.token_type === 'stripe');
+    const arr = data.tokens.find((item) => item.token_type === 'stripe');
+
+    if (!isEmpty(arr)) {
       let tokensFinalJson = { access_token: '', refresh_token: '' };
 
-      if (!(await checkAccessTokenValidity(tokensJson.access_token))) {
+      if (!(await checkAccessTokenValidity(arr.access_token))) {
         console.log('goes here ==== ?');
         const result = await refreshAccessToken(email as string);
         tokensFinalJson = result;

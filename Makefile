@@ -38,7 +38,9 @@ deploy-supertoken:
 		--allow-unauthenticated \
 		${VPC_CONNECTOR} \
 		--set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://postgres:asd123asd@10.94.96.3/supertokens',SUPERTOKENS_PORT=3567,API_KEYS=18be6f53-2e23-4fcc-bd17-2fecb798106e \
-		--project ${GOOGLE_CLOUD_PROJECT}
+		--project ${GOOGLE_CLOUD_PROJECT} \
+		--no-traffic
+   	 	gcloud run services update-traffic supertokens --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1
 
 deploy-backend:
 	docker build --platform linux/amd64 --cache-from gcr.io/${GOOGLE_CLOUD_PROJECT}/csp-be -t gcr.io/${GOOGLE_CLOUD_PROJECT}/csp-be -f DockerfileBE .
@@ -56,4 +58,6 @@ deploy-backend:
 	--allow-unauthenticated \
 	${VPC_CONNECTOR} \
 	--set-env-vars `cat .env.staging | xargs | tr ' ' ','` \
-	--project ${GOOGLE_CLOUD_PROJECT}
+	--project ${GOOGLE_CLOUD_PROJECT} \
+	--no-traffic
+    gcloud run services update-traffic csp-be --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1
