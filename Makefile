@@ -17,15 +17,21 @@ STAGING_PROJECT=church-sync-pro-385703
 # NOTE once 
 
 deploy-stg:
-	make deploy-supertoken GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging \
+	make deploy-supertoken GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging SUPER_TOKEN=supertokens \
 	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
-	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging \
+	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging PROJECT_NAME=csp-be ENV_VAR=.env.staging \
+	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
+
+deploy-prd:
+	make deploy-supertoken GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=production SUPER_TOKEN=supertokens-prd \
+	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
+	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=production PROJECT_NAME=csp-be-prd ENV_VAR=.env.production \
 	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
 
 deploy-supertoken:
 	docker build --platform linux/amd64 --cache-from gcr.io/${GOOGLE_CLOUD_PROJECT}/supertokens-postgresql:4.4 -t gcr.io/${GOOGLE_CLOUD_PROJECT}/supertokens-postgresql:4.4  -f DockerfileST .
 	docker push gcr.io/${GOOGLE_CLOUD_PROJECT}/supertokens-postgresql:4.4
-	gcloud run deploy supertokens --image gcr.io/${GOOGLE_CLOUD_PROJECT}/supertokens-postgresql:4.4 --project ${GOOGLE_CLOUD_PROJECT} \
+	gcloud run deploy ${SUPER_TOKEN} --image gcr.io/${GOOGLE_CLOUD_PROJECT}/supertokens-postgresql:4.4 --project ${GOOGLE_CLOUD_PROJECT} \
 		--platform managed \
 		--region us-central1 \
 		--port 3567 \
@@ -37,27 +43,25 @@ deploy-supertoken:
 		--ingress all \
 		--allow-unauthenticated \
 		${VPC_CONNECTOR} \
-		--set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://postgres:asd123asd@10.94.96.3/supertokens',SUPERTOKENS_PORT=3567,API_KEYS=18be6f53-2e23-4fcc-bd17-2fecb798106e \
-		--project ${GOOGLE_CLOUD_PROJECT} \
-		--no-traffic
-   	 	gcloud run services update-traffic supertokens --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1
+		--set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://postgres:asd123asd@10.94.96.3/${SUPER_TOKEN}',SUPERTOKENS_PORT=3567,API_KEYS=18be6f53-2e23-4fcc-bd17-2fecb798106e \
+		--project ${GOOGLE_CLOUD_PROJECT}
+	gcloud run services update-traffic ${SUPER_TOKEN} --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1
 
 deploy-backend:
-	docker build --platform linux/amd64 --cache-from gcr.io/${GOOGLE_CLOUD_PROJECT}/csp-be -t gcr.io/${GOOGLE_CLOUD_PROJECT}/csp-be -f DockerfileBE .
-	docker push gcr.io/${GOOGLE_CLOUD_PROJECT}/csp-be
-	gcloud run deploy csp-be --image gcr.io/${GOOGLE_CLOUD_PROJECT}/csp-be --project ${GOOGLE_CLOUD_PROJECT} \
-	--platform managed \
-	--region us-central1 \
-	--port 8080 \
-	--cpu 1 \
-	--memory 512Mi \
-	--concurrency 5 \
-	--max-instances 10 \
-	--timeout 1200 \
-	--ingress all \
-	--allow-unauthenticated \
-	${VPC_CONNECTOR} \
-	--set-env-vars `cat .env.staging | xargs | tr ' ' ','` \
-	--project ${GOOGLE_CLOUD_PROJECT} \
-	--no-traffic
-    gcloud run services update-traffic csp-be --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1
+	docker build --platform linux/amd64 --cache-from gcr.io/${GOOGLE_CLOUD_PROJECT}/${PROJECT_NAME} -t gcr.io/${GOOGLE_CLOUD_PROJECT}/${PROJECT_NAME} -f DockerfileBE .
+	docker push gcr.io/${GOOGLE_CLOUD_PROJECT}/${PROJECT_NAME}
+	gcloud run deploy ${PROJECT_NAME} --image gcr.io/${GOOGLE_CLOUD_PROJECT}/${PROJECT_NAME} --project ${GOOGLE_CLOUD_PROJECT} \
+		--platform managed \
+		--region us-central1 \
+		--port 8080 \
+		--cpu 1 \
+		--memory 512Mi \
+		--concurrency 5 \
+		--max-instances 10 \
+		--timeout 1200 \
+		--ingress all \
+		--allow-unauthenticated \
+		${VPC_CONNECTOR} \
+		--set-env-vars `cat ${ENV_VAR} | xargs | tr ' ' ','` \
+		--project ${GOOGLE_CLOUD_PROJECT}
+	gcloud run services update-traffic ${PROJECT_NAME} --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1

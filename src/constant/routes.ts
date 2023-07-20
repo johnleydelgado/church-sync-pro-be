@@ -12,6 +12,7 @@ const qboRoutes = {
 const stripeRoutes = {
   getStripePayouts: '/stripe/getStripePayouts',
   syncStripePayout: '/stripe/syncStripePayout',
+  syncStripePayoutRegistration: '/stripe/syncStripePayoutRegistration',
 };
 
 const userRoutes = {

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createPayment, healthCheck, manualSync, sendEmailInvitation, tesst } from '../controller';
+import { createPayment, deleteBookeeper, healthCheck, manualSync, sendEmailInvitation, tesst } from '../controller';
 import {
   authPlanningCenter,
   authQuickBook,
@@ -28,7 +28,8 @@ import {
 } from '../controller/user';
 import { addTokenInUser } from '../controller/db';
 import { deleteQboDeposit, getAllQboData } from '../controller/qbo';
-import { getStripePayouts, syncStripePayout } from '../controller/stripe';
+import { getStripePayouts, syncStripePayout, syncStripePayoutRegistration } from '../controller/stripe';
+import { automationScheduler } from '../controller/automation';
 const routers = Router();
 // routers.post("/start", authorized, startTask);
 routers.get('/', tesst);
@@ -42,6 +43,7 @@ routers.get('/healthCheck', verifySession(), healthCheck);
 
 // routers.get('/getBatches', verifySession(), getBatches);
 routers.post('/createPayment', verifySession(), createPayment);
+routers.post('/deleteBookeeper', verifySession(), deleteBookeeper);
 
 routers.get(pcRoutes.getFunds, getFunds);
 routers.post(pcRoutes.getBatches, getBatches);
@@ -49,6 +51,7 @@ routers.get(pcRoutes.getRegistrationEvents, verifySession(), getRegistrationEven
 
 routers.get(stripeRoutes.getStripePayouts, verifySession(), getStripePayouts);
 routers.get(stripeRoutes.syncStripePayout, verifySession(), syncStripePayout);
+routers.get(stripeRoutes.syncStripePayoutRegistration, verifySession(), syncStripePayoutRegistration);
 
 routers.post(qboRoutes.getAllQboData, verifySession(), getAllQboData);
 routers.post(qboRoutes.deleteQboDeposit, verifySession(), deleteQboDeposit);
@@ -68,5 +71,7 @@ routers.post(userRoutes.sendEmailInvitation, sendEmailInvitation);
 routers.post(userRoutes.checkValidInvitation, checkValidInvitation);
 routers.post(userRoutes.updateInvitationStatus, updateInvitationStatus);
 routers.post(userRoutes.bookkeeperList, verifySession(), bookkeeperList);
+
+routers.post('/automationScheduler', automationScheduler);
 
 export default routers;

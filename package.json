@@ -9,6 +9,7 @@
     "db:migrate:gen": "npx sequelize-cli migration:generate --name",
     "db:migrate": "NODE_ENV=development npx sequelize-cli db:migrate",
     "db:uat:migrate": "NODE_ENV=uat npx sequelize-cli db:migrate",
+    "db:prd:migrate": "NODE_ENV=uat-prd npx sequelize-cli db:migrate",
     "db:migrate:undo": "npx sequelize-cli db:migrate:undo",
     "db:migrate:undo:all": "npx sequelize-cli db:migrate:undo:all",
     "db:uat:migrate:undo:all": "NODE_ENV=staging npx sequelize-cli db:migrate:undo:all",

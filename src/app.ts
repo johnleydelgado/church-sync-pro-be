@@ -197,11 +197,11 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 
 app.use('/csp', routes);
 
-cron.schedule('*/5 * * * *', () => {
-  // This function will run every minute
-  getallUsers();
-  console.log('Running cron job...');
-});
+// cron.schedule('*/5 * * * *', () => {
+//   // This function will run every minute
+//   getallUsers();
+//   console.log('Running cron job...');
+// });
 
 app.use((err: errorObj, req: Request, res: Response, next: NextFunction) => {
   if (err.name === 'UnauthorizedError') {

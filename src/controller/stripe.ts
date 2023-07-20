@@ -72,12 +72,16 @@ export const getStripePayouts = async (req: Request, res: Response) => {
 };
 
 export const syncStripePayout = async (req: Request, res: Response) => {
-  const { email, donationId, fundName, payoutDate, refreshToken } = req.query; //refreshToken is just an empty value
+  const { email, donationId, fundName, payoutDate } = req.query; //refreshToken is just an empty value
   try {
     const tokenEntity = await generatePcToken(email as string);
     const user = await User.findOne({
       where: { email: email as string },
     });
+
+    if (isEmpty(tokenEntity)) {
+      return responseError({ res, code: 202, data: 'PCO token is null' });
+    }
 
     const { access_token } = tokenEntity;
 
@@ -94,16 +98,17 @@ export const syncStripePayout = async (req: Request, res: Response) => {
         Authorization: `Bearer ${access_token}`,
       },
     };
+
     const response = await axios(config);
 
     const settingsJson = userSettingsExist.dataValues.settingsData as any;
-    const settingsItem = settingsJson.find(
+    const settingRegistration = settingsJson.find(
       (item: SettingsJsonProps) => item.fundName.toLowerCase() === String(fundName).toLowerCase(),
     );
 
-    const accountRef = settingsItem?.account?.value ?? '';
-    const receivedFrom = settingsItem?.customer?.value ?? '';
-    const classRef = settingsItem?.class?.value ?? '';
+    const accountRef = settingRegistration?.account?.value ?? '';
+    const receivedFrom = settingRegistration?.customer?.value ?? '';
+    const classRef = settingRegistration?.class?.value ?? '';
 
     const data = response.data.data;
     const finalData = [
@@ -114,28 +119,127 @@ export const syncStripePayout = async (req: Request, res: Response) => {
         receivedFrom,
         classRef,
         batch: {
+          id: `Stripe payout - ${payoutDate}`,
           attributes: {
             description: `Stripe payout ${data.attributes.created_at}`,
             created_at: data.attributes.created_at,
           },
         },
+        paymentCheck: '',
       },
     ];
     const responsePayload = requestPayload(finalData);
 
     for (const payloadJson of responsePayload) {
-      await automationDeposit(email as string, payloadJson);
-      await UserSync.create({
-        syncedData: finalData,
-        userId: user.id,
-        batchId: `Stripe payout - ${payoutDate}`,
+      const batchIdF = finalData[0].batch.id;
+
+      const synchedBatchesData = await UserSync.findAll({
+        where: { userId: user.id, batchId: batchIdF as string },
+        attributes: ['id', 'batchId', 'createdAt'],
       });
+
+      if (isEmpty(synchedBatchesData)) {
+        const bqoCreatedDataId = await automationDeposit(email as string, payloadJson);
+        await UserSync.create({
+          syncedData: finalData,
+          userId: user.id,
+          batchId: `Stripe payout - ${payoutDate}`,
+          donationId: bqoCreatedDataId['Id'] || '',
+        });
+      }
     }
 
     return responseSuccess(res, 'success');
   } catch (e) {
-    if (e.response) return responseError({ res, code: 500, data: e.response.data.errors[0] });
+    console.log('ERRO:::', e.response.data);
+    if (e.response) return responseError({ res, code: 204, data: e.response.data.errors[0] });
     return responseError({ res, code: 500, data: e });
+  }
+};
+
+export const syncStripePayoutRegistration = async (req: Request, res: Response) => {
+  const { email, fundName, payoutDate, amount } = req.query; //refreshToken is just an empty value
+  try {
+    const user = await User.findOne({
+      where: { email: email as string },
+    });
+
+    if (isEmpty(user)) {
+      return responseError({ res, code: 500, data: 'Empty User' });
+    }
+
+    const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
+
+    const settingsJson = userSettingsExist.dataValues.settingsData as any;
+    const settingRegistration = settingsJson.find(
+      (item: SettingsJsonProps) => item.fundName.toLowerCase() === String(fundName).toLowerCase(),
+    );
+    console.log('fundNamefasd', settingRegistration, fundName);
+    const accountRef = settingRegistration?.account?.value ?? '';
+    const receivedFrom = settingRegistration?.customer?.value ?? '';
+    const classRef = settingRegistration?.class?.value ?? '';
+
+    const now = new Date();
+    const unixTimeNow = Math.floor(now.getTime() / 1000);
+    // const data = response.data.data;
+    const finalData = [
+      {
+        type: 'Donation',
+        id: 'stripe_' + unixTimeNow,
+        payoutDate,
+        accountRef,
+        receivedFrom,
+        classRef,
+        attributes: {
+          amount_cents: amount,
+          amount_currency: 'USD',
+          completed_at: '2023-04-04T13:45:06Z',
+          created_at: '2023-04-04T13:44:54Z',
+          fee_cents: 0,
+          fee_currency: 'USD',
+          payment_brand: null,
+          payment_check_dated_at: null,
+          payment_check_number: null,
+          payment_last4: null,
+          payment_method: 'stripe',
+          payment_method_sub: null,
+          payment_status: 'succeeded',
+          received_at: '2023-04-04T13:44:54Z',
+          refundable: true,
+          refunded: false,
+          updated_at: '2023-04-04T13:45:06Z',
+        },
+        batch: {
+          attributes: {
+            description: `Stripe payout ${payoutDate}`,
+            created_at: payoutDate,
+          },
+        },
+        paymentCheck: '',
+      },
+    ];
+    const responsePayload = requestPayload(finalData);
+
+    for (const payloadJson of responsePayload) {
+      const bqoCreatedDataId = await automationDeposit(email as string, payloadJson);
+      const synchedBatchesData = await UserSync.findAll({
+        where: { userId: user.id, batchId: `Stripe payout - ${payoutDate}` },
+        attributes: ['id', 'batchId', 'createdAt'],
+      });
+      if (isEmpty(synchedBatchesData)) {
+        await UserSync.create({
+          syncedData: finalData,
+          userId: user.id,
+          batchId: `Stripe payout - ${payoutDate}`,
+          donationId: bqoCreatedDataId['Id'] || '',
+        });
+      }
+    }
+
+    return responseSuccess(res, 'success');
+  } catch (e) {
+    if (e.response) return responseError({ res, code: 204, data: e.response.data.errors[0] });
+    return responseError({ res, code: 204, data: e });
   }
 };
 

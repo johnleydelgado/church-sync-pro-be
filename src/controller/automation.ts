@@ -15,8 +15,9 @@ import { Op } from 'sequelize';
 import { getDayBoundary } from '../utils/helper';
 import tokenEntity from '../db/models/tokenEntity';
 import tokens from '../db/models/tokens';
-import { responseError } from '../utils/response';
+import { responseError, responseSuccess } from '../utils/response';
 import { getBatchInDonationPCO } from './planning-center';
+import { Request, Response } from 'express';
 
 interface PaymentMethodsResponse {
   QueryResponse: {
@@ -254,10 +255,9 @@ export const automationDeposit = async (email: string, json: any) => {
 
     if (!isEmpty(paymentMethods)) {
       const paymentMethodsList = paymentMethods.QueryResponse.PaymentMethod;
-
-      const paymentMethod = paymentMethodsList.find(
-        (el) => el.Name.toLowerCase() === fJson.tempPaymentMethod.toLowerCase(),
-      );
+      const tempPayment =
+        fJson.tempPaymentMethod.toLowerCase() === 'stripe' ? 'visa' : fJson.tempPaymentMethod.toLowerCase();
+      const paymentMethod = paymentMethodsList.find((el) => el.Name.toLowerCase() === tempPayment);
       fJson.Line[0].DepositLineDetail.PaymentMethodRef = { value: paymentMethod.Id };
 
       fJson = omit(fJson, 'tempPaymentMethod');
@@ -333,5 +333,16 @@ export const generatePcToken = async (email: string) => {
   } catch (error) {
     // await tokens.destroy({ where: { id: tokenEntityId } });
     throw new Error('invalid refresh token');
+  }
+};
+
+export const automationScheduler = async (req: Request, res: Response) => {
+  try {
+    await getallUsers();
+    return responseSuccess(res, 'Sync completed');
+  } catch (err) {
+    // handle error here, perhaps by sending an error response
+    console.error(err);
+    return res.status(500).json({ error: 'An error occurred' });
   }
 };

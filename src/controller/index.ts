@@ -47,6 +47,17 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
   }
 };
 
+export const deleteBookeeper = async (req: Request, res: Response) => {
+  const { id } = req.body;
+  try {
+    await bookkeeper.destroy({ where: { id } });
+
+    return responseSuccess(res, 'deleted');
+  } catch (e) {
+    return responseError({ res, code: 500, data: e });
+  }
+};
+
 export const getBatches = async (req: Request, res: Response, next: NextFunction) => {
   const { refresh_token } = req.body;
   const config = {

@@ -51,11 +51,24 @@
         "idle": 10000
       }
     },
+    "uat-prd": {
+      "username": "postgres",
+      "password": "asd123asd",
+      "database": "supertokens-prd",
+      "host": "34.27.255.216",
+      "dialect": "postgres",
+      "pool": {
+        "max": 5,
+        "min": 0,
+        "acquire": 30000,
+        "idle": 10000
+      }
+    },
     "production": {
-      "username": "johnley00",
-      "password": "1234",
-      "database": "supertokens",
-      "host": "172.24.3.100",
+      "username": "postgres",
+      "password": "asd123asd",
+      "database": "supertokens-prd",
+      "host": "10.94.96.3",
       "dialect": "postgres",
       "pool": {
         "max": 5,

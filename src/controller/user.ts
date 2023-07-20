@@ -138,7 +138,7 @@ export const deleteUserToken = async (req: Request, res: Response) => {
   const { id } = req.body;
   try {
     if (id) {
-      await tokens.update({ refresh_token: '', access_token: '' }, { where: { id } });
+      await tokens.destroy({ where: { id } });
       return responseSuccess(res, 'Delete token success');
     }
     return responseError({ res, code: 204, data: false });
