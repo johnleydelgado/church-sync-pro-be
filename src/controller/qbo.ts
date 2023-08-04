@@ -34,7 +34,6 @@ export const getAllQboData = async (req: Request, res: Response) => {
   if (!arr) {
     return responseError({ res, code: 500, data: 'No qbo token' });
   }
-
   let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
 
   if (!quickbookAuth.isAccessTokenValid()) {
@@ -43,30 +42,41 @@ export const getAllQboData = async (req: Request, res: Response) => {
   }
 
   const qboTokens = {
-    ACCESS_TOKEN: tokenJson.access_token,
-    REALM_ID: tokenJson.realm_id,
-    REFRESH_TOKEN: tokenJson.refresh_token,
+    ACCESS_TOKEN: tokenJson?.access_token,
+    REALM_ID: tokenJson?.realm_id,
+    REFRESH_TOKEN: tokenJson?.refresh_token,
   };
 
   const fetchAccounts = async () => {
-    return new Promise(async (resolve, reject) => {
-      await quickBookApi(qboTokens).findAccounts(
-        {
-          AccountType: 'Income',
-          desc: 'MetaData.LastUpdatedTime',
-        },
-        function (err, accounts) {
-          if (err) {
-            reject(err);
-          }
-          const accountList = [];
-          accounts.QueryResponse.Account.forEach(function (account) {
-            accountList.push({ value: account.Id, name: account.Name });
-          });
-          resolve(accountList);
-        },
-      );
-    });
+    const accountTypes = ['Income', 'Revenue'];
+
+    let accountList = [];
+
+    for (let type of accountTypes) {
+      await new Promise<void>((resolve, reject) => {
+        quickBookApi(qboTokens).findAccounts(
+          {
+            AccountType: type,
+            desc: 'MetaData.LastUpdatedTime',
+          },
+          function (err, accounts) {
+            if (err) {
+              reject(err);
+              return; // important to prevent further execution in case of error
+            }
+            if (accounts && accounts.QueryResponse && accounts.QueryResponse.Account) {
+              accounts.QueryResponse.Account.forEach(function (account) {
+                accountList.push({ value: account.Id, name: account.Name });
+              });
+            }
+            resolve();
+          },
+        );
+      }).catch((error) => {
+        console.error(`Error fetching accounts for type ${type}:`, error);
+      });
+    }
+    return accountList;
   };
 
   const fetchClasses = async () => {

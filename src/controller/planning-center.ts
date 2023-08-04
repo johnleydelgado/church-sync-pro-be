@@ -4,8 +4,12 @@ import { Request, Response } from 'express';
 import { responseError, responseSuccess } from '../utils/response';
 import { isEmpty } from 'lodash';
 import User from '../db/models/user';
-import { generatePcToken } from './automation';
+import { generatePcToken, generateQBOToken } from './automation';
 import UserSync from '../db/models/UserSync';
+import quickBookApi from '../utils/quickBookApi';
+import tokenEntity from '../db/models/tokenEntity';
+import tokens from '../db/models/tokens';
+import quickbookAuth from '../utils/quickbookAuth';
 
 const BASE_URL = 'https://api.planningcenteronline.com/giving/v2';
 
@@ -16,10 +20,9 @@ export const getBatchInDonationPCO = async ({ accessToken, dateRange }: { access
     },
   };
   try {
-    const url = `https://api.planningcenteronline.com/giving/v2/batches`;
+    const url = BASE_URL + `/batches`;
     const getBatchesRes = await axios.get(url, config);
     const tempData = getBatchesRes.data.data;
-
     if (isEmpty(tempData)) {
       //return empty here
       return [];
@@ -154,25 +157,81 @@ export const getFunds = async (req: Request, res: Response) => {
 export const getRegistrationEvents = async (req: Request, res: Response) => {
   const { email } = req.query;
 
-  try {
-    const tokenEntity = await generatePcToken(email as string);
+  const data = await tokenEntity.findOne({
+    where: { email: email as string, isEnabled: true },
+    include: tokens,
+  });
 
-    const { access_token } = tokenEntity;
-    if (!isEmpty(tokenEntity)) {
-      const config = {
-        method: 'get',
-        url: 'https://api.planningcenteronline.com/calendar/v2/events',
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-        },
-      };
-
-      const response = await axios(config);
-      const data = response.data.data;
-      return responseSuccess(res, data);
-    }
-    return responseError({ res, code: 500, data: 'not found !' });
-  } catch (e) {
-    return responseError({ res, code: 500, data: e });
+  if (!data) {
+    console.log('Empty user data', email);
+    return res.status(500).json({ error: 'Empty user data' });
   }
+
+  const arr = data.tokens.find((item) => item.token_type === 'qbo');
+
+  if (!arr) {
+    return responseError({ res, code: 500, data: 'No qbo token' });
+  }
+  let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
+
+  if (!quickbookAuth.isAccessTokenValid()) {
+    const result = await generateQBOToken(arr.refresh_token, email as string);
+    tokenJson = result;
+  }
+
+  const qboTokens = {
+    ACCESS_TOKEN: tokenJson?.access_token,
+    REALM_ID: tokenJson?.realm_id,
+    REFRESH_TOKEN: tokenJson?.refresh_token,
+  };
+
+  const fetchCustomers = async () => {
+    return new Promise(async (resolve, reject) => {
+      await quickBookApi(qboTokens).findCustomers(
+        {
+          fetchAll: true,
+        },
+        (err, customers) => {
+          if (err) {
+            reject(err);
+          }
+          const customerList = [];
+          customers.QueryResponse.Customer.forEach(function (item) {
+            if (item.IsProject) customerList.push({ value: item.Id, name: item.DisplayName });
+          });
+          resolve(customerList);
+        },
+      );
+    });
+  };
+  try {
+    const results = await fetchCustomers();
+    return responseSuccess(res, results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+
+  // const { email } = req.query;
+
+  // try {
+  //   const tokenEntity = await generatePcToken(email as string);
+
+  //   const { access_token } = tokenEntity;
+  //   if (!isEmpty(tokenEntity)) {
+  //     const config = {
+  //       method: 'get',
+  //       url: 'https://api.planningcenteronline.com/calendar/v2/events',
+  //       headers: {
+  //         Authorization: `Bearer ${access_token}`,
+  //       },
+  //     };
+
+  //     const response = await axios(config);
+  //     const data = response.data.data;
+  //     return responseSuccess(res, data);
+  //   }
+  //   return responseError({ res, code: 500, data: 'not found !' });
+  // } catch (e) {
+  //   return responseError({ res, code: 500, data: e });
+  // }
 };

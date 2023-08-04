@@ -9,7 +9,7 @@ export interface tokenProps {
   REALM_ID: string;
 }
 
-const { QBO_KEY: KEY, QBO_SECRET: SECRET } = process.env;
+const { QBO_KEY: KEY, QBO_SECRET: SECRET, NODE_ENV } = process.env;
 
 const quickBookApi = ({ ACCESS_TOKEN, REFRESH_TOKEN, REALM_ID }: tokenProps) =>
   new QuickBooks(
@@ -18,8 +18,8 @@ const quickBookApi = ({ ACCESS_TOKEN, REFRESH_TOKEN, REALM_ID }: tokenProps) =>
     ACCESS_TOKEN,
     false, // no token secret for oAuth 2.0
     REALM_ID,
-    true, // use the sandbox?
-    true, // enable debugging?
+    NODE_ENV === 'development' ? true : false, // use the sandbox?
+    NODE_ENV === 'development' ? true : false, // enable debugging?
     null, // set minorversion, or null for the latest version
     '2.0', // oAuth version
     REFRESH_TOKEN,

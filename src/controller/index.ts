@@ -17,7 +17,7 @@ import bookkeeper from '../db/models/bookkeeper';
 import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
 
 const sgMail = require('@sendgrid/mail');
-const { SENDGRID_API_KEY, INVITATION_URL } = process.env;
+const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
 
 export const sendEmailInvitation = async (req: Request, res: Response) => {
   const { name, emailTo, clientId } = req.body;
@@ -42,6 +42,38 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
     };
     await sgMail.send(msg);
     return responseSuccess(res, 'email sent');
+  } catch (e) {
+    return responseError({ res, code: 500, data: e });
+  }
+};
+
+export const sendPasswordReset = async (req: Request, res: Response) => {
+  const { email } = req.body;
+  const rand = crypto.randomBytes(16).toString('hex');
+
+  sgMail.setApiKey(SENDGRID_API_KEY);
+  const gotoUrl = RESET_PASSWORD_URL + `?email=${email}`;
+  // const htmlFile = await fs.promises.readFile('src/template/msg.html', 'utf-8');
+
+  try {
+    const userDetails = await User.findOne({ where: { email } });
+    if (userDetails === null) {
+      return responseError({ res, code: 200, data: 'User not found !' });
+    }
+
+    const msg = {
+      to: email, // Change to your recipient
+      from: 'support@churchsyncpro.com', // Change to your verified sender
+      subject: 'We have acknowledged your request to change your password.',
+      // text: 'and easy to do anywhere, even with Node.js',
+      templateId: 'd-62ebb25d19fd42b8aebdf940d93a2fc7',
+      dynamicTemplateData: {
+        name: userDetails.firstName,
+        gotoUrl,
+      },
+    };
+    await sgMail.send(msg);
+    return responseSuccess(res, 'email sent password reset');
   } catch (e) {
     return responseError({ res, code: 500, data: e });
   }

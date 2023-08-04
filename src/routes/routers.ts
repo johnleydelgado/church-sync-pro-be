@@ -1,5 +1,13 @@
 import { Router } from 'express';
-import { createPayment, deleteBookeeper, healthCheck, manualSync, sendEmailInvitation, tesst } from '../controller';
+import {
+  createPayment,
+  deleteBookeeper,
+  healthCheck,
+  manualSync,
+  sendEmailInvitation,
+  sendPasswordReset,
+  tesst,
+} from '../controller';
 import {
   authPlanningCenter,
   authQuickBook,
@@ -68,6 +76,7 @@ routers.post(userRoutes.getTokenList, verifySession(), getTokenList);
 routers.post(userRoutes.updateUserToken, verifySession(), updateUserToken);
 routers.post(userRoutes.deleteUserToken, verifySession(), deleteUserToken);
 routers.post(userRoutes.sendEmailInvitation, sendEmailInvitation);
+routers.post(userRoutes.sendPasswordReset, sendPasswordReset);
 routers.post(userRoutes.checkValidInvitation, checkValidInvitation);
 routers.post(userRoutes.updateInvitationStatus, updateInvitationStatus);
 routers.post(userRoutes.bookkeeperList, verifySession(), bookkeeperList);

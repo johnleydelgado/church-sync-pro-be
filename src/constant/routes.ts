@@ -28,6 +28,7 @@ const userRoutes = {
   updateUserToken: '/user/updateUserToken',
   deleteUserToken: '/user/deleteUserToken',
   sendEmailInvitation: '/user/sendEmailInvitation',
+  sendPasswordReset: '/user/sendPasswordReset',
   checkValidInvitation: '/user/checkValidInvitation',
   updateInvitationStatus: '/user/updateInvitationStatus',
   bookkeeperList: '/user/bookkeeperList',

@@ -128,6 +128,7 @@ export const syncStripePayout = async (req: Request, res: Response) => {
         paymentCheck: '',
       },
     ];
+
     const responsePayload = requestPayload(finalData);
 
     for (const payloadJson of responsePayload) {
@@ -170,11 +171,11 @@ export const syncStripePayoutRegistration = async (req: Request, res: Response) 
 
     const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
 
-    const settingsJson = userSettingsExist.dataValues.settingsData as any;
+    const settingsJson = userSettingsExist.dataValues.settingRegistrationData as any;
     const settingRegistration = settingsJson.find(
-      (item: SettingsJsonProps) => item.fundName.toLowerCase() === String(fundName).toLowerCase(),
+      (item: { class: { label: string } }) => item.class.label.toLowerCase() === String(fundName).toLowerCase(),
     );
-    console.log('fundNamefasd', settingRegistration, fundName);
+
     const accountRef = settingRegistration?.account?.value ?? '';
     const receivedFrom = settingRegistration?.customer?.value ?? '';
     const classRef = settingRegistration?.class?.value ?? '';
@@ -218,6 +219,7 @@ export const syncStripePayoutRegistration = async (req: Request, res: Response) 
         paymentCheck: '',
       },
     ];
+
     const responsePayload = requestPayload(finalData);
 
     for (const payloadJson of responsePayload) {
