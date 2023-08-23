@@ -346,3 +346,38 @@ export const automationScheduler = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'An error occurred' });
   }
 };
+
+export const latestFundAutomation = async (req: Request, res: Response) => {
+  try {
+    const userSettings = await UserSettings.findAll({ include: User });
+    const promise = await Promise.all(
+      userSettings.map(async (a) => {
+        const email = a.user.email;
+        const tokenEntity = await generatePcToken(email as string);
+
+        if (isEmpty(tokenEntity)) {
+          return responseError({ res, code: 202, data: 'PCO token is null' });
+        }
+
+        const { access_token } = tokenEntity;
+
+        const config = {
+          method: 'get',
+          url: 'https://api.planningcenteronline.com/giving/v2/funds',
+          headers: {
+            Authorization: `Bearer ${access_token}`,
+          },
+        };
+
+        const response = await axios(config);
+        return response.data;
+      }),
+    );
+    console.log('promise', promise);
+    return responseSuccess(res, 'Sync completed');
+  } catch (err) {
+    // handle error here, perhaps by sending an error response
+    console.error(err);
+    return res.status(500).json({ error: 'An error occurred' });
+  }
+};

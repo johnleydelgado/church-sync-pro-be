@@ -40,21 +40,24 @@ export const createUser = async (req: Request, res: Response) => {
 };
 
 export const createSettings = async (req: Request, res: Response) => {
-  const { email, settingsData, isAutomationEnable, settingRegistrationData } = req.body;
+  const { email, settingsData, settingRegistrationData } = req.body;
   try {
     const userData = await Users.findOne({ where: { email } });
     if (userData !== null) {
       const user = userData.toJSON();
 
       const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
-      const dataToUpdateOrCreate = settingRegistrationData
-        ? { settingRegistrationData, isAutomationEnable }
-        : { settingsData, isAutomationEnable };
 
+      const dataToUpdateOrCreate = settingRegistrationData ? { settingRegistrationData } : { settingsData };
       if (userSettingsExist) {
         await UserSettings.update(dataToUpdateOrCreate, { where: { userId: user.id } });
       } else {
-        await UserSettings.create({ ...dataToUpdateOrCreate, userId: user.id });
+        await UserSettings.create({
+          ...dataToUpdateOrCreate,
+          userId: user.id,
+          isAutomationEnable: false,
+          isAutomationRegistration: false,
+        });
       }
 
       return responseSuccess(res, 'success');
@@ -67,7 +70,8 @@ export const createSettings = async (req: Request, res: Response) => {
 };
 
 export const enableAutoSyncSetting = async (req: Request, res: Response) => {
-  const { email, isAutomationEnable } = req.body;
+  const { email, isAutomationEnable, isAutomationRegistration } = req.body;
+  console.log('tetasdasd', { isAutomationEnable, isAutomationRegistration, email });
 
   try {
     const userData = await Users.findOne({ where: { email } });
@@ -75,9 +79,9 @@ export const enableAutoSyncSetting = async (req: Request, res: Response) => {
       const user = userData.toJSON();
       const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
       if (userSettingsExist) {
-        await UserSettings.update({ isAutomationEnable }, { where: { userId: user.id } });
+        await UserSettings.update({ isAutomationEnable, isAutomationRegistration }, { where: { userId: user.id } });
       } else {
-        await UserSettings.create({ isAutomationEnable, userId: user.id });
+        await UserSettings.create({ isAutomationEnable, isAutomationRegistration, userId: user.id });
       }
 
       return responseSuccess(res, 'success');
@@ -277,7 +281,13 @@ export const bookkeeperList = async (req: Request, res: Response) => {
     }
 
     console.log('clientId', clientId);
-    const bookkeeperData = await bookkeeper.findAll({ where: condition, include: [{ model: User, as: 'Client' }] });
+    const bookkeeperData = await bookkeeper.findAll({
+      where: condition,
+      include: [
+        { model: User, as: 'Client' },
+        { model: User, as: 'User' },
+      ],
+    });
 
     if (bookkeeperData) {
       return responseSuccess(res, bookkeeperData);

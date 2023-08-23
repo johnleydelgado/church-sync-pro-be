@@ -18,8 +18,8 @@ const quickBookApi = ({ ACCESS_TOKEN, REFRESH_TOKEN, REALM_ID }: tokenProps) =>
     ACCESS_TOKEN,
     false, // no token secret for oAuth 2.0
     REALM_ID,
-    NODE_ENV === 'development' ? true : false, // use the sandbox?
-    NODE_ENV === 'development' ? true : false, // enable debugging?
+    NODE_ENV === 'production' ? false : true, // use the sandbox?
+    NODE_ENV === 'production' ? false : true, // enable debugging?
     null, // set minorversion, or null for the latest version
     '2.0', // oAuth version
     REFRESH_TOKEN,

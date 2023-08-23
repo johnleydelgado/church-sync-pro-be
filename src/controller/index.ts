@@ -15,6 +15,7 @@ import User from '../db/models/user';
 import crypto from 'crypto';
 import bookkeeper from '../db/models/bookkeeper';
 import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
+import ThirdParty from 'supertokens-node/recipe/thirdparty';
 
 const sgMail = require('@sendgrid/mail');
 const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
@@ -32,11 +33,11 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
     const msg = {
       to: emailTo, // Change to your recipient
       from: 'support@churchsyncpro.com', // Change to your verified sender
-      subject: 'Invitation in Church Sync Pro',
+      subject: 'You have been invited to take on the role of a bookkeeper.',
       // text: 'and easy to do anywhere, even with Node.js',
       templateId: 'd-4529481214ab4c4e85018b4dfb3b6f20',
       dynamicTemplateData: {
-        name,
+        // name,
         inviteLink,
       },
     };
@@ -141,7 +142,7 @@ export const createPayment = async (req: Request, res: Response) => {
 };
 
 export const manualSync = async (req: Request, res: Response) => {
-  const { email, dataBatch, batchId = '0' } = req.body; // refresh token if for pc
+  const { email, dataBatch, batchId = '0', realBatchId } = req.body; // refresh token if for pc
   const jsonRes = { donation: [] as any }; //this is an array object
   try {
     const tokenEntity = await generatePcToken(String(email));
@@ -161,8 +162,10 @@ export const manualSync = async (req: Request, res: Response) => {
       return responseError({ res, code: 204, data: 'Dont have batch id' });
     }
 
+    console.log('tesad', email, dataBatch, batchId);
+
     const synchedBatchesData = await UserSync.findAll({
-      where: { userId: user.id, batchId: batchId as string },
+      where: { userId: user.id, batchId: realBatchId as string },
       attributes: ['id', 'batchId', 'createdAt'],
     });
 
@@ -222,7 +225,7 @@ export const manualSync = async (req: Request, res: Response) => {
           await UserSync.create({
             syncedData: jsonRes.donation,
             userId: user.id,
-            batchId: batchId,
+            batchId: `${batchId} - ${email}`,
             donationId: bqoCreatedDataId['Id'] || '',
           });
         }

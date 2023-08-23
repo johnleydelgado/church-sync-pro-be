@@ -92,42 +92,121 @@ export const getBatches = async (req: Request, res: Response) => {
 
     const batchesData = await getBatchInDonationPCO({ accessToken: String(access_token), dateRange: dateRange || '' });
 
+    // jsonRes.batches = batchesData;
+
+    jsonRes.batches = [];
+
     for (const batch of batchesData) {
       const batchId = batch.id;
-
       const donations = await fetchDonationsForBatch(batchId, headers);
-      const batchDonations = [];
-      for (const [index, donation] of donations.data.entries()) {
-        const designation = donations.included[index];
-        const fundId = designation.relationships.fund.data.id;
-        const fund = await fetchFund(fundId, headers);
-        let tempDataPerson = null;
-        const person = donation.relationships.person.data;
-        if (person) {
-          const urlPerson = `https://api.planningcenteronline.com/giving/v2/people/${person.id}`;
-          const getPersonDetails = await axios.get(urlPerson, { headers });
-          tempDataPerson = getPersonDetails.data;
-        }
-
-        batchDonations.push({
-          donation: donation,
-          designation,
-          fund,
-          person: tempDataPerson,
-        });
-      }
 
       jsonRes.batches.push({
         batch,
-        donations: batchDonations,
+        donations,
       });
     }
+
+    // for (const batch of batchesData) {
+    //   const batchId = batch.id;
+
+    //   const donations = await fetchDonationsForBatch(batchId, headers);
+    //   const batchDonations = [];
+    //   for (const [index, donation] of donations.data.entries()) {
+    //     const designation = donations.included[index];
+    //     const fundId = designation.relationships.fund.data.id;
+    //     const fund = await fetchFund(fundId, headers);
+    //     let tempDataPerson = null;
+    //     const person = donation.relationships.person.data;
+    //     if (person) {
+    //       const urlPerson = `https://api.planningcenteronline.com/giving/v2/people/${person.id}`;
+    //       const getPersonDetails = await axios.get(urlPerson, { headers });
+    //       tempDataPerson = getPersonDetails.data;
+    //     }
+
+    //     batchDonations.push({
+    //       donation: donation,
+    //       designation,
+    //       fund,
+    //       person: tempDataPerson,
+    //     });
+    //   }
+
+    //   jsonRes.batches.push({
+    //     batch,
+    //     donations: batchDonations,
+    //   });
+    // }
 
     return responseSuccess(res, jsonRes);
   } catch (e) {
     return responseError({ res, code: 500, data: e });
   }
 };
+
+// export const getBatches = async (req: Request, res: Response) => {
+//   const { email, dateRange } = req.body;
+//   const jsonRes = { batches: [], synchedBatches: [] };
+
+//   try {
+//     const tokenEntity = await generatePcToken(email as string);
+//     const user = await User.findOne({
+//       where: { email: email as string },
+//     });
+
+//     if (isEmpty(tokenEntity)) {
+//       return responseError({ res, code: 202, data: 'PCO token is null' });
+//     }
+
+//     const { access_token } = tokenEntity;
+//     const synchedBatchesData = await UserSync.findAll({
+//       where: { userId: user.id },
+//       attributes: ['id', 'batchId', 'createdAt', 'donationId'],
+//     });
+
+//     jsonRes.synchedBatches = synchedBatchesData;
+
+//     const headers = {
+//       Authorization: `Bearer ${access_token}`,
+//     };
+
+//     const batchesData = await getBatchInDonationPCO({ accessToken: String(access_token), dateRange: dateRange || '' });
+
+//     for (const batch of batchesData) {
+//       const batchId = batch.id;
+
+//       const donations = await fetchDonationsForBatch(batchId, headers);
+//       const batchDonations = [];
+//       for (const [index, donation] of donations.data.entries()) {
+//         const designation = donations.included[index];
+//         const fundId = designation.relationships.fund.data.id;
+//         const fund = await fetchFund(fundId, headers);
+//         let tempDataPerson = null;
+//         const person = donation.relationships.person.data;
+//         if (person) {
+//           const urlPerson = `https://api.planningcenteronline.com/giving/v2/people/${person.id}`;
+//           const getPersonDetails = await axios.get(urlPerson, { headers });
+//           tempDataPerson = getPersonDetails.data;
+//         }
+
+//         batchDonations.push({
+//           donation: donation,
+//           designation,
+//           fund,
+//           person: tempDataPerson,
+//         });
+//       }
+
+//       jsonRes.batches.push({
+//         batch,
+//         donations: batchDonations,
+//       });
+//     }
+
+//     return responseSuccess(res, jsonRes);
+//   } catch (e) {
+//     return responseError({ res, code: 500, data: e });
+//   }
+// };
 
 export const getFunds = async (req: Request, res: Response) => {
   const { email } = req.query;

@@ -8,6 +8,7 @@ export interface UserSettingsAttributes {
   settingsData?: Json;
   settingRegistrationData?: Json;
   isAutomationEnable?: boolean;
+  isAutomationRegistration?: boolean;
   userId?: number;
 }
 
@@ -16,6 +17,7 @@ class UserSettings extends Model<UserSettingsAttributes> implements UserSettings
   public settingsData!: Json;
   public settingRegistrationData!: Json;
   public isAutomationEnable!: boolean;
+  public isAutomationRegistration!: boolean;
   public userId!: number;
 
   public readonly user?: User; // Define the association property
@@ -42,6 +44,10 @@ UserSettings.init(
       type: DataTypes.JSON,
     },
     isAutomationEnable: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+    },
+    isAutomationRegistration: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
     },

@@ -84,7 +84,7 @@ supertokens.init({
 
               // First we call the original implementation
               const response = await originalImplementation.emailPasswordSignUpPOST(input);
-
+              console.log('----1', response);
               // If sign up was successful
               if (response.status === 'OK') {
                 // We can get the form fields from the input like this

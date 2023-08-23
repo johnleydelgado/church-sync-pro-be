@@ -37,7 +37,7 @@ import {
 import { addTokenInUser } from '../controller/db';
 import { deleteQboDeposit, getAllQboData } from '../controller/qbo';
 import { getStripePayouts, syncStripePayout, syncStripePayoutRegistration } from '../controller/stripe';
-import { automationScheduler } from '../controller/automation';
+import { automationScheduler, latestFundAutomation } from '../controller/automation';
 const routers = Router();
 // routers.post("/start", authorized, startTask);
 routers.get('/', tesst);
@@ -82,5 +82,6 @@ routers.post(userRoutes.updateInvitationStatus, updateInvitationStatus);
 routers.post(userRoutes.bookkeeperList, verifySession(), bookkeeperList);
 
 routers.post('/automationScheduler', automationScheduler);
+routers.post('/latestFundAutomation', latestFundAutomation);
 
 export default routers;

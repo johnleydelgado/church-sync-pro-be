@@ -20,7 +20,7 @@ const userRoutes = {
   createUser: '/user/createUser',
   addTokenInUser: '/user/addTokenInUser',
   createSettings: '/user/createSettings',
-  enableAutoSyncSetting: '/user/createSettings',
+  enableAutoSyncSetting: '/user/enableAutoSyncSetting',
   getUserRelated: '/user/getUserRelated',
   manualSync: '/user/manualSync',
   isUserHaveTokens: '/user/isUserHaveTokens',
