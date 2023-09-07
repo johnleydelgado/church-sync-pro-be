@@ -10,6 +10,7 @@ import tokenEntity from '../db/models/tokenEntity';
 import { isEmpty } from 'lodash';
 import bookkeeper from '../db/models/bookkeeper';
 import User from '../db/models/user';
+import { uploadImage } from '../utils/storage';
 
 export const updateUser = async (req: Request, res: Response) => {
   const data = req.body;
@@ -313,6 +314,32 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
       return responseSuccess(res, bookkeeperData);
     }
     return responseError({ res, code: 400, message: 'Error in invitation' });
+  } catch (e) {
+    return responseError({ res, code: 400, message: e });
+  }
+};
+
+export const updateUserData = async (req: Request, res: Response) => {
+  const { email, firstName, lastName, churchName, userId, file, file_name } = req.body;
+
+  try {
+    const userData = await User.update({ email, firstName, lastName, churchName }, { where: { id: userId } });
+    let fileName = '';
+    let imageUrl = '';
+
+    // Only call uploadImage if file and file_name exist
+    if (file && file_name) {
+      const imageUploadData = await uploadImage(file, file_name);
+      fileName = imageUploadData.fileName;
+      imageUrl = imageUploadData.imageUrl;
+      await User.update({ img_url: imageUrl }, { where: { id: userId } });
+    }
+
+    const data = { ...userData, fileName, imageUrl };
+    if (userData) {
+      return responseSuccess(res, data);
+    }
+    return responseError({ res, code: 400, message: 'Error in user update' });
   } catch (e) {
     return responseError({ res, code: 400, message: e });
   }

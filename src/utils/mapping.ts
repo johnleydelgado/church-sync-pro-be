@@ -62,7 +62,7 @@ const requestPayload = (data: any[]) => {
               value: item.AccountRef,
             },
             Entity: {
-              value: item.ReceivedFrom,
+              value: item.ReceivedFrom ?? '',
             },
             //   PaymentMethodRef: {
             //     value: '{newPaymentMethodID}',

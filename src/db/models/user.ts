@@ -12,6 +12,8 @@ export interface UserAttributes {
   isSubscribe: string;
   role?: 'client' | 'bookkeeper';
   tokens?: tokens[];
+  token: string;
+  img_url: string;
 }
 
 class User extends Model<UserAttributes> implements UserAttributes {
@@ -21,6 +23,8 @@ class User extends Model<UserAttributes> implements UserAttributes {
   public lastName!: string;
   public churchName!: string;
   public isSubscribe!: string;
+  public token!: string;
+  public img_url!: string;
   public role!: 'client' | 'bookkeeper';
 }
 
@@ -50,6 +54,12 @@ User.init(
     role: DataTypes.ENUM({
       values: ['client', 'bookkeeper'],
     }),
+    token: {
+      type: DataTypes.STRING(256),
+    },
+    img_url: {
+      type: DataTypes.STRING(256),
+    },
   },
   {
     sequelize,

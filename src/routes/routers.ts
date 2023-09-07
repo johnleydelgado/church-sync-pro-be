@@ -19,7 +19,7 @@ import {
 // import { authorized } from '../utils/authorization';
 import { verifySession } from 'supertokens-node/recipe/session/framework/express';
 import { pcRoutes, qboRoutes, stripeRoutes, userRoutes } from '../constant/routes';
-import { getBatches, getFunds, getRegistrationEvents } from '../controller/planning-center';
+import { getBatches, getFunds, handleRegistrationEvents } from '../controller/planning-center';
 import {
   bookkeeperList,
   checkValidInvitation,
@@ -32,6 +32,7 @@ import {
   isUserHaveTokens,
   updateInvitationStatus,
   updateUser,
+  updateUserData,
   updateUserToken,
 } from '../controller/user';
 import { addTokenInUser } from '../controller/db';
@@ -55,7 +56,7 @@ routers.post('/deleteBookeeper', verifySession(), deleteBookeeper);
 
 routers.get(pcRoutes.getFunds, getFunds);
 routers.post(pcRoutes.getBatches, getBatches);
-routers.get(pcRoutes.getRegistrationEvents, verifySession(), getRegistrationEvents);
+routers.post(pcRoutes.handleRegistrationEvents, verifySession(), handleRegistrationEvents);
 
 routers.get(stripeRoutes.getStripePayouts, verifySession(), getStripePayouts);
 routers.get(stripeRoutes.syncStripePayout, verifySession(), syncStripePayout);
@@ -80,6 +81,7 @@ routers.post(userRoutes.sendPasswordReset, sendPasswordReset);
 routers.post(userRoutes.checkValidInvitation, checkValidInvitation);
 routers.post(userRoutes.updateInvitationStatus, updateInvitationStatus);
 routers.post(userRoutes.bookkeeperList, verifySession(), bookkeeperList);
+routers.post(userRoutes.userUpdate, verifySession(), updateUserData);
 
 routers.post('/automationScheduler', automationScheduler);
 routers.post('/latestFundAutomation', latestFundAutomation);

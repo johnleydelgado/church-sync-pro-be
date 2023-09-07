@@ -1,7 +1,7 @@
 const pcRoutes = {
   getBatches: '/pc/getBatches',
   getFunds: '/pc/getFunds',
-  getRegistrationEvents: '/pc/getRegistrationEvents',
+  handleRegistrationEvents: '/pc/handleRegistrationEvents',
 };
 
 const qboRoutes = {
@@ -32,6 +32,7 @@ const userRoutes = {
   checkValidInvitation: '/user/checkValidInvitation',
   updateInvitationStatus: '/user/updateInvitationStatus',
   bookkeeperList: '/user/bookkeeperList',
+  userUpdate: '/user/userUpdate',
 };
 
 export { pcRoutes, userRoutes, qboRoutes, stripeRoutes };

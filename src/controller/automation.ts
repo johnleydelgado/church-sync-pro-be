@@ -16,7 +16,7 @@ import { getDayBoundary } from '../utils/helper';
 import tokenEntity from '../db/models/tokenEntity';
 import tokens from '../db/models/tokens';
 import { responseError, responseSuccess } from '../utils/response';
-import { getBatchInDonationPCO } from './planning-center';
+import { getBatchInDonationPCO, isAccessTokenValidPCO } from './planning-center';
 import { Request, Response } from 'express';
 
 interface PaymentMethodsResponse {
@@ -301,8 +301,8 @@ export const generatePcToken = async (email: string) => {
       refresh_token = arr.refresh_token;
     }
 
-    if (!isEmpty(await getBatchInDonationPCO({ accessToken: arr.access_token as string }))) {
-      console.log('asdasdasdasd');
+    if (await isAccessTokenValidPCO({ accessToken: arr.access_token as string })) {
+      console.log('pco token still valid !');
       return { access_token: arr.access_token, refresh_token: arr.refresh_token };
     }
 

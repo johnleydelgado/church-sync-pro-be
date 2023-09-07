@@ -10,25 +10,76 @@ import quickBookApi from '../utils/quickBookApi';
 import tokenEntity from '../db/models/tokenEntity';
 import tokens from '../db/models/tokens';
 import quickbookAuth from '../utils/quickbookAuth';
+import registration from '../db/models/registration';
+import { format, parseISO } from 'date-fns';
 
 const BASE_URL = 'https://api.planningcenteronline.com/giving/v2';
 
-export const getBatchInDonationPCO = async ({ accessToken, dateRange }: { accessToken: string; dateRange?: any }) => {
+export const isAccessTokenValidPCO = async ({ accessToken }: { accessToken: string }) => {
+  const config = {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  };
+
+  const url = 'https://api.planningcenteronline.com/giving/v2/batches?per_page=1';
+  try {
+    await axios.get(url, config);
+    // If the code reaches here, the token is valid
+    return true;
+  } catch (error) {
+    if (error.response && error.response.status === 401) {
+      // If you get a 401 Unauthorized error, the token is invalid
+      return false;
+    }
+    // If the error is something else, it may not be a token issue
+    throw error;
+  }
+};
+
+export const getBatchInDonationPCO = async ({
+  accessToken,
+  dateRange,
+  offset = 0,
+}: {
+  accessToken: string;
+  dateRange?: any;
+  offset?: number;
+}) => {
   const config = {
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
   };
   try {
-    const url = BASE_URL + `/batches`;
+    let url = '';
+
+    // if date is empty
+    if (!dateRange?.startDate && !dateRange?.endDate) {
+      url = `https://api.planningcenteronline.com/giving/v2/batches?per_page=10&offset=${offset}`;
+    } else {
+      const sDate = format(parseISO(dateRange?.startDate), 'yyyy-MM-dd');
+      const eDate = format(parseISO(dateRange?.endDate), 'yyyy-MM-dd');
+      url = `https://api.planningcenteronline.com/giving/v2/batches?per_page=10&offset=${offset}&where[updated_at][gte]=${sDate}&where[updated_at][lte]=${eDate}`;
+    }
+
     const getBatchesRes = await axios.get(url, config);
     const tempData = getBatchesRes.data.data;
+    console.log('===go here ?:', offset);
+
+    const offSetNext = getBatchesRes.data.meta?.next?.offset || 0;
+    const offSetPrev = getBatchesRes.data.meta?.prev?.offset || 0;
+    const total_count = getBatchesRes.data.meta?.total_count || 0;
+
     if (isEmpty(tempData)) {
       //return empty here
-      return [];
+
+      return { data: null };
     }
+
+    // if date is empty
     if (!dateRange?.startDate && !dateRange?.endDate) {
-      return tempData;
+      return { data: tempData, offSetNext, offSetPrev, total_count };
     }
 
     const startDate = new Date(dateRange?.startDate);
@@ -41,12 +92,15 @@ export const getBatchInDonationPCO = async ({ accessToken, dateRange }: { access
     });
 
     if (!isEmpty(data)) {
-      return data;
+      console.log('emptyData');
+      return { data, offSetNext, offSetPrev, total_count };
     }
+    console.log('return null');
 
-    return [];
+    return { data: null };
   } catch (e) {
-    return [];
+    console.log('return null catch', e);
+    return { data: null };
   }
 };
 
@@ -65,8 +119,8 @@ const fetchFund = async (fundId: string, headers: any) => {
 };
 
 export const getBatches = async (req: Request, res: Response) => {
-  const { email, dateRange } = req.body;
-  const jsonRes = { batches: [], synchedBatches: [] };
+  const { email, dateRange, offset = 0 } = req.body;
+  const jsonRes = { batches: [], synchedBatches: [], offSetRes: { next: 0, prev: 0 }, total_count: 0 };
 
   try {
     const tokenEntity = await generatePcToken(email as string);
@@ -90,20 +144,30 @@ export const getBatches = async (req: Request, res: Response) => {
       Authorization: `Bearer ${access_token}`,
     };
 
-    const batchesData = await getBatchInDonationPCO({ accessToken: String(access_token), dateRange: dateRange || '' });
+    console.log('coming here for ???');
+
+    const batchesData = await getBatchInDonationPCO({
+      accessToken: String(access_token),
+      dateRange: dateRange || '',
+      offset: Number(offset || 0),
+    });
 
     // jsonRes.batches = batchesData;
 
     jsonRes.batches = [];
+    if (!isEmpty(batchesData)) {
+      jsonRes.offSetRes = { next: Number(batchesData.offSetNext), prev: Number(batchesData.offSetPrev) };
+      jsonRes.total_count = batchesData.total_count;
 
-    for (const batch of batchesData) {
-      const batchId = batch.id;
-      const donations = await fetchDonationsForBatch(batchId, headers);
+      for (const batch of batchesData.data) {
+        const batchId = batch.id;
+        const donations = await fetchDonationsForBatch(batchId, headers);
 
-      jsonRes.batches.push({
-        batch,
-        donations,
-      });
+        jsonRes.batches.push({
+          batch,
+          donations,
+        });
+      }
     }
 
     // for (const batch of batchesData) {
@@ -233,84 +297,101 @@ export const getFunds = async (req: Request, res: Response) => {
   }
 };
 
-export const getRegistrationEvents = async (req: Request, res: Response) => {
-  const { email } = req.query;
+export const handleRegistrationEvents = async (req: Request, res: Response) => {
+  const { action, name, userId, registrationId } = req.body;
 
-  const data = await tokenEntity.findOne({
-    where: { email: email as string, isEnabled: true },
-    include: tokens,
-  });
-
-  if (!data) {
-    console.log('Empty user data', email);
-    return res.status(500).json({ error: 'Empty user data' });
-  }
-
-  const arr = data.tokens.find((item) => item.token_type === 'qbo');
-
-  if (!arr) {
-    return responseError({ res, code: 500, data: 'No qbo token' });
-  }
-  let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
-
-  if (!quickbookAuth.isAccessTokenValid()) {
-    const result = await generateQBOToken(arr.refresh_token, email as string);
-    tokenJson = result;
-  }
-
-  const qboTokens = {
-    ACCESS_TOKEN: tokenJson?.access_token,
-    REALM_ID: tokenJson?.realm_id,
-    REFRESH_TOKEN: tokenJson?.refresh_token,
-  };
-
-  const fetchCustomers = async () => {
-    return new Promise(async (resolve, reject) => {
-      await quickBookApi(qboTokens).findCustomers(
-        {
-          fetchAll: true,
-        },
-        (err, customers) => {
-          if (err) {
-            reject(err);
-          }
-          const customerList = [];
-          customers.QueryResponse.Customer.forEach(function (item) {
-            if (item.IsProject) customerList.push({ value: item.Id, name: item.DisplayName });
-          });
-          resolve(customerList);
-        },
-      );
-    });
-  };
   try {
-    const results = await fetchCustomers();
+    let results;
+    switch (action) {
+      case 'create':
+        results = await registration.create({ name: String(name), userId: Number(userId) });
+        break;
+
+      case 'read':
+        if (userId) {
+          results = await registration.findAll({ where: { userId: Number(userId) } });
+          if (results.length === 0) {
+            return res.status(404).json({ error: 'No registrations found for the given userId' });
+          }
+        }
+        break;
+
+      case 'update':
+        results = await registration.findByPk(Number(registrationId));
+        if (!results) {
+          return res.status(404).json({ error: 'Registration not found' });
+        }
+        if (name) results.name = String(name);
+        if (userId) results.userId = Number(userId);
+        await results.save();
+        break;
+
+      default:
+        return res.status(400).json({ error: 'Invalid action' });
+    }
+
     return responseSuccess(res, results);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-
-  // const { email } = req.query;
-
-  // try {
-  //   const tokenEntity = await generatePcToken(email as string);
-
-  //   const { access_token } = tokenEntity;
-  //   if (!isEmpty(tokenEntity)) {
-  //     const config = {
-  //       method: 'get',
-  //       url: 'https://api.planningcenteronline.com/calendar/v2/events',
-  //       headers: {
-  //         Authorization: `Bearer ${access_token}`,
-  //       },
-  //     };
-
-  //     const response = await axios(config);
-  //     const data = response.data.data;
-  //     return responseSuccess(res, data);
-  //   }
-  //   return responseError({ res, code: 500, data: 'not found !' });
-  // } catch (e) {
-  //   return responseError({ res, code: 500, data: e });
-  // }
 };
+
+// export const getRegistrationEvents = async (req: Request, res: Response) => {
+//   const { name, userId } = req.query;
+
+//   try {
+//     const results = await registration.create({ name: String(name), userId: Number(userId) });
+//     return responseSuccess(res, results);
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+
+//   // if (!data) {
+//   //   console.log('Empty user data', email);
+//   //   return res.status(500).json({ error: 'Empty user data' });
+//   // }
+
+//   // const arr = data.tokens.find((item) => item.token_type === 'qbo');
+
+//   // if (!arr) {
+//   //   return responseError({ res, code: 500, data: 'No qbo token' });
+//   // }
+//   // let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
+
+//   // if (!quickbookAuth.isAccessTokenValid()) {
+//   //   const result = await generateQBOToken(arr.refresh_token, email as string);
+//   //   tokenJson = result;
+//   // }
+
+//   // const qboTokens = {
+//   //   ACCESS_TOKEN: tokenJson?.access_token,
+//   //   REALM_ID: tokenJson?.realm_id,
+//   //   REFRESH_TOKEN: tokenJson?.refresh_token,
+//   // };
+
+//   // const fetchCustomers = async () => {
+//   //   return new Promise(async (resolve, reject) => {
+//   //     await quickBookApi(qboTokens).findCustomers(
+//   //       {
+//   //         fetchAll: true,
+//   //       },
+//   //       (err, customers) => {
+//   //         if (err) {
+//   //           reject(err);
+//   //         }
+//   //         const customerList = [];
+//   //         customers.QueryResponse.Customer.forEach(function (item) {
+//   //           if (item.IsProject) customerList.push({ value: item.Id, name: item.DisplayName });
+//   //         });
+//   //         resolve(customerList);
+//   //       },
+//   //     );
+//   //   });
+//   // };
+//   // try {
+//   //   const results = await fetchCustomers();
+//   //   return responseSuccess(res, results);
+//   // } catch (err) {
+//   //   res.status(500).json({ error: err.message });
+//   // }
+// };

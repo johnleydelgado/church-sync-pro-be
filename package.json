@@ -21,6 +21,7 @@
   "author": "johnley delgado",
   "license": "ISC",
   "dependencies": {
+    "@google-cloud/storage": "^7.0.1",
     "@sendgrid/mail": "^7.7.0",
     "@types/cors": "^2.8.13",
     "@types/date-fns": "^2.6.0",
