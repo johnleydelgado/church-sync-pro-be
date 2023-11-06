@@ -9,7 +9,7 @@ import { isSameDay, isToday, isWithinInterval, parseISO, startOfToday } from 'da
 import { zonedTimeToUtc } from 'date-fns-tz';
 
 import UserSettings from '../db/models/userSettings';
-import { SettingsJsonProps, requestPayload } from '../utils/mapping';
+import { SettingsJsonProps, newRequestPayload } from '../utils/mapping';
 import UserSync, { UserSyncAttributes } from '../db/models/UserSync';
 import { Op } from 'sequelize';
 import { getDayBoundary } from '../utils/helper';
@@ -18,6 +18,11 @@ import tokens from '../db/models/tokens';
 import { responseError, responseSuccess } from '../utils/response';
 import { getBatchInDonationPCO, isAccessTokenValidPCO } from './planning-center';
 import { Request, Response } from 'express';
+
+const { SENDGRID_API_KEY, SETTING_FUND_URL } = process.env;
+
+const sgMail = require('@sendgrid/mail');
+sgMail.setApiKey(SENDGRID_API_KEY);
 
 interface PaymentMethodsResponse {
   QueryResponse: {
@@ -206,22 +211,16 @@ export const generateTodayBatches = async ({
     }
 
     if (!isEmpty(jsonRes.donation)) {
-      const data = requestPayload(jsonRes.donation);
-      let count = 0;
-      for (const payloadJson of data) {
-        await automationDeposit(email, payloadJson);
-        await UserSync.create({ syncedData: jsonRes.donation, userId, batchId: jsonRes.donation[count].batch.id });
-        count += 1;
-      }
+      const data = newRequestPayload(jsonRes.donation);
+      await automationDeposit(email, data);
+      await UserSync.create({ syncedData: jsonRes.donation, userId, batchId: jsonRes.donation[0].batch.id });
     }
   } catch (e) {
     console.log('generate data', e);
   }
 };
 
-export const automationDeposit = async (email: string, json: any) => {
-  let fJson = { ...json };
-
+export const automationDeposit = async (email: string, jsonArr: any) => {
   const data = await tokenEntity.findOne({
     where: { email: email as string, isEnabled: true },
     include: tokens,
@@ -253,17 +252,28 @@ export const automationDeposit = async (email: string, json: any) => {
       });
     });
 
-    if (!isEmpty(paymentMethods)) {
-      const paymentMethodsList = paymentMethods.QueryResponse.PaymentMethod;
-      const tempPayment =
-        fJson.tempPaymentMethod.toLowerCase() === 'stripe' ? 'visa' : fJson.tempPaymentMethod.toLowerCase();
-      const paymentMethod = paymentMethodsList.find((el) => el.Name.toLowerCase() === tempPayment);
-      fJson.Line[0].DepositLineDetail.PaymentMethodRef = { value: paymentMethod.Id };
+    // if (!isEmpty(paymentMethods)) {
+    //   const paymentMethodsList = paymentMethods.QueryResponse.PaymentMethod;
+    //   const tempPayment =
+    //     fJson.tempPaymentMethod.toLowerCase() === 'stripe' ? 'visa' : fJson.tempPaymentMethod.toLowerCase();
+    //   const paymentMethod = paymentMethodsList.find((el) => el.Name.toLowerCase() === tempPayment);
+    //   fJson.Line[0].DepositLineDetail.PaymentMethodRef = { value: paymentMethod.Id };
 
-      fJson = omit(fJson, 'tempPaymentMethod');
+    //   fJson = omit(fJson, 'tempPaymentMethod');
+    // }
+
+    if (!isEmpty(paymentMethods)) {
+      jsonArr.Line.forEach((line) => {
+        paymentMethods.QueryResponse.PaymentMethod.forEach((method) => {
+          if (method.Name.toLowerCase() === line.tempPaymentMethod.toLowerCase()) {
+            line.DepositLineDetail.PaymentMethodRef = { value: method.Id };
+          }
+        });
+        delete line.tempPaymentMethod;
+      });
     }
     return new Promise(async (resolve, reject) => {
-      await quickBookApi(qboTokens).createDeposit(fJson, function (err, createdData) {
+      await quickBookApi(qboTokens).createDeposit(jsonArr, function (err, createdData) {
         if (err) {
           reject(err);
         }
@@ -305,8 +315,6 @@ export const generatePcToken = async (email: string) => {
       console.log('pco token still valid !');
       return { access_token: arr.access_token, refresh_token: arr.refresh_token };
     }
-
-    console.log('asdasdasd', refresh_token);
 
     const response = await axios({
       method: 'post',
@@ -379,5 +387,64 @@ export const latestFundAutomation = async (req: Request, res: Response) => {
     // handle error here, perhaps by sending an error response
     console.error(err);
     return res.status(500).json({ error: 'An error occurred' });
+  }
+};
+
+export const checkLatestFund = async (req: Request, res: Response) => {
+  const users = await User.findAll({
+    include: [tokens],
+  });
+  const BASE_URL = 'https://api.planningcenteronline.com/giving/v2/funds';
+
+  for (const a of users) {
+    const userId = a.id;
+    const userEmail = a.email;
+    const access_token = a.tokens.find((a) => a.token_type === 'pco').access_token;
+    const config = {
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+      },
+    };
+
+    try {
+      const resultPCOFund = await axios.get(BASE_URL, config);
+      const fund = resultPCOFund.data.data as {
+        type: string;
+        id: string;
+        attributes: { name: string; description: string };
+      }[];
+
+      const settings = await UserSettings.findOne({ where: { userId } });
+
+      const jsonData = JSON.stringify(settings.settingsData);
+
+      for (const a of fund) {
+        const isFundExist = JSON.parse(jsonData).find((x) => x.fundName === a.attributes.name);
+        if (!isFundExist) {
+          const msg = {
+            to: userEmail, // Change to your recipient
+            from: 'support@churchsyncpro.com', // Change to your verified sender
+            // subject: 'You have been invited to take on the role of a bookkeeper.',
+            // text: 'and easy to do anywhere, even with Node.js',
+            templateId: 'd-0471c55bbe504d7698a2d537ae7b93a9',
+            dynamicTemplateData: {
+              link: SETTING_FUND_URL,
+              fundName: a.attributes.name,
+            },
+          };
+          await sgMail.send(msg);
+        }
+      }
+
+      // If the code reaches here, the token is valid
+      return responseSuccess(res, 'email sent');
+    } catch (error) {
+      if (error.response && error.response.status === 401) {
+        // If you get a 401 Unauthorized error, the token is invalid
+        return res.status(500).json({ error: 'An error occurred' });
+      }
+      return res.status(500).json({ error: 'An error occurred' });
+    }
+    // If the error is something else, it may not be a token issue
   }
 };

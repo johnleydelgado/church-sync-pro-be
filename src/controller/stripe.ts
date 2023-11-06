@@ -8,7 +8,7 @@ import { format, fromUnixTime } from 'date-fns';
 import { automationDeposit, generatePcToken } from './automation';
 import UserSync from '../db/models/UserSync';
 import UserSettings from '../db/models/userSettings';
-import { SettingsJsonProps, requestPayload } from '../utils/mapping';
+import { SettingsJsonProps, newRequestPayload } from '../utils/mapping';
 import axios from 'axios';
 import tokens from '../db/models/tokens';
 import tokenEntity from '../db/models/tokenEntity';
@@ -17,6 +17,36 @@ const { PC_CLIENT_ID, PC_SECRET_APP, PC_REDIRECT, STRIPE_SECRET_KEY, STRIPE_PUB_
 interface SuccessToken {
   access_token: string;
   refresh_token: string;
+}
+
+interface StripeSyncData {
+  [key: string]: FundData[] | undefined; // Index signature allowing dynamic keys
+}
+
+// The rest of the interfaces remain the same
+
+interface BankData {
+  type: string;
+  label: string;
+  value: string;
+}
+
+interface BatchData {
+  amount: number;
+  created: string;
+  fundName: string;
+  payoutDate: string;
+  totalAmount: number;
+  type: 'registration' | 'batch';
+  totalFee?: number;
+  selectedBankExpense?: string;
+  // Add more fields here if there are any other properties in batchData
+}
+
+interface FundData {
+  bankData: BankData[];
+  batchData: BatchData;
+  email: string;
 }
 
 export const getStripePayouts = async (req: Request, res: Response) => {
@@ -84,7 +114,16 @@ export const getStripePayouts = async (req: Request, res: Response) => {
 };
 
 export const syncStripePayout = async (req: Request, res: Response) => {
-  const { email, donationId, fundName, payoutDate } = req.query; //refreshToken is just an empty value
+  const { email, donationId, fundName, payoutDate, bankData } = req.body; //refreshToken is just an empty value
+
+  const bank = bankData as
+    | {
+        type: 'donation' | 'registration';
+        value: string;
+        label: string;
+      }[]
+    | null;
+
   try {
     const tokenEntity = await generatePcToken(email as string);
     const user = await User.findOne({
@@ -121,6 +160,7 @@ export const syncStripePayout = async (req: Request, res: Response) => {
     const accountRef = settingRegistration?.account?.value ?? '';
     const receivedFrom = settingRegistration?.customer?.value ?? '';
     const classRef = settingRegistration?.class?.value ?? '';
+    const bankRef = bank?.find((a) => a.type === 'registration') || {};
 
     const data = response.data.data;
     const finalData = [
@@ -138,40 +178,45 @@ export const syncStripePayout = async (req: Request, res: Response) => {
           },
         },
         paymentCheck: '',
+        bankRef,
       },
     ];
 
-    const responsePayload = requestPayload(finalData);
+    const responsePayload = newRequestPayload(finalData);
+    const batchIdF = finalData[0].batch.id;
 
-    for (const payloadJson of responsePayload) {
-      const batchIdF = finalData[0].batch.id;
+    const synchedBatchesData = await UserSync.findAll({
+      where: { userId: user.id, batchId: batchIdF as string },
+      attributes: ['id', 'batchId', 'createdAt'],
+    });
 
-      const synchedBatchesData = await UserSync.findAll({
-        where: { userId: user.id, batchId: batchIdF as string },
-        attributes: ['id', 'batchId', 'createdAt'],
+    if (isEmpty(synchedBatchesData)) {
+      const bqoCreatedDataId = await automationDeposit(email as string, responsePayload);
+      await UserSync.create({
+        syncedData: finalData,
+        userId: user.id,
+        batchId: `Stripe payout - ${payoutDate}`,
+        donationId: bqoCreatedDataId['Id'] || '',
       });
-
-      if (isEmpty(synchedBatchesData)) {
-        const bqoCreatedDataId = await automationDeposit(email as string, payloadJson);
-        await UserSync.create({
-          syncedData: finalData,
-          userId: user.id,
-          batchId: `Stripe payout - ${payoutDate}`,
-          donationId: bqoCreatedDataId['Id'] || '',
-        });
-      }
     }
 
     return responseSuccess(res, 'success');
   } catch (e) {
-    console.log('ERRO:::', e.response.data);
-    if (e.response) return responseError({ res, code: 204, data: e.response.data.errors[0] });
+    console.log('ERRO:::', e);
+    if (e.response) return responseError({ res, code: 500, data: e });
     return responseError({ res, code: 500, data: e });
   }
 };
 
 export const syncStripePayoutRegistration = async (req: Request, res: Response) => {
-  const { email, fundName, payoutDate, amount } = req.query; //refreshToken is just an empty value
+  const { email, fundName, payoutDate, amount, bankData } = req.body; //refreshToken is just an empty value
+  const bank = bankData as
+    | {
+        type: 'donation' | 'registration';
+        value: string;
+        label: string;
+      }[]
+    | null;
   try {
     const user = await User.findOne({
       where: { email: email as string },
@@ -194,6 +239,8 @@ export const syncStripePayoutRegistration = async (req: Request, res: Response) 
 
     const now = new Date();
     const unixTimeNow = Math.floor(now.getTime() / 1000);
+    const bankRef = bank?.find((a) => a.type === 'registration') || {};
+
     // const data = response.data.data;
     const finalData = [
       {
@@ -229,31 +276,167 @@ export const syncStripePayoutRegistration = async (req: Request, res: Response) 
           },
         },
         paymentCheck: '',
+        bankRef,
       },
     ];
 
-    const responsePayload = requestPayload(finalData);
-
-    for (const payloadJson of responsePayload) {
-      const bqoCreatedDataId = await automationDeposit(email as string, payloadJson);
-      const synchedBatchesData = await UserSync.findAll({
-        where: { userId: user.id, batchId: `Stripe payout - ${payoutDate}` },
-        attributes: ['id', 'batchId', 'createdAt'],
+    const responsePayload = newRequestPayload(finalData);
+    const bqoCreatedDataId = await automationDeposit(email as string, responsePayload);
+    const synchedBatchesData = await UserSync.findAll({
+      where: { userId: user.id, batchId: `Stripe payout - ${payoutDate}` },
+      attributes: ['id', 'batchId', 'createdAt'],
+    });
+    if (isEmpty(synchedBatchesData)) {
+      await UserSync.create({
+        syncedData: finalData,
+        userId: user.id,
+        batchId: `Stripe payout - ${payoutDate}`,
+        donationId: bqoCreatedDataId['Id'] || '',
       });
-      if (isEmpty(synchedBatchesData)) {
-        await UserSync.create({
-          syncedData: finalData,
-          userId: user.id,
-          batchId: `Stripe payout - ${payoutDate}`,
-          donationId: bqoCreatedDataId['Id'] || '',
-        });
-      }
     }
 
     return responseSuccess(res, 'success');
   } catch (e) {
-    if (e.response) return responseError({ res, code: 204, data: e.response.data.errors[0] });
-    return responseError({ res, code: 204, data: e });
+    if (e.response) return responseError({ res, code: 500, data: e });
+    return responseError({ res, code: 500, data: e });
+  }
+};
+
+export const finalSyncStripe = async (req: Request, res: Response) => {
+  const { data } = req.body; //refreshToken is just an empty valuec
+  const batchData: StripeSyncData = data;
+
+  try {
+    let finalData: any = [];
+    const keys = Object.keys(batchData);
+    for (const key of keys) {
+      // console.log(`Key: ${key}, Value: ${batchData[key]}`);
+      const promises = batchData[key].map(async (batchItem) => {
+        try {
+          if (key !== 'Charge') {
+            const tokenEntity = await generatePcToken(batchItem.email as string);
+            const user = await User.findOne({
+              where: { email: batchItem.email as string },
+            });
+
+            if (isEmpty(tokenEntity)) {
+              return responseError({ res, code: 202, data: 'PCO token is null' });
+            }
+
+            if (isEmpty(user)) {
+              return responseError({ res, code: 500, data: 'Empty User' });
+            }
+
+            const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
+
+            const settingsJson = userSettingsExist.settingsData as any;
+            const settingRegistrationJson = userSettingsExist.settingRegistrationData as any;
+
+            let settingRegistration: any;
+
+            if (batchItem.batchData.type === 'batch') {
+              settingRegistration = settingsJson.find(
+                (item: SettingsJsonProps) =>
+                  item.fundName.toLowerCase() === String(batchItem.batchData.fundName).toLowerCase(),
+              );
+            } else {
+              settingRegistration = settingRegistrationJson.find(
+                (item: { class: { label: string } }) =>
+                  item.class.label.toLowerCase() === String(batchItem.batchData.fundName).toLowerCase(),
+              );
+            }
+
+            const accountRef = settingRegistration?.account?.value ?? '';
+            const receivedFrom = settingRegistration?.customer?.value ?? '';
+            const classRef = settingRegistration?.class?.value ?? '';
+
+            const bankRef = batchItem.bankData.find((a) => a.type === 'registration') || {};
+            finalData.push({
+              payoutDate: batchItem.batchData.payoutDate,
+              accountRef,
+              receivedFrom,
+              classRef,
+              batch: {
+                id: `Stripe payout - ${batchItem.batchData.payoutDate}`,
+                attributes: {
+                  description: `Stripe payout ${batchItem.batchData.payoutDate}`,
+                  created_at: batchItem.batchData.payoutDate,
+                  total_cents: batchItem.batchData.totalAmount,
+                },
+              },
+              paymentCheck: '',
+              bankRef,
+              attributes: { payment_method: 'Stripe', amount_cents: batchItem.batchData.amount },
+              other: { email: batchItem.email, payoutDate: batchItem.batchData.payoutDate, userId: user.id },
+            });
+          } else {
+            const tokenEntity = await generatePcToken(batchItem.email as string);
+            const user = await User.findOne({
+              where: { email: batchItem.email as string },
+            });
+
+            if (isEmpty(tokenEntity)) {
+              return responseError({ res, code: 202, data: 'PCO token is null' });
+            }
+
+            if (isEmpty(user)) {
+              return responseError({ res, code: 500, data: 'Empty User' });
+            }
+
+            const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
+
+            const settingBankChargesJson = userSettingsExist.settingBankCharges as any;
+
+            const accountRef = settingBankChargesJson?.account?.value ?? '';
+            const receivedFrom = '';
+            const classRef = settingBankChargesJson?.class?.value ?? '';
+
+            const bankRef = batchItem.bankData.find((a) => a.type === 'registration') || {};
+            finalData.push({
+              payoutDate: batchItem.batchData.payoutDate,
+              accountRef,
+              receivedFrom,
+              classRef,
+              batch: {
+                id: `Stripe payout - ${batchItem.batchData.payoutDate}`,
+                attributes: {
+                  description: `Stripe payout ${batchItem.batchData.payoutDate}`,
+                  created_at: batchItem.batchData.payoutDate,
+                  total_cents: batchItem.batchData.totalAmount,
+                },
+              },
+              paymentCheck: '',
+              bankRef,
+              attributes: { payment_method: 'Stripe', amount_cents: -batchItem.batchData.totalFee },
+              other: { email: batchItem.email, payoutDate: batchItem.batchData.payoutDate, userId: user.id },
+            });
+          }
+        } catch (e: any) {
+          console.log('ERRO:::', e);
+        }
+      });
+      await Promise.all(promises);
+    }
+
+    const responsePayload = newRequestPayload(finalData);
+    const bqoCreatedDataId = await automationDeposit(finalData[0]?.other?.email as string, responsePayload);
+    const synchedBatchesData = await UserSync.findAll({
+      where: { userId: finalData[0].other.userId, batchId: `Stripe payout - ${finalData[0]?.other?.payoutDate}` },
+      attributes: ['id', 'batchId', 'createdAt'],
+    });
+    if (isEmpty(synchedBatchesData)) {
+      await UserSync.create({
+        syncedData: finalData,
+        userId: finalData[0]?.other?.userId,
+        batchId: `Stripe payout - ${finalData[0]?.other?.payoutDate}`,
+        donationId: bqoCreatedDataId['Id'] || '',
+      });
+    }
+    return responseSuccess(res, 'success');
+  } catch (e) {
+    console.log('ERRO:::', e);
+    if (e.response) return responseError({ res, code: 500, data: e });
+    return responseError({ res, code: 500, data: e });
   }
 };
 

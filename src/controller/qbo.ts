@@ -48,7 +48,7 @@ export const getAllQboData = async (req: Request, res: Response) => {
   };
 
   const fetchAccounts = async () => {
-    const accountTypes = ['Income', 'Revenue'];
+    const accountTypes = ['Income', 'Revenue', 'Bank', 'Expense'];
 
     let accountList = [];
 
@@ -66,7 +66,7 @@ export const getAllQboData = async (req: Request, res: Response) => {
             }
             if (accounts && accounts.QueryResponse && accounts.QueryResponse.Account) {
               accounts.QueryResponse.Account.forEach(function (account) {
-                accountList.push({ value: account.Id, name: account.Name });
+                accountList.push({ value: account.Id, name: account.Name, type: account.AccountType });
               });
             }
             resolve();
@@ -178,6 +178,46 @@ export const deleteQboDeposit = async (req: Request, res: Response) => {
     );
 
     await Promise.all(synchData.map((a) => UserSync.destroy({ where: { id: a.id } })));
+    return responseSuccess(res, 'success');
+  } catch (e) {
+    return responseError({ res, code: 500, data: e });
+  }
+};
+
+export const getDepositRef = async (req: Request, res: Response) => {
+  const { email } = req.body;
+
+  try {
+    const data = await tokenEntity.findOne({
+      where: { email: email as string, isEnabled: true },
+      include: tokens,
+    });
+
+    if (!data) {
+      console.log('Empty user data', email);
+      return res.status(500).json({ error: 'Empty user data' });
+    }
+
+    const arr = data.tokens.find((item) => item.token_type === 'qbo');
+    let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
+
+    if (!quickbookAuth.isAccessTokenValid()) {
+      const result = await generateQBOToken(arr.refresh_token, email);
+      tokenJson = result;
+    }
+
+    const qboTokens = {
+      ACCESS_TOKEN: tokenJson.access_token,
+      REALM_ID: tokenJson.realm_id,
+      REFRESH_TOKEN: tokenJson.refresh_token,
+    };
+
+    quickBookApi(qboTokens).findAccounts({ AccountType: 'Bank' }, function (err, data) {
+      if (err) {
+      }
+      console.log('asdasdas', data.QueryResponse);
+    });
+
     return responseSuccess(res, 'success');
   } catch (e) {
     return responseError({ res, code: 500, data: e });

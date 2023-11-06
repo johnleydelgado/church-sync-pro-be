@@ -13,6 +13,7 @@ const stripeRoutes = {
   getStripePayouts: '/stripe/getStripePayouts',
   syncStripePayout: '/stripe/syncStripePayout',
   syncStripePayoutRegistration: '/stripe/syncStripePayoutRegistration',
+  finalSyncStripe: '/stripe/finalSyncStripe',
 };
 
 const userRoutes = {
@@ -29,10 +30,13 @@ const userRoutes = {
   deleteUserToken: '/user/deleteUserToken',
   sendEmailInvitation: '/user/sendEmailInvitation',
   sendPasswordReset: '/user/sendPasswordReset',
+  resetPassword: '/user/resetPassword',
   checkValidInvitation: '/user/checkValidInvitation',
   updateInvitationStatus: '/user/updateInvitationStatus',
   bookkeeperList: '/user/bookkeeperList',
   userUpdate: '/user/userUpdate',
+  addUpdateBankSettings: '/user/addUpdateBankSettings',
+  addUpdateBankCharges: '/user/addUpdateBankCharges',
 };
 
 export { pcRoutes, userRoutes, qboRoutes, stripeRoutes };

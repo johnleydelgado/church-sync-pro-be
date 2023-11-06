@@ -7,6 +7,8 @@ export interface UserSettingsAttributes {
   id?: number;
   settingsData?: Json;
   settingRegistrationData?: Json;
+  settingBankData?: Json;
+  settingBankCharges?: Json;
   isAutomationEnable?: boolean;
   isAutomationRegistration?: boolean;
   userId?: number;
@@ -16,6 +18,8 @@ class UserSettings extends Model<UserSettingsAttributes> implements UserSettings
   public id!: number;
   public settingsData!: Json;
   public settingRegistrationData!: Json;
+  public settingBankData!: Json;
+  public settingBankCharges!: Json;
   public isAutomationEnable!: boolean;
   public isAutomationRegistration!: boolean;
   public userId!: number;
@@ -41,6 +45,12 @@ UserSettings.init(
       type: DataTypes.JSON,
     },
     settingRegistrationData: {
+      type: DataTypes.JSON,
+    },
+    settingBankData: {
+      type: DataTypes.JSON,
+    },
+    settingBankCharges: {
       type: DataTypes.JSON,
     },
     isAutomationEnable: {

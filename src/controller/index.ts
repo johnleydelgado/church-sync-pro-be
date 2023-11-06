@@ -9,13 +9,14 @@ import { responseError, responseSuccess } from '../utils/response';
 import { automationDeposit, generatePcToken, getFundInDonation } from './automation';
 import { isEmpty } from 'lodash';
 import UserSync from '../db/models/UserSync';
-import { SettingsJsonProps, requestPayload } from '../utils/mapping';
+import { SettingsJsonProps, newRequestPayload } from '../utils/mapping';
 import UserSettings from '../db/models/userSettings';
 import User from '../db/models/user';
 import crypto from 'crypto';
 import bookkeeper from '../db/models/bookkeeper';
 import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
 import ThirdParty from 'supertokens-node/recipe/thirdparty';
+import EmailPassword from 'supertokens-node/recipe/emailpassword';
 
 const sgMail = require('@sendgrid/mail');
 const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
@@ -53,7 +54,7 @@ export const sendPasswordReset = async (req: Request, res: Response) => {
   const rand = crypto.randomBytes(16).toString('hex');
 
   sgMail.setApiKey(SENDGRID_API_KEY);
-  const gotoUrl = RESET_PASSWORD_URL + `?email=${email}`;
+  const gotoUrl = RESET_PASSWORD_URL + `?email=${email}&token=${rand}`;
   // const htmlFile = await fs.promises.readFile('src/template/msg.html', 'utf-8');
 
   try {
@@ -61,6 +62,8 @@ export const sendPasswordReset = async (req: Request, res: Response) => {
     if (userDetails === null) {
       return responseError({ res, code: 200, data: 'User not found !' });
     }
+
+    await User.update({ token: rand }, { where: { email } });
 
     const msg = {
       to: email, // Change to your recipient
@@ -75,6 +78,36 @@ export const sendPasswordReset = async (req: Request, res: Response) => {
     };
     await sgMail.send(msg);
     return responseSuccess(res, 'email sent password reset');
+  } catch (e) {
+    return responseError({ res, code: 500, data: e });
+  }
+};
+
+export const resetPassword = async (req: Request, res: Response) => {
+  const { email, token, password } = req.body;
+  const rand = crypto.randomBytes(16).toString('hex');
+
+  try {
+    const userDetails = await User.findOne({ where: { email, token } });
+    console.log('userDetails', userDetails);
+    if (userDetails === null) {
+      return responseError({ res, code: 500, data: 'User not found ! or invalid token' });
+    }
+
+    let userInfo = await EmailPassword.getUserByEmail(email);
+
+    if (userInfo === undefined) {
+      throw new Error('Should never come here');
+    }
+
+    await EmailPassword.updateEmailOrPassword({
+      userId: userInfo.id,
+      password: password,
+    });
+
+    await User.update({ token: rand }, { where: { email, token } });
+
+    return responseSuccess(res, 'sucess');
   } catch (e) {
     return responseError({ res, code: 500, data: e });
   }
@@ -142,8 +175,16 @@ export const createPayment = async (req: Request, res: Response) => {
 };
 
 export const manualSync = async (req: Request, res: Response) => {
-  const { email, dataBatch, batchId = '0', realBatchId } = req.body; // refresh token if for pc
+  const { email, dataBatch, batchId = '0', realBatchId, bankData } = req.body; // refresh token if for pc
   const jsonRes = { donation: [] as any }; //this is an array object
+  const bank = bankData as
+    | {
+        type: 'donation' | 'registration';
+        value: string;
+        label: string;
+      }[]
+    | null;
+
   try {
     const tokenEntity = await generatePcToken(String(email));
     const user = await User.findOne({
@@ -161,8 +202,6 @@ export const manualSync = async (req: Request, res: Response) => {
     if (batchId === '0') {
       return responseError({ res, code: 204, data: 'Dont have batch id' });
     }
-
-    console.log('tesad', email, dataBatch, batchId);
 
     const synchedBatchesData = await UserSync.findAll({
       where: { userId: user.id, batchId: realBatchId as string },
@@ -198,6 +237,7 @@ export const manualSync = async (req: Request, res: Response) => {
       const receivedFrom = settingsItem?.customer?.value ?? '';
       const classRef = settingsItem?.class?.value ?? '';
       const paymentCheck = donationsData.attributes.payment_check_number || '';
+      const bankRef = bank.find((a) => a.type === 'donation') || {};
 
       jsonRes.donation = [
         ...jsonRes.donation,
@@ -209,28 +249,30 @@ export const manualSync = async (req: Request, res: Response) => {
           receivedFrom,
           classRef,
           paymentCheck,
+          bankRef,
         },
       ];
     }
     if (!isEmpty(jsonRes.donation)) {
-      const data = requestPayload(jsonRes.donation);
-      let count = 0;
-      for (const payloadJson of data) {
-        const bqoCreatedDataId = await automationDeposit(email as string, payloadJson);
-        console.log('bqoCreatedDataId', bqoCreatedDataId);
-        const batchId = jsonRes.donation[count].batch.id;
-        const batchExist = synchedBatchesData.find((a) => a.batchId === batchId && a.userId === user.id);
+      const data = newRequestPayload(jsonRes.donation);
+      console.log('jsonRes.donatio', data.Line[0].DepositLineDetail);
+      // let count = 0;
+      // for (const payloadJson of data) {
+      const bqoCreatedDataId = await automationDeposit(email as string, data);
+      // const batchId = data.Line[0].Description;
+      const batchExist = synchedBatchesData.find((a) => a.batchId === batchId && a.userId === user.id);
+      const batchId = jsonRes.donation[0].batch.id;
 
-        if (isEmpty(batchExist)) {
-          await UserSync.create({
-            syncedData: jsonRes.donation,
-            userId: user.id,
-            batchId: `${batchId} - ${email}`,
-            donationId: bqoCreatedDataId['Id'] || '',
-          });
-        }
-        count += 1;
+      if (isEmpty(batchExist)) {
+        await UserSync.create({
+          syncedData: jsonRes.donation,
+          userId: user.id,
+          batchId: `${batchId} - ${email}`,
+          donationId: bqoCreatedDataId['Id'] || '',
+        });
       }
+      // count += 1;
+      // }
     }
 
     return responseSuccess(res, 'success');

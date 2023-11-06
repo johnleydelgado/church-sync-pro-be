@@ -4,6 +4,7 @@ import {
   deleteBookeeper,
   healthCheck,
   manualSync,
+  resetPassword,
   sendEmailInvitation,
   sendPasswordReset,
   tesst,
@@ -21,6 +22,8 @@ import { verifySession } from 'supertokens-node/recipe/session/framework/express
 import { pcRoutes, qboRoutes, stripeRoutes, userRoutes } from '../constant/routes';
 import { getBatches, getFunds, handleRegistrationEvents } from '../controller/planning-center';
 import {
+  addUpdateBankCharges,
+  addUpdateBankSettings,
   bookkeeperList,
   checkValidInvitation,
   createSettings,
@@ -36,9 +39,14 @@ import {
   updateUserToken,
 } from '../controller/user';
 import { addTokenInUser } from '../controller/db';
-import { deleteQboDeposit, getAllQboData } from '../controller/qbo';
-import { getStripePayouts, syncStripePayout, syncStripePayoutRegistration } from '../controller/stripe';
-import { automationScheduler, latestFundAutomation } from '../controller/automation';
+import { deleteQboDeposit, getAllQboData, getDepositRef } from '../controller/qbo';
+import {
+  finalSyncStripe,
+  getStripePayouts,
+  syncStripePayout,
+  syncStripePayoutRegistration,
+} from '../controller/stripe';
+import { automationScheduler, checkLatestFund, latestFundAutomation } from '../controller/automation';
 const routers = Router();
 // routers.post("/start", authorized, startTask);
 routers.get('/', tesst);
@@ -59,8 +67,9 @@ routers.post(pcRoutes.getBatches, getBatches);
 routers.post(pcRoutes.handleRegistrationEvents, verifySession(), handleRegistrationEvents);
 
 routers.get(stripeRoutes.getStripePayouts, verifySession(), getStripePayouts);
-routers.get(stripeRoutes.syncStripePayout, verifySession(), syncStripePayout);
-routers.get(stripeRoutes.syncStripePayoutRegistration, verifySession(), syncStripePayoutRegistration);
+routers.post(stripeRoutes.syncStripePayout, verifySession(), syncStripePayout);
+routers.post(stripeRoutes.syncStripePayoutRegistration, verifySession(), syncStripePayoutRegistration);
+routers.post(stripeRoutes.finalSyncStripe, verifySession(), finalSyncStripe);
 
 routers.post(qboRoutes.getAllQboData, verifySession(), getAllQboData);
 routers.post(qboRoutes.deleteQboDeposit, verifySession(), deleteQboDeposit);
@@ -78,12 +87,19 @@ routers.post(userRoutes.updateUserToken, verifySession(), updateUserToken);
 routers.post(userRoutes.deleteUserToken, verifySession(), deleteUserToken);
 routers.post(userRoutes.sendEmailInvitation, sendEmailInvitation);
 routers.post(userRoutes.sendPasswordReset, sendPasswordReset);
+routers.post(userRoutes.resetPassword, resetPassword);
 routers.post(userRoutes.checkValidInvitation, checkValidInvitation);
 routers.post(userRoutes.updateInvitationStatus, updateInvitationStatus);
 routers.post(userRoutes.bookkeeperList, verifySession(), bookkeeperList);
 routers.post(userRoutes.userUpdate, verifySession(), updateUserData);
+routers.post(userRoutes.addUpdateBankSettings, verifySession(), addUpdateBankSettings);
+routers.post(userRoutes.addUpdateBankCharges, verifySession(), addUpdateBankCharges);
 
 routers.post('/automationScheduler', automationScheduler);
 routers.post('/latestFundAutomation', latestFundAutomation);
+
+routers.post('/getDepositRef', getDepositRef);
+
+routers.post('/checkLatestFund', checkLatestFund);
 
 export default routers;

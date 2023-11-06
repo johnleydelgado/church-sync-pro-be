@@ -39,11 +39,11 @@ export const isAccessTokenValidPCO = async ({ accessToken }: { accessToken: stri
 
 export const getBatchInDonationPCO = async ({
   accessToken,
-  dateRange,
+  date,
   offset = 0,
 }: {
   accessToken: string;
-  dateRange?: any;
+  date?: any;
   offset?: number;
 }) => {
   const config = {
@@ -55,11 +55,11 @@ export const getBatchInDonationPCO = async ({
     let url = '';
 
     // if date is empty
-    if (!dateRange?.startDate && !dateRange?.endDate) {
+    if (!date) {
       url = `https://api.planningcenteronline.com/giving/v2/batches?per_page=10&offset=${offset}`;
     } else {
-      const sDate = format(parseISO(dateRange?.startDate), 'yyyy-MM-dd');
-      const eDate = format(parseISO(dateRange?.endDate), 'yyyy-MM-dd');
+      const sDate = format(parseISO(date), 'yyyy-MM-dd');
+      const eDate = format(new Date(), 'yyyy-MM-dd');
       url = `https://api.planningcenteronline.com/giving/v2/batches?per_page=10&offset=${offset}&where[updated_at][gte]=${sDate}&where[updated_at][lte]=${eDate}`;
     }
 
@@ -78,12 +78,12 @@ export const getBatchInDonationPCO = async ({
     }
 
     // if date is empty
-    if (!dateRange?.startDate && !dateRange?.endDate) {
+    if (!date) {
       return { data: tempData, offSetNext, offSetPrev, total_count };
     }
 
-    const startDate = new Date(dateRange?.startDate);
-    const endDate = new Date(dateRange?.endDate);
+    const startDate = new Date(date);
+    const endDate = new Date();
     endDate.setHours(23, 59, 59, 999);
 
     const data = tempData.filter((item) => {
@@ -148,7 +148,7 @@ export const getBatches = async (req: Request, res: Response) => {
 
     const batchesData = await getBatchInDonationPCO({
       accessToken: String(access_token),
-      dateRange: dateRange || '',
+      date: dateRange || '',
       offset: Number(offset || 0),
     });
 

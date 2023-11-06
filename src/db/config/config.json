@@ -3,7 +3,7 @@
       "username": "admin",
       "password": "1234",
       "database": "supertokens",
-      "host": "localhost",
+      "host": "127.0.0.1",
       "dialect": "postgres",
       "pool": {
         "max": 5,

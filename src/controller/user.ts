@@ -93,6 +93,51 @@ export const enableAutoSyncSetting = async (req: Request, res: Response) => {
   }
 };
 
+export const addUpdateBankSettings = async (req: Request, res: Response) => {
+  const { email, data } = req.body;
+  console.log('tetasdasd', { email, data });
+
+  try {
+    const userData = await Users.findOne({ where: { email } });
+    if (userData !== null) {
+      const user = userData.toJSON();
+      const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
+      if (userSettingsExist) {
+        await UserSettings.update({ settingBankData: data }, { where: { userId: user.id } });
+      } else {
+        await UserSettings.create({ settingBankData: data, userId: user.id });
+      }
+
+      return responseSuccess(res, 'success');
+    }
+  } catch (e) {
+    console.log('ERROR: ', e);
+    res.status(500).json({ error: e.message });
+  }
+};
+
+export const addUpdateBankCharges = async (req: Request, res: Response) => {
+  const { email, data } = req.body;
+
+  try {
+    const userData = await Users.findOne({ where: { email } });
+    if (userData !== null) {
+      const user = userData.toJSON();
+      const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
+      if (userSettingsExist) {
+        await UserSettings.update({ settingBankCharges: data }, { where: { userId: user.id } });
+      } else {
+        await UserSettings.create({ settingBankCharges: data, userId: user.id });
+      }
+
+      return responseSuccess(res, 'success');
+    }
+  } catch (e) {
+    console.log('ERROR: ', e);
+    res.status(500).json({ error: e.message });
+  }
+};
+
 export const getUserRelated = async (req: Request, res: Response) => {
   const { email } = req.query;
   try {

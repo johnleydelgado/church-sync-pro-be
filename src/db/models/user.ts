@@ -26,6 +26,7 @@ class User extends Model<UserAttributes> implements UserAttributes {
   public token!: string;
   public img_url!: string;
   public role!: 'client' | 'bookkeeper';
+  public tokens!: tokens[];
 }
 
 User.init(
