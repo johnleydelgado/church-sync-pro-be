@@ -11,6 +11,8 @@ import { isEmpty } from 'lodash';
 import bookkeeper from '../db/models/bookkeeper';
 import User from '../db/models/user';
 import { uploadImage } from '../utils/storage';
+import userEmailPreferences from '../db/models/userEmailPreferences';
+import Billing from '../db/models/billing';
 
 export const updateUser = async (req: Request, res: Response) => {
   const data = req.body;
@@ -70,6 +72,24 @@ export const createSettings = async (req: Request, res: Response) => {
   }
 };
 
+export const updateRegisterSettings = async (req: Request, res: Response) => {
+  const { email, settingRegistrationData } = req.body;
+  try {
+    const userData = await Users.findOne({ where: { email } });
+    if (userData !== null) {
+      const user = userData.toJSON();
+
+      await UserSettings.update({ settingRegistrationData }, { where: { userId: user.id } });
+
+      return responseSuccess(res, settingRegistrationData);
+    }
+    res.status(500).json({ error: 'Email not exist' });
+  } catch (e) {
+    console.log('ERROR: ', e);
+    res.status(500).json({ error: e.message });
+  }
+};
+
 export const enableAutoSyncSetting = async (req: Request, res: Response) => {
   const { email, isAutomationEnable, isAutomationRegistration } = req.body;
   console.log('tetasdasd', { isAutomationEnable, isAutomationRegistration, email });
@@ -93,6 +113,57 @@ export const enableAutoSyncSetting = async (req: Request, res: Response) => {
   }
 };
 
+export const setStartDataAutomation = async (req: Request, res: Response) => {
+  const { email, type, date } = req.body;
+  try {
+    const userData = await Users.findOne({ where: { email } });
+    if (!userData) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userData.toJSON();
+    const userSettings = await UserSettings.findOne({ where: { userId: user.id } });
+
+    if (userSettings) {
+      // User settings exist, update based on the type
+      if (type === 'donation') {
+        const [numberOfAffectedRows] = await UserSettings.update(
+          { startDateAutomationFund: String(date) },
+          { where: { userId: user.id } },
+        );
+      } else if (type === 'registration') {
+        await UserSettings.update(
+          { startDateAutomationRegistration: String(date) /* your new start date value for registration automation */ },
+          { where: { userId: user.id } },
+        );
+      } else {
+        return responseError({ res, code: 400, data: 'Invalid type' });
+      }
+    } else {
+      // User settings do not exist, create them with the appropriate start date based on the type
+      if (type === 'donation') {
+        await UserSettings.create({
+          userId: user.id,
+          startDateAutomationFund: String(date) /* your new start date value for fund automation */,
+          // Include other default or necessary fields for a new UserSettings record
+        });
+      } else if (type === 'registration') {
+        await UserSettings.create({
+          userId: user.id,
+          startDateAutomationRegistration: String(date) /* your new start date value for registration automation */,
+          // Include other default or necessary fields for a new UserSettings record
+        });
+      } else {
+        return responseError({ res, code: 400, data: 'Invalid type' });
+      }
+    }
+
+    return responseSuccess(res, 'Success');
+  } catch (e) {
+    return responseError({ res, code: 400, data: e.message });
+  }
+};
+
 export const addUpdateBankSettings = async (req: Request, res: Response) => {
   const { email, data } = req.body;
   console.log('tetasdasd', { email, data });
@@ -113,6 +184,42 @@ export const addUpdateBankSettings = async (req: Request, res: Response) => {
   } catch (e) {
     console.log('ERROR: ', e);
     res.status(500).json({ error: e.message });
+  }
+};
+
+export const addUpdateBilling = async (req: Request, res: Response) => {
+  const { email, data } = req.body;
+
+  try {
+    if (data?.userId !== null) {
+      const billingDataExist = await Billing.findOne({ where: { userId: data.userId } });
+      if (billingDataExist) {
+        await Billing.update(data, { where: { userId: data.userId } });
+      } else {
+        await Billing.create({ ...data, userId: data.userId });
+      }
+
+      return responseSuccess(res, data);
+    }
+  } catch (e) {
+    console.log('ERROR: ', e);
+    res.status(500).json({ error: e.message });
+  }
+};
+
+export const viewBilling = async (req: Request, res: Response) => {
+  const { userId } = req.body;
+
+  try {
+    const billingDataExist = await Billing.findOne({ where: { userId } });
+    if (billingDataExist) {
+      return responseSuccess(res, billingDataExist);
+    } else {
+      return res.status(200).json({ error: 'No billing data found for this user' });
+    }
+  } catch (e) {
+    console.log('ERROR: ', e);
+    return res.status(500).json({ error: e.message });
   }
 };
 
@@ -378,6 +485,8 @@ export const updateUserData = async (req: Request, res: Response) => {
       fileName = imageUploadData.fileName;
       imageUrl = imageUploadData.imageUrl;
       await User.update({ img_url: imageUrl }, { where: { id: userId } });
+    } else {
+      await User.update({ email, firstName, lastName, churchName }, { where: { id: userId } });
     }
 
     const data = { ...userData, fileName, imageUrl };
@@ -387,5 +496,37 @@ export const updateUserData = async (req: Request, res: Response) => {
     return responseError({ res, code: 400, message: 'Error in user update' });
   } catch (e) {
     return responseError({ res, code: 400, message: e });
+  }
+};
+
+// This function handles the CRUD operations for user email preferences.
+// It allows creating, updating, and retrieving email preferences for a user.
+export const crudUserEmailPreferences = async (req: Request, res: Response) => {
+  const { userId, email, type } = req.body;
+
+  try {
+    if (userId && type) {
+      // Check if there are existing preferences for the given user and type
+      const existingPreferences = await userEmailPreferences.findOne({ where: { userId, type } });
+
+      if (existingPreferences) {
+        // If preferences exist, update the email for the user and type
+        await userEmailPreferences.update({ email }, { where: { userId, type } });
+        return responseSuccess(res, 'success');
+      }
+    }
+
+    if (email && type) {
+      // If email and type are provided, create new preferences for the user
+      const preferences = await userEmailPreferences.create({ userId, email, type });
+      return responseSuccess(res, 'success');
+    }
+
+    // If only userId is provided, retrieve all preferences for the user
+    const preferences = await userEmailPreferences.findAll({ where: { userId } });
+    return responseSuccess(res, preferences);
+  } catch (e) {
+    console.log('ERROR: ', e);
+    return responseError({ res, code: 500, message: e.message });
   }
 };

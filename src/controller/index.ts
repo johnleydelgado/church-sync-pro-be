@@ -17,6 +17,7 @@ import bookkeeper from '../db/models/bookkeeper';
 import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
 import ThirdParty from 'supertokens-node/recipe/thirdparty';
 import EmailPassword from 'supertokens-node/recipe/emailpassword';
+import { format } from 'date-fns';
 
 const sgMail = require('@sendgrid/mail');
 const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
@@ -30,7 +31,13 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
   // const htmlFile = await fs.promises.readFile('src/template/msg.html', 'utf-8');
 
   try {
-    await bookkeeper.create({ email: emailTo, inviteSent: true, invitationToken: rand, clientId });
+    await bookkeeper.create({
+      email: emailTo,
+      inviteSent: true,
+      invitationToken: rand,
+      clientId,
+      bookkeeperIntegrationAccessEnabled: false,
+    });
     const msg = {
       to: emailTo, // Change to your recipient
       from: 'support@churchsyncpro.com', // Change to your verified sender
@@ -175,7 +182,7 @@ export const createPayment = async (req: Request, res: Response) => {
 };
 
 export const manualSync = async (req: Request, res: Response) => {
-  const { email, dataBatch, batchId = '0', realBatchId, bankData } = req.body; // refresh token if for pc
+  const { email, dataBatch, batchId = '0', realBatchId, bankData, donations } = req.body; // refresh token if for pc
   const jsonRes = { donation: [] as any }; //this is an array object
   const bank = bankData as
     | {
@@ -223,26 +230,47 @@ export const manualSync = async (req: Request, res: Response) => {
       return responseError({ res, code: 500, data: 'Settings not set !' });
     }
 
-    const donationUrl = `https://api.planningcenteronline.com/giving/v2/batches/${batchId}/donations`;
-    const responseDonation = await axios.get(donationUrl, config);
+    if (donations.length === 0 || !donations) {
+      throw new Error(`Empty donations`);
+    }
+
     // jsonRes.donation = {...jsonRes.donation, responseDonation.data.data}
-    for (const donationsData of responseDonation.data.data) {
+    for (const donationsData of donations) {
       const fundsData = await getFundInDonation({
         donationId: Number(donationsData.id),
         access_token: String(access_token),
       });
       const fundName = fundsData[0].attributes.name;
-      const settingsItem = settingsData.find((item: SettingsJsonProps) => item.fundName === fundName);
+
+      const settingsItem = settingsData?.find((item: SettingsJsonProps) => item.fundName === fundName);
+
+      if (!settingsItem) {
+        throw new Error(`Settings for fund name "${fundName}" not found.`);
+      }
+
+      if (!bank) {
+        throw new Error(`Please setup bank details`);
+      }
+
+      // return responseSuccess(res, donationsData);
+
       const accountRef = settingsItem?.account?.value ?? '';
       const receivedFrom = settingsItem?.customer?.value ?? '';
       const classRef = settingsItem?.class?.value ?? '';
       const paymentCheck = donationsData.attributes.payment_check_number || '';
       const bankRef = bank.find((a) => a.type === 'donation') || {};
 
+      const donationDate = donationsData?.attributes?.completed_at
+        ? new Date(donationsData?.attributes?.completed_at)
+        : new Date();
+
+      const TxnDate = format(donationDate, 'yyyy-MM-dd');
+
       jsonRes.donation = [
         ...jsonRes.donation,
         {
           ...donationsData,
+          TxnDate,
           fund: fundsData[0] || {},
           batch: dataBatch,
           accountRef,
@@ -255,11 +283,7 @@ export const manualSync = async (req: Request, res: Response) => {
     }
     if (!isEmpty(jsonRes.donation)) {
       const data = newRequestPayload(jsonRes.donation);
-      console.log('jsonRes.donatio', data.Line[0].DepositLineDetail);
-      // let count = 0;
-      // for (const payloadJson of data) {
       const bqoCreatedDataId = await automationDeposit(email as string, data);
-      // const batchId = data.Line[0].Description;
       const batchExist = synchedBatchesData.find((a) => a.batchId === batchId && a.userId === user.id);
       const batchId = jsonRes.donation[0].batch.id;
 
@@ -271,14 +295,11 @@ export const manualSync = async (req: Request, res: Response) => {
           donationId: bqoCreatedDataId['Id'] || '',
         });
       }
-      // count += 1;
-      // }
     }
 
     return responseSuccess(res, 'success');
   } catch (e) {
-    console.log('error', e);
-    return responseError({ res, code: 500, data: e });
+    return responseError({ res, code: 404, message: e.message || 'Error' });
   }
 };
 

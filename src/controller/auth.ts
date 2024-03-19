@@ -10,7 +10,7 @@ const OAuthClient = require('intuit-oauth');
 import Stripe from 'stripe';
 
 const { PC_CLIENT_ID, PC_SECRET_APP, PC_REDIRECT, STRIPE_SECRET_KEY, STRIPE_PUB_KEY, STRIPE_CLIENT_ID } = process.env;
-const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2022-11-15' });
+const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2023-10-16' });
 
 interface tokenObj {
   access_token: string;
@@ -132,7 +132,7 @@ export const callBackStripe = async (req: Request, res: Response) => {
   try {
     const response = await stripe.oauth.token({ grant_type: 'authorization_code', code });
 
-    // const stripe2 = new Stripe(response.access_token, { apiVersion: '2022-11-15' });
+    // const stripe2 = new Stripe(response.access_token, { apiVersion: '2023-10-16' });
 
     // const charges = await stripe2.charges.list({ limit: 100 }); // Retrieve up to 100 charges at once, the maximum allowed by Stripe API
 

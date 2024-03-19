@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { generatePcToken } from '../controller/automation';
+import _ from 'lodash';
 
 interface PcTokenProps {
   refreshToken: string;
@@ -38,4 +39,19 @@ const pcTokenValidation = async ({ refreshToken, accessToken, email }: PcTokenPr
   // }
 };
 
-export { getDayBoundary, pcTokenValidation };
+const checkEmpty = (value): boolean => {
+  // Check for null or undefined directly
+  if (value == null) {
+    return true;
+  }
+
+  if (_.isArray(value)) {
+    // Check if it's an array and if every item is an empty object
+    return _.isEmpty(value) || _.every(value, (item) => _.isPlainObject(item) && _.isEmpty(item));
+  } else {
+    // Use Lodash's isEmpty for other types
+    return _.isEmpty(value);
+  }
+};
+
+export { getDayBoundary, pcTokenValidation, checkEmpty };

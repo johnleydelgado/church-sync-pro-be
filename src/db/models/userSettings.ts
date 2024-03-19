@@ -12,6 +12,8 @@ export interface UserSettingsAttributes {
   isAutomationEnable?: boolean;
   isAutomationRegistration?: boolean;
   userId?: number;
+  startDateAutomationFund?: string;
+  startDateAutomationRegistration?: string;
 }
 
 class UserSettings extends Model<UserSettingsAttributes> implements UserSettingsAttributes {
@@ -23,6 +25,8 @@ class UserSettings extends Model<UserSettingsAttributes> implements UserSettings
   public isAutomationEnable!: boolean;
   public isAutomationRegistration!: boolean;
   public userId!: number;
+  public startDateAutomationFund!: string;
+  public startDateAutomationRegistration!: string;
 
   public readonly user?: User; // Define the association property
 
@@ -63,6 +67,14 @@ UserSettings.init(
     },
     userId: {
       type: DataTypes.INTEGER,
+    },
+    startDateAutomationFund: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    startDateAutomationRegistration: {
+      type: DataTypes.STRING,
+      allowNull: true,
     },
   },
   {

@@ -19,12 +19,15 @@ STAGING_PROJECT=church-sync-pro-385703
 deploy-stg:
 	make deploy-supertoken GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging SUPER_TOKEN=supertokens \
 	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
-	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging PROJECT_NAME=csp-be ENV_VAR=.env.staging \
-	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
+
+
+# deploy-prd:
+# 	make deploy-supertoken GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=production SUPER_TOKEN=supertokens-prd \
+# 	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
+# 	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=production PROJECT_NAME=csp-be-prd ENV_VAR=.env.production \
+# 	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
 
 deploy-prd:
-	make deploy-supertoken GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=production SUPER_TOKEN=supertokens-prd \
-	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
 	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=production PROJECT_NAME=csp-be-prd ENV_VAR=.env.production \
 	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
 
@@ -43,7 +46,7 @@ deploy-supertoken:
 		--ingress all \
 		--allow-unauthenticated \
 		${VPC_CONNECTOR} \
-		--set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://postgres:asd123asd@10.94.96.3/${SUPER_TOKEN}',SUPERTOKENS_PORT=3567,API_KEYS=18be6f53-2e23-4fcc-bd17-2fecb798106e \
+		--set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://doadmin:AVNS_lpk1d8Y_bdAdnmZ6Xsb@db-csp-do-user-15692087-0.c.db.ondigitalocean.com:25060/supertokens',SUPERTOKENS_PORT=3567,API_KEYS=18be6f53-2e23-4fcc-bd17-2fecb798106e \
 		--project ${GOOGLE_CLOUD_PROJECT}
 	gcloud run services update-traffic ${SUPER_TOKEN} --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1
 

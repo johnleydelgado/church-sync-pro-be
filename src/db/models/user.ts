@@ -1,6 +1,8 @@
 import { Model, DataTypes, Sequelize } from 'sequelize';
 import sequelize from '..';
 import tokens from './tokens';
+import userEmailPreferences from './userEmailPreferences';
+import UserSettings from './userSettings';
 
 export interface UserAttributes {
   id?: number;
@@ -12,6 +14,8 @@ export interface UserAttributes {
   isSubscribe: string;
   role?: 'client' | 'bookkeeper';
   tokens?: tokens[];
+  UserSetting?: UserSettings;
+  userEmailPreferences?: userEmailPreferences[];
   token: string;
   img_url: string;
 }
@@ -27,6 +31,8 @@ class User extends Model<UserAttributes> implements UserAttributes {
   public img_url!: string;
   public role!: 'client' | 'bookkeeper';
   public tokens!: tokens[];
+  public UserSetting!: UserSettings;
+  public userEmailPreferences!: userEmailPreferences[];
 }
 
 User.init(

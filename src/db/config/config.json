@@ -26,11 +26,19 @@
       }
     },
     "staging": {
-      "username": "postgres",
-      "password": "asd123asd",
+      "username": "doadmin",
+      "password": "AVNS_lpk1d8Y_bdAdnmZ6Xsb",
       "database": "supertokens",
-      "host": "10.94.96.3",
+      "host": "db-csp-do-user-15692087-0.c.db.ondigitalocean.com",
       "dialect": "postgres",
+      "port": 25060,
+      "dialectOptions": {
+        "ssl": {
+          "require": true,
+          "rejectUnauthorized": false,
+          "ca": "../../../cert/ca-certificate.crt"
+        }
+      },
       "pool": {
         "max": 5,
         "min": 0,
@@ -52,26 +60,42 @@
       }
     },
     "uat-prd": {
-      "username": "postgres",
-      "password": "asd123asd",
-      "database": "supertokens-prd",
-      "host": "34.27.255.216",
+      "username": "doadmin",
+      "password": "AVNS_lpk1d8Y_bdAdnmZ6Xsb",
+      "database": "supertokens",
+      "host": "db-csp-do-user-15692087-0.c.db.ondigitalocean.com",
       "dialect": "postgres",
+      "port": 25060,
+      "dialectOptions": {
+        "ssl": {
+          "require": true,
+          "rejectUnauthorized": false,
+          "ca": "../../../cert/ca-certificate.crt"
+        }
+      },
       "pool": {
-        "max": 5,
+        "max": 44,
         "min": 0,
         "acquire": 30000,
         "idle": 10000
       }
     },
     "production": {
-      "username": "postgres",
-      "password": "asd123asd",
-      "database": "supertokens-prd",
-      "host": "10.94.96.3",
+      "username": "doadmin",
+      "password": "AVNS_lpk1d8Y_bdAdnmZ6Xsb",
+      "database": "supertokens",
+      "host": "db-csp-do-user-15692087-0.c.db.ondigitalocean.com",
       "dialect": "postgres",
+      "port": 25060,
+      "dialectOptions": {
+        "ssl": {
+          "require": true,
+          "rejectUnauthorized": false,
+          "ca": "../../../cert/ca-certificate.crt"
+        }
+      },
       "pool": {
-        "max": 5,
+        "max": 44,
         "min": 0,
         "acquire": 30000,
         "idle": 10000

@@ -14,9 +14,10 @@ services:
       - app_network
     restart: unless-stopped
     healthcheck:
-      test: ['CMD', 'pg_isready -U supertokens_user']
-      interval: 5s
-      timeout: 5s
+      test: ['CMD', 'pg_isready', '-U', 'supertokens_user', '-d', 'supertokens']
+      interval: 10s  # Increase if the database takes longer to get ready
+      timeout: 10s   # Increase if the database takes longer to respond
+      start_period: 20s  # Add this to give the database more time to initialize before starting checks
       retries: 5
 
   supertokens:
@@ -27,7 +28,7 @@ services:
     ports:
       - 3567:3567
     environment:
-      POSTGRESQL_CONNECTION_URI: 'postgresql://admin:1234@db:5432/supertokens'
+      POSTGRESQL_CONNECTION_URI: "postgresql://admin:1234@db:5432/supertokens"
     networks:
       - app_network
     restart: unless-stopped

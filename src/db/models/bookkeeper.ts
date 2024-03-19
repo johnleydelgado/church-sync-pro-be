@@ -12,6 +12,7 @@ export interface tokenAttributes {
   invitationToken: string;
   inviteSent: boolean;
   inviteAccepted: boolean;
+  bookkeeperIntegrationAccessEnabled: boolean;
 }
 
 class bookkeeper extends Model<tokenAttributes> implements tokenAttributes {
@@ -22,6 +23,7 @@ class bookkeeper extends Model<tokenAttributes> implements tokenAttributes {
   public invitationToken!: string;
   public inviteSent!: boolean;
   public inviteAccepted!: boolean;
+  public bookkeeperIntegrationAccessEnabled!: boolean;
 
   public readonly user?: User; // Define the association property
   public readonly token_entity?: tokenEntity; // Define the association property
@@ -66,6 +68,10 @@ bookkeeper.init(
     },
     inviteSent: DataTypes.BOOLEAN,
     inviteAccepted: DataTypes.BOOLEAN,
+    bookkeeperIntegrationAccessEnabled: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+    },
   },
   {
     sequelize,

@@ -139,12 +139,9 @@ supertokens.init({
                 // These are the input form fields values that the user used while signing up
                 const formFields = input.formFields;
                 const result = formFields.reduce<ResultObject>((obj, item) => {
-                  obj[item.id] = item.value;
                   return obj;
                 }, {});
-
                 const isEmailExist = await User.findOne({ where: { email: result.email } });
-                console.log('isEmailExist', isEmailExist);
                 if (isEmailExist === null) {
                   await User.create({ ...result });
                 } else {

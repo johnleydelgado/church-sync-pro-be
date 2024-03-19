@@ -24,29 +24,47 @@ import { getBatches, getFunds, handleRegistrationEvents } from '../controller/pl
 import {
   addUpdateBankCharges,
   addUpdateBankSettings,
+  addUpdateBilling,
   bookkeeperList,
   checkValidInvitation,
   createSettings,
   createUser,
+  crudUserEmailPreferences,
   deleteUserToken,
   enableAutoSyncSetting,
   getTokenList,
   getUserRelated,
   isUserHaveTokens,
+  setStartDataAutomation,
   updateInvitationStatus,
+  updateRegisterSettings,
   updateUser,
   updateUserData,
   updateUserToken,
+  viewBilling,
 } from '../controller/user';
 import { addTokenInUser } from '../controller/db';
-import { deleteQboDeposit, getAllQboData, getDepositRef } from '../controller/qbo';
+import {
+  addProject,
+  deleteQboDeposit,
+  findCustomer,
+  getAllQboData,
+  getDepositRef,
+  updateProject,
+} from '../controller/qbo';
 import {
   finalSyncStripe,
   getStripePayouts,
   syncStripePayout,
   syncStripePayoutRegistration,
 } from '../controller/stripe';
-import { automationScheduler, checkLatestFund, latestFundAutomation } from '../controller/automation';
+import {
+  automationScheduler,
+  checkLatestFund,
+  checkLatestRegistration,
+  latestFundAutomation,
+  latestRegistrationAutomation,
+} from '../controller/automation';
 const routers = Router();
 // routers.post("/start", authorized, startTask);
 routers.get('/', tesst);
@@ -62,8 +80,8 @@ routers.get('/healthCheck', verifySession(), healthCheck);
 routers.post('/createPayment', verifySession(), createPayment);
 routers.post('/deleteBookeeper', verifySession(), deleteBookeeper);
 
-routers.get(pcRoutes.getFunds, getFunds);
-routers.post(pcRoutes.getBatches, getBatches);
+routers.get(pcRoutes.getFunds, verifySession(), getFunds);
+routers.post(pcRoutes.getBatches, verifySession(), getBatches);
 routers.post(pcRoutes.handleRegistrationEvents, verifySession(), handleRegistrationEvents);
 
 routers.get(stripeRoutes.getStripePayouts, verifySession(), getStripePayouts);
@@ -73,11 +91,15 @@ routers.post(stripeRoutes.finalSyncStripe, verifySession(), finalSyncStripe);
 
 routers.post(qboRoutes.getAllQboData, verifySession(), getAllQboData);
 routers.post(qboRoutes.deleteQboDeposit, verifySession(), deleteQboDeposit);
+routers.post(qboRoutes.addProject, verifySession(), addProject);
+routers.post(qboRoutes.updateProject, verifySession(), updateProject);
+routers.post(qboRoutes.findCustomer, verifySession(), findCustomer);
 
 routers.post(userRoutes.updateUser, verifySession(), updateUser);
 routers.post(userRoutes.createUser, verifySession(), createUser);
 routers.post(userRoutes.addTokenInUser, verifySession(), addTokenInUser);
 routers.post(userRoutes.createSettings, verifySession(), createSettings);
+routers.post(userRoutes.updateRegisterSettings, verifySession(), updateRegisterSettings);
 routers.post(userRoutes.enableAutoSyncSetting, verifySession(), enableAutoSyncSetting);
 routers.get(userRoutes.getUserRelated, getUserRelated);
 routers.post(userRoutes.manualSync, verifySession(), manualSync);
@@ -93,7 +115,11 @@ routers.post(userRoutes.updateInvitationStatus, updateInvitationStatus);
 routers.post(userRoutes.bookkeeperList, verifySession(), bookkeeperList);
 routers.post(userRoutes.userUpdate, verifySession(), updateUserData);
 routers.post(userRoutes.addUpdateBankSettings, verifySession(), addUpdateBankSettings);
+routers.post(userRoutes.addUpdateBilling, verifySession(), addUpdateBilling);
+routers.post(userRoutes.viewBilling, verifySession(), viewBilling);
 routers.post(userRoutes.addUpdateBankCharges, verifySession(), addUpdateBankCharges);
+routers.post(userRoutes.crudUserEmailPreferences, crudUserEmailPreferences);
+routers.post(userRoutes.setStartDataAutomation, setStartDataAutomation);
 
 routers.post('/automationScheduler', automationScheduler);
 routers.post('/latestFundAutomation', latestFundAutomation);
@@ -101,5 +127,7 @@ routers.post('/latestFundAutomation', latestFundAutomation);
 routers.post('/getDepositRef', getDepositRef);
 
 routers.post('/checkLatestFund', checkLatestFund);
+routers.post('/checkLatestRegistration', checkLatestRegistration);
+routers.post('/latestRegistrationAutomation', latestRegistrationAutomation);
 
 export default routers;
