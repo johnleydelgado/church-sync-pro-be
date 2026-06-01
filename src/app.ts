@@ -95,7 +95,7 @@ supertokens.init({
                 }, {});
                 const isEmailExist = await User.findOne({ where: { email: result.email } });
                 if (isEmailExist === null) {
-                  await User.create({ ...result });
+                  await User.create({ ...result, isActive: true });
                 } else {
                   await User.update({ ...result }, { where: { email: result.email } });
                 }
@@ -143,7 +143,7 @@ supertokens.init({
                 }, {});
                 const isEmailExist = await User.findOne({ where: { email: result.email } });
                 if (isEmailExist === null) {
-                  await User.create({ ...result });
+                  await User.create({ ...result, isActive: true });
                 } else {
                   await User.update({ ...result }, { where: { email: result.email } });
                 }

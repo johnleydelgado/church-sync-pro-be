@@ -49,34 +49,31 @@ export const getAllQboData = async (req: Request, res: Response) => {
   };
 
   const fetchAccounts = async () => {
-    const accountTypes = ['Income', 'Revenue', 'Bank', 'Expense'];
+    const accountTypes = ['Income', 'Revenue', 'Bank', 'Expense', 'Credit Card'];
 
     let accountList = [];
 
-    for (let type of accountTypes) {
-      await new Promise<void>((resolve, reject) => {
-        quickBookApi(qboTokens).findAccounts(
-          {
-            AccountType: type,
-            desc: 'MetaData.LastUpdatedTime',
-          },
-          function (err, accounts) {
-            if (err) {
-              reject(err);
-              return; // important to prevent further execution in case of error
-            }
-            if (accounts && accounts.QueryResponse && accounts.QueryResponse.Account) {
-              accounts.QueryResponse.Account.forEach(function (account) {
-                accountList.push({ value: account.Id, name: account.Name, type: account.AccountType });
-              });
-            }
-            resolve();
-          },
-        );
-      }).catch((error) => {
-        console.error(`Error fetching accounts for type ${type}:`, error);
-      });
-    }
+    await new Promise<void>((resolve, reject) => {
+      quickBookApi(qboTokens).findAccounts(
+        {
+          desc: 'MetaData.LastUpdatedTime',
+        },
+        function (err, accounts) {
+          if (err) {
+            reject(err);
+            return; // important to prevent further execution in case of error
+          }
+          if (accounts && accounts.QueryResponse && accounts.QueryResponse.Account) {
+            accounts.QueryResponse.Account.forEach(function (account) {
+              accountList.push({ value: account.Id, name: account.Name, type: account.AccountType });
+            });
+          }
+          resolve();
+        },
+      );
+    }).catch((error) => {
+      console.error(`Error fetching accounts for type:`, error);
+    });
     return accountList;
   };
 

@@ -36,6 +36,7 @@ import {
   getUserRelated,
   isUserHaveTokens,
   setStartDataAutomation,
+  toggleUserActiveStatus,
   updateInvitationStatus,
   updateRegisterSettings,
   updateUser,
@@ -53,7 +54,9 @@ import {
   updateProject,
 } from '../controller/qbo';
 import {
+  createPaymentIntent,
   finalSyncStripe,
+  getStripeList,
   getStripePayouts,
   syncStripePayout,
   syncStripePayoutRegistration,
@@ -88,6 +91,8 @@ routers.get(stripeRoutes.getStripePayouts, verifySession(), getStripePayouts);
 routers.post(stripeRoutes.syncStripePayout, verifySession(), syncStripePayout);
 routers.post(stripeRoutes.syncStripePayoutRegistration, verifySession(), syncStripePayoutRegistration);
 routers.post(stripeRoutes.finalSyncStripe, verifySession(), finalSyncStripe);
+routers.post(stripeRoutes.getStripeList, verifySession(), getStripeList);
+routers.post(stripeRoutes.createPaymentIntent, createPaymentIntent);
 
 routers.post(qboRoutes.getAllQboData, verifySession(), getAllQboData);
 routers.post(qboRoutes.deleteQboDeposit, verifySession(), deleteQboDeposit);
@@ -114,6 +119,7 @@ routers.post(userRoutes.checkValidInvitation, checkValidInvitation);
 routers.post(userRoutes.updateInvitationStatus, updateInvitationStatus);
 routers.post(userRoutes.bookkeeperList, verifySession(), bookkeeperList);
 routers.post(userRoutes.userUpdate, verifySession(), updateUserData);
+routers.post(userRoutes.toggleUserActiveStatus, verifySession(), toggleUserActiveStatus);
 routers.post(userRoutes.addUpdateBankSettings, verifySession(), addUpdateBankSettings);
 routers.post(userRoutes.addUpdateBilling, verifySession(), addUpdateBilling);
 routers.post(userRoutes.viewBilling, verifySession(), viewBilling);

@@ -17,6 +17,8 @@ const stripeRoutes = {
   syncStripePayout: '/stripe/syncStripePayout',
   syncStripePayoutRegistration: '/stripe/syncStripePayoutRegistration',
   finalSyncStripe: '/stripe/finalSyncStripe',
+  getStripeList: '/stripe/getStripeList',
+  createPaymentIntent: '/stripe/create-payment-intent',
 };
 
 const userRoutes = {
@@ -39,6 +41,7 @@ const userRoutes = {
   updateInvitationStatus: '/user/updateInvitationStatus',
   bookkeeperList: '/user/bookkeeperList',
   userUpdate: '/user/userUpdate',
+  toggleUserActiveStatus: '/user/toggleUserActiveStatus',
   addUpdateBankSettings: '/user/addUpdateBankSettings',
   addUpdateBilling: '/user/addUpdateBilling',
   viewBilling: '/user/viewBilling',

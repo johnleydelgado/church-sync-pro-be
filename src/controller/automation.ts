@@ -23,6 +23,7 @@ import Stripe from 'stripe';
 import userEmailPreferences from '../db/models/userEmailPreferences';
 import { dailySyncing, dailySyncingRegistration } from '../utils/automation-helper';
 import { id } from 'date-fns/locale';
+import EmailLog from '../db/models/emailLog';
 
 const { SENDGRID_API_KEY, SETTING_FUND_URL } = process.env;
 
@@ -395,6 +396,8 @@ export const latestFundAutomation = async (req: Request, res: Response) => {
       ) {
         const tokenEntity = await generatePcToken(a.email as string);
         const { access_token } = tokenEntity;
+        const settingsJson = a.UserSetting.settingsData as any;
+
         const config = {
           method: 'get',
           url: 'https://api.planningcenteronline.com/giving/v2/batches?per_page=50&order=-updated_at&filter=committed',
@@ -403,8 +406,17 @@ export const latestFundAutomation = async (req: Request, res: Response) => {
           },
         };
 
+      
+
         // Note: axios call is outside of the inner map to ensure proper handling of async operations
         const response = await axios(config);
+
+        const newArr = response.data.data
+        let isOneOfRegistrationDeactivated = !isEmpty(
+          newArr.filter((c) =>
+            settingsJson?.some((a) => c.description.includes(a.registration) && !a.isActive),
+          ),
+        );
 
         // Collect promises from map() operation
         const innerPromises = response.data.data
@@ -588,7 +600,7 @@ export const checkLatestFund = async (req: Request, res: Response) => {
     include: [tokens, userEmailPreferences],
   });
 
-  const filteredUsers = users.filter((user) => user.role === 'client');
+  const filteredUsers = users.filter((user) => user.role === 'client' && user.email === 'llambas86@gmail.com');
 
   const BASE_URL = 'https://api.planningcenteronline.com/giving/v2/funds';
 
@@ -597,6 +609,26 @@ export const checkLatestFund = async (req: Request, res: Response) => {
     const userEmail = a.email;
     const access_token = a.tokens.find((a) => a.token_type === 'pco')?.access_token;
     const newFundEmail = a.userEmailPreferences.find((a) => a.type === 'new-fund')?.email || '';
+
+    const twoDaysAgo = subDays(new Date(), 2);
+
+    const isMailAlreadyExist = await EmailLog.findOne({
+      where: {
+        userId: a.id,
+        emailType: 'fund',
+      },
+      order: [['createdAt', 'DESC']],
+    });
+
+    if (isMailAlreadyExist) {
+      const createdAtDate = new Date(isMailAlreadyExist.createdAt);
+      if (isWithinInterval(createdAtDate, { start: twoDaysAgo, end: new Date() })) {
+        console.log('Email was sent within the last 2 days');
+        continue;
+      } else {
+        console.log('Email was not sent within the last 2 days');
+      }
+    }
 
     const config = {
       headers: {
@@ -627,13 +659,13 @@ export const checkLatestFund = async (req: Request, res: Response) => {
       const formattedFundList = formatFundList(fundNames);
 
       if (formattedFundList === 'No fund') {
-        return responseSuccess(res, formattedFundList);
+        continue;
       }
 
       const msg = {
         to: newFundEmail ? newFundEmail : userEmail, // Change to your recipient
         from: 'support@churchsyncpro.com', // Change to your verified sender
-        templateId: 'd-689ab576079d4909beadc88e16e30f55',
+        templateId: 'd-3d206cfca5c845659add95f31d9ff58c',
         dynamicTemplateData: {
           url: SETTING_FUND_URL,
           fund: formattedFundList,
@@ -641,6 +673,7 @@ export const checkLatestFund = async (req: Request, res: Response) => {
         },
       };
       await sgMail.send(msg);
+      await EmailLog.create({ emailType: 'fund', userId });
 
       // If the code reaches here, the token is valid
       return responseSuccess(res, 'email sent');
@@ -659,9 +692,31 @@ export const checkLatestRegistration = async (req: Request, res: Response) => {
   const users = await User.findAll({
     include: [tokens, userEmailPreferences],
   });
-  // const BASE_URL = 'https://api.planningcenteronline.com/giving/v2/funds';
+
+  const filteredUsers = users.filter((user) => user.role === 'client' && user.email === 'llambas86@gmail.com');
+
+  const twoDaysAgo = subDays(new Date(), 2);
+
   try {
-    for (const a of users) {
+    for (const a of filteredUsers) {
+      const isMailAlreadyExist = await EmailLog.findOne({
+        where: {
+          userId: a.id,
+          emailType: 'stripe',
+        },
+        order: [['createdAt', 'DESC']],
+      });
+
+      if (isMailAlreadyExist) {
+        const createdAtDate = new Date(isMailAlreadyExist.createdAt);
+        if (isWithinInterval(createdAtDate, { start: twoDaysAgo, end: new Date() })) {
+          console.log('Email was sent within the last 2 days');
+          continue;
+        } else {
+          console.log('Email was not sent within the last 2 days');
+        }
+      }
+
       const access_token = a.tokens.find((a) => a.token_type === 'stripe')?.access_token;
       const refresh_token = a.tokens.find((a) => a.token_type === 'stripe')?.refresh_token;
       const newRegistrationEmail = a.userEmailPreferences.find((a) => a.type === 'new-registration')?.email || '';
@@ -719,29 +774,30 @@ export const checkLatestRegistration = async (req: Request, res: Response) => {
                 }),
               );
             }
-            console.log('arr', arr);
           }
 
-          const formattedEventList = formatFundList(listOfRegistrationThatIsNotSetup);
+          const flattenedArray = listOfRegistrationThatIsNotSetup.flat();
+          const newListOfRegistrationThatIsNotSetup = [...new Set(flattenedArray)];
 
-          console.log('formattedEventList', formattedEventList);
+          const formattedEventList = formatFundList(newListOfRegistrationThatIsNotSetup);
 
           if (formattedEventList === 'No events') {
-            return responseSuccess(res, formattedEventList);
+            continue;
           }
 
-          if (!isEmpty(listOfRegistrationThatIsNotSetup)) {
+          if (!isEmpty(newListOfRegistrationThatIsNotSetup)) {
             const msg = {
               to: newRegistrationEmail ? newRegistrationEmail : a.email, // Change to a.email
               from: 'support@churchsyncpro.com',
               templateId: 'd-40cbb2e448bc42ab8db3c8184bed1628',
               dynamicTemplateData: {
-                fund: formatEventList(listOfRegistrationThatIsNotSetup),
+                fund: formatEventList(newListOfRegistrationThatIsNotSetup),
                 name: a.firstName + ' ' + a.lastName,
                 url: SETTING_FUND_URL,
               },
             };
             await sgMail.send(msg);
+            await EmailLog.create({ emailType: 'stripe', userId: a.id });
           }
         } else {
           console.error('No access_token available');
@@ -763,21 +819,26 @@ export const checkLatestRegistration = async (req: Request, res: Response) => {
 function formatEventList(events) {
   if (events.length === 0) {
     return 'No events';
-  } else if (events.length === 1) {
-    return `A registration ${events[0]}`;
   } else {
-    const lastEvent = events.pop();
-    return `A registration ${events.join(', ')} and ${lastEvent}`;
+    return `<ul style="text-align: left; color: #7B7B7B;">${events.map((event) => `<li>${event}</li>`).join('')}</ul>`;
   }
 }
 
 function formatFundList(events) {
   if (events.length === 0) {
     return 'No fund';
-  } else if (events.length === 1) {
-    return `A fund ${events[0]}`;
   } else {
-    const lastEvent = events.pop();
-    return `A fund ${events.join(', ')} and ${lastEvent}`;
+    return `<ul style="text-align: left; color: #7B7B7B;">${events.map((event) => `<li>${event}</li>`).join('')}</ul>`;
   }
 }
+
+// function formatFundList(events) {
+//   if (events.length === 0) {
+//     return 'No fund';
+//   } else if (events.length === 1) {
+//     return `A fund ${events[0]}`;
+//   } else {
+//     const lastEvent = events.pop();
+//     return `A fund ${events.join(', ')} and ${lastEvent}`;
+//   }
+// }

@@ -709,3 +709,207 @@ export const removeDuplicatesAndSumAmount = (arr: any[]) => {
     return item; // Return the item with updated amount and net but original description
   });
 };
+
+export const getStripeList = async (req: Request, res: Response) => {
+  const { email, isRegistrationActive } = req.body;
+
+  try {
+    const user = await User.findOne({
+      where: { email: email as string },
+      include: [tokens],
+    });
+
+    const access_token = user.tokens.find((a) => a.token_type === 'stripe')?.access_token;
+    const refresh_token = user.tokens.find((a) => a.token_type === 'stripe')?.refresh_token;
+
+    if (access_token) {
+      let tokensFinalJson: { access_token: string; refresh_token: string } = { access_token: '', refresh_token: '' };
+      const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
+      const settingsJson = (userSettingsExist?.settingRegistrationData as any) || [];
+
+      if (access_token && !(await checkAccessTokenValidity(access_token))) {
+        const result = await refreshAccessToken(user.email as string);
+        if (result && 'access_token' in result) {
+          tokensFinalJson = result as SuccessToken;
+        } else {
+          console.log('Failed to refresh access token, error:', result.error);
+          return responseError({ res, code: 500, data: 'Failed to refresh access_token' });
+        }
+      } else {
+        tokensFinalJson = { access_token: access_token, refresh_token: refresh_token };
+      }
+
+      if (tokensFinalJson.access_token) {
+        const stripe = new Stripe(tokensFinalJson.access_token, { apiVersion: '2023-10-16' });
+        const payouts = await await stripe.payouts.list({ limit: 100 });
+        let listOfRegistrationThatIsNotSetup = [];
+        const unixTimestamp = 1707738676;
+
+        // Convert to JavaScript Date object
+        const date = fromUnixTime(unixTimestamp);
+
+        // Format the date to a readable string
+        // Example: formatting to 'yyyy-MM-dd HH:mm:ss' (year-month-day hour:minute:second)
+        const formattedDate = format(date, 'yyyy-MM-dd HH:mm:ss');
+
+        // For each payout, retrieve the associated charges
+        for (const payout of payouts.data) {
+          const balanceTransactions = await stripe.balanceTransactions.list({ payout: payout.id });
+          const arr = balanceTransactions.data
+            .filter((item) => item.description.includes('Registration')) // Returns a boolean to filter items
+            .map((item) => ({ name: item.description, date: item.created })); // Maps the filtered items to new objects
+
+          if (!isEmpty(arr)) {
+            arr.forEach((item) => {
+              const parts = item.name.split(' - ');
+              let newName;
+
+              const unixTimestamp = item.date;
+
+              // Convert to JavaScript Date object
+              const date = fromUnixTime(unixTimestamp);
+
+              // Format the date to a readable string
+              // Example: formatting to 'yyyy-MM-dd HH:mm:ss' (year-month-day hour:minute:second)
+              const formattedDate = format(date, 'yyyy-MM-dd');
+
+              if (parts.length > 2) {
+                newName = parts.slice(2).join(' - '); // Join all parts after the first two
+              } else {
+                newName = parts[parts.length - 1]; // Use the last part if fewer parts
+              }
+
+              // Check if the name already exists in the list
+              const nameExists = listOfRegistrationThatIsNotSetup.some((reg) => reg.name === newName);
+
+              if (!nameExists) {
+                // Only push if the name does not exist
+                listOfRegistrationThatIsNotSetup.push({ name: newName, date: formattedDate, category: 'stripe' });
+              }
+            });
+          }
+        }
+
+        // Determine whether to use filtered or original array
+        const filteredArr =
+          settingsJson.length > 0
+            ? listOfRegistrationThatIsNotSetup.filter((item) => {
+                const x = settingsJson.find((a) => a.registration === item.name);
+                return x !== undefined; // Include if a match is found
+              })
+            : listOfRegistrationThatIsNotSetup; // Use original if settingsJson is empty
+
+        // Create the final array with the desired structure
+        const finalArr = filteredArr.map((item) => {
+          const x = settingsJson.find((a) => a.registration === item.name);
+
+          // Set isActive to false if no match or if it's explicitly false, otherwise default to true when settingsJson is empty
+          const isActive = settingsJson.length > 0 ? x?.isActive || true : true;
+
+          return {
+            name: item.name,
+            isActive: isActive,
+            category: item.category,
+          };
+        });
+
+        return responseSuccess(res, finalArr);
+      } else {
+        return responseError({ res, code: 200, data: 'Access Token Invalid' });
+      }
+    }
+  } catch (e) {
+    return responseError({ res, code: 500, data: e });
+  }
+};
+
+export const createPaymentIntent = async (req: Request, res: Response) => {
+  const { amount, paymentType, email, paymentMethodId } = req.body;
+  const type = paymentType as 'yearly' | 'monthly' | 'one time payment';
+
+  try {
+    const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2023-10-16' });
+
+    let customer = await findCustomerByEmail(email);
+
+    if (!customer) {
+      // Create customer if not found
+      customer = await stripe.customers.create({
+        email: email,
+      });
+    }
+
+    let paymentIntent: Stripe.PaymentIntent;
+    let setupIntent: Stripe.SetupIntent;
+
+    switch (type) {
+      case 'yearly':
+      case 'monthly':
+        await stripe.paymentMethods.attach(paymentMethodId, { customer: customer.id });
+
+        // For 'yearly' and 'monthly', use SetupIntents for future recurring charges
+        setupIntent = await stripe.setupIntents.create({
+          customer: customer.id,
+          payment_method_types: ['card'],
+          usage: 'off_session', // Indicates that the payment method will be used in the future when the customer is not present.
+        });
+
+        // const paymentMethodId = await stripe.setupIntents.confirm(setupIntent.id, {
+        //   payment_method: String(setupIntent.payment_method_types),
+        // });
+
+        // Assuming client-side confirms the SetupIntent and sends back the payment method ID
+        // Simulate getting paymentMethodId from the client, e.g., via an API request body
+
+        // Create the subscription using the confirmed payment method ID
+        const subscription = await stripe.subscriptions.create({
+          customer: customer.id,
+          default_payment_method: paymentMethodId,
+          items: [{ price: type === 'monthly' ? 'price_1PC1B6HLBrkDqBPj2VgD3J04' : 'price_1PC1BzHLBrkDqBPjSicUTixn' }], // Replace 'price_ID' with your actual price ID
+        });
+
+        res.send({
+          subscriptionId: subscription.id,
+          clientSecret: subscription.latest_invoice,
+          message: 'Subscription created successfully.',
+        });
+        break;
+
+      case 'one time payment':
+        // For one time payments, immediately create a PaymentIntent
+        paymentIntent = await stripe.paymentIntents.create({
+          customer: customer.id,
+          currency: 'usd',
+          amount: Number(amount) * 100, // Convert to cents
+          automatic_payment_methods: { enabled: true },
+        });
+        res.send({
+          clientSecret: paymentIntent.client_secret,
+          message: 'PaymentIntent created for one time payment.',
+        });
+        break;
+
+      default:
+        return res.status(400).send({ error: 'Invalid payment type provided.' });
+    }
+  } catch (e) {
+    let message: string;
+    if (typeof e === 'string') {
+      message = e;
+    } else if (e instanceof Error) {
+      message = e.message;
+    }
+    return responseError({ res, code: 500, data: message });
+  }
+};
+
+async function findCustomerByEmail(email: string) {
+  const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2023-10-16' });
+
+  const customers = await stripe.customers.list({
+    email: email,
+    limit: 1,
+  });
+
+  return customers.data.length > 0 ? customers.data[0] : null;
+}

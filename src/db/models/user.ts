@@ -18,6 +18,7 @@ export interface UserAttributes {
   userEmailPreferences?: userEmailPreferences[];
   token: string;
   img_url: string;
+  isActive: boolean;
 }
 
 class User extends Model<UserAttributes> implements UserAttributes {
@@ -29,6 +30,7 @@ class User extends Model<UserAttributes> implements UserAttributes {
   public isSubscribe!: string;
   public token!: string;
   public img_url!: string;
+  public isActive!: boolean;
   public role!: 'client' | 'bookkeeper';
   public tokens!: tokens[];
   public UserSetting!: UserSettings;
@@ -66,6 +68,10 @@ User.init(
     },
     img_url: {
       type: DataTypes.STRING(256),
+    },
+    isActive: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
     },
   },
   {

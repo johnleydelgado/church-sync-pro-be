@@ -3,6 +3,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import Users from '../db/models/user';
+import Tokens from '../db/models/tokens';
 import { responseError, responseSuccess } from '../utils/response';
 import UserSettings from '../db/models/userSettings';
 import tokens from '../db/models/tokens';
@@ -32,7 +33,7 @@ export const createUser = async (req: Request, res: Response) => {
     console.log('createUser', { email, ...rest });
     const isEmailExist = await Users.findOne({ where: { email } });
     if (!isEmailExist) {
-      await Users.create({ email, ...rest });
+      await Users.create({ email, isActive: true, ...rest });
       return responseSuccess(res, 'success');
     }
     res.status(500).json({ error: 'Email exist' });
@@ -44,17 +45,29 @@ export const createUser = async (req: Request, res: Response) => {
 
 export const createSettings = async (req: Request, res: Response) => {
   const { email, settingsData, settingRegistrationData } = req.body;
+
   try {
     const userData = await Users.findOne({ where: { email } });
+
     if (userData !== null) {
       const user = userData.toJSON();
 
       const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
 
-      const dataToUpdateOrCreate = settingRegistrationData ? { settingRegistrationData } : { settingsData };
+      // Add isActive true for settingsData when creating a new UserSettings
+      let dataToUpdateOrCreate;
       if (userSettingsExist) {
-        await UserSettings.update(dataToUpdateOrCreate, { where: { userId: user.id } });
+        dataToUpdateOrCreate = settingRegistrationData ? { settingRegistrationData } : { settingsData };
       } else {
+        const updatedSettingsData = (settingsData || []).map((item) => ({
+          ...item,
+          isActive: true,
+        }));
+
+        dataToUpdateOrCreate = settingRegistrationData
+          ? { settingRegistrationData }
+          : { settingsData: updatedSettingsData };
+
         await UserSettings.create({
           ...dataToUpdateOrCreate,
           userId: user.id,
@@ -63,12 +76,17 @@ export const createSettings = async (req: Request, res: Response) => {
         });
       }
 
+      if (userSettingsExist) {
+        await UserSettings.update(dataToUpdateOrCreate, { where: { userId: user.id } });
+      }
+
       return responseSuccess(res, 'success');
     }
-    res.status(500).json({ error: 'Email not exist' });
+
+    return res.status(500).json({ error: 'Email does not exist' });
   } catch (e) {
-    console.log('ERROR: ', e);
-    res.status(500).json({ error: e.message });
+    console.error('ERROR: ', e);
+    return res.status(500).json({ error: e.message });
   }
 };
 
@@ -433,12 +451,20 @@ export const bookkeeperList = async (req: Request, res: Response) => {
       condition = { userId: bookkeeperId };
     }
 
-    console.log('clientId', clientId);
     const bookkeeperData = await bookkeeper.findAll({
       where: condition,
       include: [
-        { model: User, as: 'Client' },
-        { model: User, as: 'User' },
+        {
+          model: User,
+          as: 'User',
+          // Then include tokens that belong to this user
+          include: [{ model: tokens, as: 'tokens' }],
+        },
+        {
+          model: User,
+          as: 'Client',
+          include: [{ model: tokens, as: 'tokens' }],
+        },
       ],
     });
 
@@ -496,6 +522,32 @@ export const updateUserData = async (req: Request, res: Response) => {
     return responseError({ res, code: 400, message: 'Error in user update' });
   } catch (e) {
     return responseError({ res, code: 400, message: e });
+  }
+};
+
+/**
+ * Toggle or update the isActive status of a user.
+ */
+export const toggleUserActiveStatus = async (req: Request, res: Response) => {
+  const { userId, isActive } = req.body;
+
+  if (typeof isActive !== 'boolean') {
+    return responseError({ res, code: 400, message: 'Invalid isActive value. It must be a boolean.' });
+  }
+
+  try {
+    const user = await User.findByPk(userId);
+
+    if (!user) {
+      return responseError({ res, code: 404, message: 'User not found.' });
+    }
+
+    // Update the isActive status
+    await User.update({ isActive }, { where: { id: userId } });
+
+    return responseSuccess(res, { userId, isActive, message: `User isActive status updated to ${isActive}` });
+  } catch (e) {
+    return responseError({ res, code: 500, message: e.message || 'Internal Server Error' });
   }
 };
 

@@ -23,34 +23,39 @@ const sgMail = require('@sendgrid/mail');
 const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
 
 export const sendEmailInvitation = async (req: Request, res: Response) => {
-  const { name, emailTo, clientId } = req.body;
+  const { name, emailTo, clientId, createdByBk, bookkeeperId } = req.body;
   const rand = crypto.randomBytes(16).toString('hex');
 
   sgMail.setApiKey(SENDGRID_API_KEY);
   const inviteLink = INVITATION_URL + `?bookkeeperEmail=${emailTo}&invitationToken=${rand}`;
-  // const htmlFile = await fs.promises.readFile('src/template/msg.html', 'utf-8');
 
   try {
+    // Create bookkeeper in the database
     await bookkeeper.create({
       email: emailTo,
       inviteSent: true,
       invitationToken: rand,
+      inviteAccepted: !!createdByBk,
       clientId,
       bookkeeperIntegrationAccessEnabled: false,
+      ...(createdByBk ? { userId: bookkeeperId } : {}), // Conditionally add userId
     });
-    const msg = {
-      to: emailTo, // Change to your recipient
-      from: 'support@churchsyncpro.com', // Change to your verified sender
-      subject: 'You have been invited to take on the role of a bookkeeper.',
-      // text: 'and easy to do anywhere, even with Node.js',
-      templateId: 'd-4529481214ab4c4e85018b4dfb3b6f20',
-      dynamicTemplateData: {
-        // name,
-        inviteLink,
-      },
-    };
-    await sgMail.send(msg);
-    return responseSuccess(res, 'email sent');
+
+    // Send email only if createdByBk is not true
+    if (!createdByBk) {
+      const msg = {
+        to: emailTo,
+        from: 'support@churchsyncpro.com',
+        subject: 'You have been invited to take on the role of a bookkeeper.',
+        templateId: 'd-4529481214ab4c4e85018b4dfb3b6f20',
+        dynamicTemplateData: {
+          inviteLink,
+        },
+      };
+      await sgMail.send(msg);
+    }
+
+    return responseSuccess(res, createdByBk ? 'Bookkeeper created without email' : 'Email sent');
   } catch (e) {
     return responseError({ res, code: 500, data: e });
   }
