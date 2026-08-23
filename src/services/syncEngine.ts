@@ -4,6 +4,8 @@ import axios from 'axios';
 import { format } from 'date-fns';
 import { automationJournalEntry, generatePcToken, getFundInDonation } from '../controller/automation';
 import UserSync from '../db/models/UserSync';
+import DailyJeSync from '../db/models/DailyJeSync';
+import sequelize from '../db';
 import UserSettings from '../db/models/userSettings';
 import {
   MappedDonationLine,
@@ -390,16 +392,74 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
         }
 
         try {
-          const je = journalEntryPayload(validLines, {
-            clearingAccountRef: { value: clearing.value, name: clearing.label },
-            txnDate: day,
-            memo: `Church Sync Pro - PCO Electronic Giving Sync - ${day}`,
-            syncId: String(realBatchId),
-            feesAccountRef,
-            totalFeeCents,
+          // One entry per day. The DailyJeSync row is the per-day ledger: it is locked for the
+          // duration of the post so that two workers processing different PCO batches that both
+          // contain donations for `day` cannot each post a "first" entry for it.
+          //
+          // If the day already has an entry, this batch's donations are new information arriving
+          // late (a later-committed batch, or a correction). Rather than editing a posted
+          // transaction - which would rewrite history an accountant may already have reconciled
+          // against - we post an *adjusting* entry covering only this contribution. The entries
+          // for the day then sum to the day's true total.
+          //
+          // Ensure the ledger row exists BEFORE opening the locking transaction. A
+          // `SELECT ... FOR UPDATE` cannot lock a row that does not exist yet, and a unique
+          // violation raised inside a Postgres transaction would abort the whole transaction
+          // rather than being retryable. Creating it first means the lock below always has a
+          // real row to take.
+          await DailyJeSync.findOrCreate({
+            where: { userId, day },
+            defaults: { userId, day, postedGrossCents: 0, postedFeeCents: 0, entryCount: 0 },
           });
 
-          await automationJournalEntry(email as string, je);
+          const { je, isAdjusting } = await sequelize.transaction(async (tx) => {
+            const ledger = await DailyJeSync.findOne({
+              where: { userId, day },
+              transaction: tx,
+              lock: tx.LOCK.UPDATE,
+            });
+
+            if (!ledger) throw new Error(`DailyJeSync row missing for ${userId} ${day}`);
+
+            const adjusting = Number(ledger.entryCount) > 0;
+
+            const payload = journalEntryPayload(validLines, {
+              clearingAccountRef: { value: clearing.value, name: clearing.label },
+              txnDate: day,
+              memo: adjusting
+                ? `Church Sync Pro - PCO Electronic Giving Adjustment - ${day}`
+                : `Church Sync Pro - PCO Electronic Giving Sync - ${day}`,
+              syncId: String(realBatchId),
+              feesAccountRef,
+              totalFeeCents,
+            });
+
+            const createdData: any = await automationJournalEntry(email as string, payload);
+            const qboEntryId = createdData?.Id ? String(createdData.Id) : null;
+
+            const contributionGross = validLines.reduce((sum, l) => sum + Number(l.amount_cents), 0);
+
+            await ledger.update(
+              {
+                postedGrossCents: Number(ledger.postedGrossCents) + contributionGross,
+                postedFeeCents: Number(ledger.postedFeeCents) + Math.abs(totalFeeCents || 0),
+                entryCount: Number(ledger.entryCount) + 1,
+                qboEntryIds: [...(ledger.qboEntryIds || []), ...(qboEntryId ? [qboEntryId] : [])],
+                batchIds: [...new Set([...(ledger.batchIds || []), String(realBatchId)])],
+              },
+              { transaction: tx },
+            );
+
+            return { je: payload, isAdjusting: adjusting };
+          });
+
+          if (isAdjusting) {
+            logger.info('syncBatchToJournalEntries: posted adjusting entry for an already-synced day', {
+              email,
+              batchId: String(realBatchId),
+              day,
+            });
+          }
 
           await row.update({ status: 'posted', syncedData: je as any });
           postedDays.push(day);
