@@ -1,20 +1,34 @@
-# Use the official lightweight Node.js 12 image.
-# https://hub.docker.com/_/node
-FROM node:14-slim
+# Build stage -------------------------------------------------------------
+# node:14-slim was Debian buster, whose apt repositories are now archived, so
+# that image stopped building at all. 18 matches .nvmrc and is what jest needs.
+FROM node:18-slim AS build
 
-RUN apt-get update && apt-get install curl git python -y \
-  && rm -rf /var/lib/apt/lists/*
-
-# Create and change to the app directory.
 WORKDIR /usr/src/app
 
-COPY package*.json ./
+# Copy the lockfile too. The previous `COPY package*.json` never matched
+# yarn.lock, so every build re-resolved dependencies from semver ranges and
+# no build was reproducible.
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile
 
-# Install production dependencies.
-RUN yarn install --immutable --immutable-cache --check-cache
+COPY tsconfig.json index.ts ./
+COPY src ./src
+RUN yarn tsc
 
-# Copy local code to the container image.
-COPY . ./
+# tsc does not emit .json, and src/db/index.ts requires ./config/config.json
+# at runtime, so place it alongside the compiled output.
+RUN mkdir -p dist/src/db/config \
+ && cp src/db/config/config.json dist/src/db/config/config.json
 
-# Run the web service on container startup.
-CMD [ "yarn", "start" ]
+# Runtime stage -----------------------------------------------------------
+FROM node:18-slim AS runtime
+
+WORKDIR /usr/src/app
+
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile --production && yarn cache clean
+
+COPY --from=build /usr/src/app/dist ./dist
+
+EXPOSE 8080
+CMD [ "node", "dist/index.js" ]

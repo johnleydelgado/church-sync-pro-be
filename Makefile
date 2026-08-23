@@ -27,8 +27,18 @@ endif
 
 # NOTE once 
 
+# Staging deploys SuperTokens AND the backend. The deploy-backend line was missing,
+# which is why csp-be had never been deployed and make deploy-prd was the only way to
+# ship backend code.
 deploy-stg:
 	make deploy-supertoken GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging SUPER_TOKEN=supertokens \
+	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
+	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging PROJECT_NAME=csp-be ENV_VAR=.env.staging \
+	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
+
+# Backend only, without redeploying SuperTokens.
+deploy-stg-be:
+	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=staging PROJECT_NAME=csp-be ENV_VAR=.env.staging \
 	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
 
 

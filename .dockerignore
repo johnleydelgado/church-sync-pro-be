@@ -1,1 +1,11 @@
-/node_modules
+node_modules
+dist
+.git
+# Never bake real credentials into an image layer. Cloud Run supplies these
+# at deploy time via --set-env-vars.
+.env
+.env.*
+!.env.sample
+*.bak-*
+cert
+docs

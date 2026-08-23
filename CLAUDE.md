@@ -54,6 +54,38 @@ The `development` DB config in `src/db/config/config.json` matches these (`127.0
 - **`index.ts`** — misc/shared handlers (`healthCheck`, `manualSync`, invitations, password reset, `createPayment`).
 - **`db.ts`** — `addTokenInUser`.
 
+### The daily journal entry engine (`src/services/syncEngine.ts`)
+
+The product's core job: pull each day's **online giving** from Planning Center and
+post one QuickBooks journal entry — credit revenue (gross), debit Stripe fees, debit
+a clearing account for the net Stripe will deposit later. PCO is the source of truth;
+the Stripe payout only matters when reconciling the clearing account afterwards.
+
+Order of operations matters and is easy to break:
+
+1. `filterStripeElectronic` runs **first**. Only `card` / `bank_account`, not
+   refunded, `payment_status` not pending or failed. Cash and cheques are out of
+   scope. This must stay ahead of the duplicate-designation summing below — that step
+   collapses every donation sharing a fund and adds their amounts, so running it
+   first folds a cash gift into a card one and posts it as online giving.
+2. Duplicate designations per fund are summed.
+3. Donations are grouped by day (`dayKey` — note it uses the raw timestamp offset;
+   timezone normalisation is an open product decision).
+4. Per day: claim `DailyJeSync` (unique on `userId, day`) with `SELECT … FOR UPDATE`,
+   then post. `entryCount > 0` means the day already exists in QBO, so the
+   contribution becomes an **adjusting entry** rather than editing a posted
+   transaction.
+5. `UserSync` (unique on `userId, batchId, donationId`) makes re-runs idempotent.
+
+Committing a PCO batch flips its donations from `pending` to `succeeded` — and the
+sync only reads `filter=committed` batches, which is why the completeness check is
+safe.
+
+This module, `services/qboClient.ts`, `utils/httpRetry.ts`, `utils/automationAuth.ts`
+and the JE builder in `utils/mapping.ts` are the standard for new code: integer cents
+throughout, balance assertions before posting, structured logging, rethrow rather
+than swallow.
+
 ### Data model (`src/db/models/`, Sequelize)
 
 `src/db/index.ts` creates the Sequelize instance from `src/db/config/config.json` keyed by `NODE_ENV`. Models use `freezeTableName: true` (model name = table name). Key entities and relationships:
@@ -86,12 +118,33 @@ The **client/bookkeeper** distinction is core: a bookkeeper operates on a client
 
 Env is loaded via `dotenv/config`. Required `REACT_APP`-free vars (see `.env`, `.env.staging`, `.env.production`): `NODE_ENV`, `SECRET`, `API_URL`, `API_KEYS` (SuperTokens core key), `SENDGRID_API_KEY`, `PC_APP_ID`/`PC_SECRET`/`PC_CLIENT_ID`/`PC_SECRET_APP`/`PC_REDIRECT` (Planning Center OAuth), `QBO_KEY`/`QBO_SECRET` (QuickBooks), `STRIPE_SECRET_KEY`/`STRIPE_PUB_KEY`/`STRIPE_CLIENT_ID`, `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, `INVITATION_URL`, `RESET_PASSWORD_URL`, `SETTING_FUND_URL`.
 
-⚠️ **Live credentials are currently committed** to this repo — `src/db/config/config.json` (DigitalOcean Postgres user/passwords for staging/prod), the `Makefile` (DB password + SuperTokens `API_KEYS`), and `.env*`. Treat these as real production secrets: don't echo them in output or new commits, and flag if asked to add more.
+`QBO_USE_SANDBOX` decides which QuickBooks to talk to, **not** `NODE_ENV`. Only the
+exact string `"false"` selects a real company file; anything else fails safe to the
+sandbox. `quickBookApi` and `quickbookAuth` share one `useSandbox()` helper — keep
+them in agreement, or the app authorizes against one environment and calls the other.
+
+⚠️ **`src/db/config/config.json` is untracked and gitignored** (see
+`config.sample.json`), and the Makefile's secrets moved to `SUPERTOKENS_DB_URI` /
+`SUPERTOKENS_API_KEY`. But the DigitalOcean password is still present in **seven
+earlier commits**, so it remains exposed until rotated. Never re-commit real
+credentials, never echo them, and don't add new ones to tracked files.
 
 ## Deploy (Google Cloud Run, via Makefile)
 
 ```bash
+make deploy-stg     # SuperTokens core + backend → staging services "supertokens" / "csp-be"
+make deploy-stg-be  # staging backend only
 make deploy-prd     # builds DockerfileBE → GCR → Cloud Run service "csp-be-prd" (port 8080)
-make deploy-stg     # deploys the SuperTokens core image (csp-vpc connector)
+make migrate-prd    # migrations are MANUAL - deploy does not run them
 ```
-Project `church-sync-pro-385703`, region `us-central1`. The backend connects to managed Postgres (DigitalOcean) and a self-hosted SuperTokens core; env vars are injected from `.env.production` at deploy time. The commented Makefile header preserves the gcloud commands used to provision the Cloud SQL instance and SuperTokens image.
+
+`deploy-supertoken` requires `SUPERTOKENS_DB_URI` and `SUPERTOKENS_API_KEY` exported;
+it fails fast if they are unset.
+
+`DockerfileBE` is a Node 18 multi-stage build that compiles to `dist/` and runs
+`node dist/index.js`. It replaced a `node:14-slim` image that could no longer build
+at all — Debian buster's apt repos are archived. Two things the build must keep
+doing: copy `yarn.lock` (the old `COPY package*.json` never matched it, so no build
+was reproducible), and copy `src/db/config/config.json` into `dist/` by hand, since
+`tsc` does not emit `.json` and `src/db/index.ts` requires it at runtime.
+Project `church-sync-pro-385703`, region `us-central1`. **Staging and production are separate databases on the same DigitalOcean cluster** — staging is `csp_staging`, production is `supertokens`. They used to be the same database; do not merge them again. Note Cloud Run URLs are now `SERVICE-1000606180549.us-central1.run.app`. The backend connects to managed Postgres (DigitalOcean) and a self-hosted SuperTokens core; env vars are injected from `.env.production` at deploy time. The commented Makefile header preserves the gcloud commands used to provision the Cloud SQL instance and SuperTokens image.
