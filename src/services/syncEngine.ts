@@ -130,11 +130,35 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     const responseDonation = await axios.get(donationUrl, config);
     // return responseDonation.data;
     const included = (responseDonation.data.included ?? []) as any[];
-    const fData = responseDonation.data.data;
+
+    // Restrict to Stripe electronic giving BEFORE anything else touches the data.
+    // The duplicate-designation summing below collapses every donation sharing a fund
+    // into one and adds their amounts together. Run before this filter, a cash or cheque
+    // gift to the same fund is folded into a card donation and rides through as online
+    // giving - which the brief explicitly excludes.
+    const allDonations = responseDonation.data.data as any[];
+    const fData = filterStripeElectronic(allDonations);
+    if (fData.length !== allDonations.length) {
+      logger.info('syncBatchToJournalEntries: excluded non-Stripe-electronic donations', {
+        email,
+        batchId: String(realBatchId),
+        excluded: allDonations.length - fData.length,
+        kept: fData.length,
+      });
+    }
+
+    // The included[] designations still describe every donation in the batch, including the
+    // ones just excluded. Narrow them to the donations that survived, so their designations
+    // cannot be summed into an eligible donation.
+    const eligibleDesignationIds = new Set<string>(
+      fData.flatMap((d: any) => (d.relationships?.designations?.data ?? []).map((x: any) => x.id)),
+    );
 
     // `included` now mixes Designation and Fund resource objects. The duplicate-summing
     // logic below only cares about designations, so narrow to those for that step.
-    const includedDesignations = included.filter((item: any) => item.type === 'Designation');
+    const includedDesignations = included.filter(
+      (item: any) => item.type === 'Designation' && eligibleDesignationIds.has(item.id),
+    );
 
     // fundId -> fundName, built once per batch from the included Fund resources.
     const fundIdToName: Record<string, string> = included.reduce((acc: Record<string, string>, item: any) => {

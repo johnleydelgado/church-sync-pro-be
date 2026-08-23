@@ -73,3 +73,31 @@ describe('payment completion', () => {
     ).toBe(false);
   });
 });
+
+// Regression: a cash gift to the SAME fund as a card gift used to be folded into it.
+// syncEngine sums duplicate designations per fund, and that summing ran before this
+// filter, so the combined amount passed as online giving. Caught against real Planning
+// Center data: a $250.00 cash gift inflated a $199.20 card entry to $449.20.
+// The engine now filters first; these assertions pin the filter's half of that contract.
+describe('mixed payment methods in one batch', () => {
+  const donation = (method: string, cents: number, fee: number) => ({
+    attributes: { payment_method: method, amount_cents: cents, fee_cents: fee, payment_status: 'succeeded' },
+  });
+
+  test('keeps only the electronic donations when methods are mixed', () => {
+    const batch = [
+      donation('card', 50000, -758),
+      donation('cash', 25000, 0),
+      donation('bank_account', 19920, -300),
+      donation('check', 9900, 0),
+    ];
+    const kept = filterStripeElectronic(batch);
+    expect(kept).toHaveLength(2);
+    expect(kept.map((d: any) => d.attributes.amount_cents).sort((a, b) => a - b)).toEqual([19920, 50000]);
+  });
+
+  test('a zero-fee cash gift never qualifies, whatever fund it targets', () => {
+    expect(isStripeElectronic(donation('cash', 25000, 0))).toBe(false);
+    expect(isStripeElectronic(donation('check', 25000, 0))).toBe(false);
+  });
+});
