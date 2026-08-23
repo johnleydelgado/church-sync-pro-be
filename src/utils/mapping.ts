@@ -208,4 +208,141 @@ const projectPayload = (data: CustomerProps): MappingCustomerProps => {
   };
 };
 
+const STRIPE_ELECTRONIC_METHODS = ['card', 'bank_account'];
+
+export const isStripeElectronic = (donation: any): boolean => {
+  const a = donation?.attributes ?? {};
+  const method = (a.payment_method ?? '').toLowerCase();
+  if (!STRIPE_ELECTRONIC_METHODS.includes(method)) return false;
+  if (a.refunded === true) return false;
+  // fee_cents may arrive as a string from PCO; coerce before comparing.
+  const fee = Number(a.fee_cents);
+  const hasFee = !Number.isNaN(fee) && fee !== 0;
+  const sourceName = (donation?.payment_source?.attributes?.name ?? '').toLowerCase();
+  const hasStripeSource = sourceName.includes('stripe');
+  return hasFee || hasStripeSource;
+};
+
+export const filterStripeElectronic = (donations: any[]): any[] => (donations ?? []).filter(isStripeElectronic);
+
+// Groups by the timestamp's own UTC offset (the YYYY-MM-DD prefix of the ISO string).
+// Normalizing to the org's timezone is a pending product decision.
+export const dayKey = (donation: any): string =>
+  String(donation?.attributes?.received_at ?? donation?.attributes?.created_at ?? '').slice(0, 10);
+
+export const groupDonationsByDay = (donations: any[]): Record<string, any[]> =>
+  (donations ?? []).reduce((acc: Record<string, any[]>, d) => {
+    const key = dayKey(d);
+    if (!key) return acc;
+    (acc[key] = acc[key] ?? []).push(d);
+    return acc;
+  }, {});
+
+const centsToAmount = (cents: number) => Math.round(cents) / 100;
+
+export interface MappedDonationLine {
+  AccountRef: string;
+  ClassRef?: string;
+  amount_cents: number;
+  fundName?: string;
+}
+
+export interface JournalEntryOptions {
+  clearingAccountRef: { value: string; name?: string };
+  txnDate: string;
+  memo: string;
+  syncId?: string;
+  // Stripe processing fees: account to debit the total fee to. When provided (with a value) and
+  // there are fees, the clearing account is debited for the NET (gross - fees) instead of gross.
+  feesAccountRef?: { value: string; name?: string; classRef?: string };
+  // Total Stripe fee for the day in cents. PCO `fee_cents` is typically NEGATIVE; the magnitude
+  // (Math.abs) is used as the fee amount.
+  totalFeeCents?: number;
+}
+
+export const journalEntryPayload = (lines: MappedDonationLine[], opts: JournalEntryOptions) => {
+  const byAccount = new Map<string, { cents: number; classRef?: string }>();
+  for (const l of lines) {
+    const prev = byAccount.get(l.AccountRef) ?? { cents: 0, classRef: l.ClassRef };
+    prev.cents += l.amount_cents;
+    byAccount.set(l.AccountRef, prev);
+  }
+
+  const creditLines = [...byAccount.entries()].map(([accountRef, v]) => ({
+    Amount: centsToAmount(v.cents),
+    DetailType: 'JournalEntryLineDetail',
+    JournalEntryLineDetail: {
+      PostingType: 'Credit',
+      AccountRef: { value: accountRef },
+      ...(v.classRef ? { ClassRef: { value: v.classRef } } : {}),
+    },
+  }));
+
+  if (creditLines.length === 0) throw new Error('Cannot build journal entry: no donation lines');
+
+  const totalCents = lines.reduce((s, l) => s + l.amount_cents, 0);
+  const creditTotal = creditLines.reduce((s, l) => s + l.Amount, 0);
+  const rawTotal = centsToAmount(totalCents);
+  // Reject malformed (NaN, from a non-numeric amount_cents) or empty ($0) totals before posting.
+  if (!Number.isFinite(creditTotal) || creditTotal === 0) {
+    throw new Error(`Invalid journal entry total: ${creditTotal}`);
+  }
+  // Defensive: detect fractional-cent corruption in the input (amount_cents should be whole cents).
+  if (Math.abs(rawTotal - creditTotal) > 0.005) {
+    throw new Error(`Journal entry rounding mismatch: raw total ${rawTotal} != credit total ${creditTotal}`);
+  }
+
+  const grossAmount = creditTotal;
+  // PCO fee_cents is typically negative; the fee magnitude is what we debit.
+  const feeAmount = centsToAmount(Math.abs(opts.totalFeeCents ?? 0));
+  // Only split out fees when both a fee exists AND a fees account is configured. Otherwise stay
+  // backward-compatible: debit the clearing account for the full gross with no fee line.
+  const splitFees = feeAmount > 0 && !!opts.feesAccountRef?.value;
+
+  if (splitFees && feeAmount > grossAmount) {
+    throw new Error(`Fees ${feeAmount} exceed gross ${grossAmount}`);
+  }
+
+  const clearingAmount = grossAmount - (splitFees ? feeAmount : 0);
+  // Guard: clearing debit must never go negative.
+  if (clearingAmount < 0) {
+    throw new Error(`Fees ${feeAmount} exceed gross ${grossAmount}`);
+  }
+
+  const feesLine = splitFees
+    ? {
+        Amount: feeAmount,
+        DetailType: 'JournalEntryLineDetail',
+        JournalEntryLineDetail: {
+          PostingType: 'Debit',
+          AccountRef: { value: opts.feesAccountRef!.value, name: opts.feesAccountRef!.name },
+          ...(opts.feesAccountRef!.classRef ? { ClassRef: { value: opts.feesAccountRef!.classRef } } : {}),
+        },
+      }
+    : null;
+
+  const clearingLine = {
+    Amount: clearingAmount, // gross when fees are not split, NET when they are
+    DetailType: 'JournalEntryLineDetail',
+    JournalEntryLineDetail: {
+      PostingType: 'Debit',
+      AccountRef: { value: opts.clearingAccountRef.value, name: opts.clearingAccountRef.name },
+    },
+  };
+
+  const debitLines = feesLine ? [feesLine, clearingLine] : [clearingLine];
+
+  // Balance assertion: sum(credits) must equal sum(debits) (fees + clearing).
+  const debitTotal = debitLines.reduce((s, l) => s + l.Amount, 0);
+  if (Math.abs(creditTotal - debitTotal) > 0.005) {
+    throw new Error(`Journal entry imbalance: credits ${creditTotal} != debits ${debitTotal}`);
+  }
+
+  return {
+    Line: [...creditLines, ...debitLines],
+    TxnDate: opts.txnDate,
+    PrivateNote: opts.syncId ? `${opts.memo} | ${opts.syncId}` : opts.memo,
+  };
+};
+
 export { requestPayload, newRequestPayload, projectPayload };

@@ -1,6 +1,4 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
-import { REALM_ID } from '../constant/config';
-
 const QuickBooks = require('node-quickbooks');
 
 export interface tokenProps {

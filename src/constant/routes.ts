@@ -48,6 +48,7 @@ const userRoutes = {
   addUpdateBankCharges: '/user/addUpdateBankCharges',
   crudUserEmailPreferences: '/user/crudUserEmailPreferences',
   setStartDataAutomation: '/user/setStartDataAutomation',
+  getDailyJournalEntries: '/user/getDailyJournalEntries',
 };
 
 export { pcRoutes, userRoutes, qboRoutes, stripeRoutes };

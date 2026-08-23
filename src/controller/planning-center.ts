@@ -12,6 +12,7 @@ import tokens from '../db/models/tokens';
 import quickbookAuth from '../utils/quickbookAuth';
 import registration from '../db/models/registration';
 import { endOfMonth, endOfYear, format, parseISO, startOfMonth, startOfYear, subDays, subMonths } from 'date-fns';
+import { withRetry } from '../utils/httpRetry';
 
 const BASE_URL = 'https://api.planningcenteronline.com/giving/v2';
 
@@ -212,6 +213,37 @@ const fetchFund = async (fundId: string, headers: any) => {
   return fund;
 };
 
+/**
+ * Fetch a single Giving Person resource by id, memoized per-request via `cache`.
+ *
+ * PCO does NOT support `?include=person` on the donations endpoint, so donor names
+ * must be resolved one person at a time via GET /giving/v2/people/{id}, which returns
+ * a JSON:API resource shaped `{ data: { type: 'Person', id, attributes: { first_name,
+ * last_name, ... } } }`. Those snake_case attribute names are exactly what the frontend
+ * reads (attributes.first_name / attributes.last_name, fallback attributes.name).
+ *
+ * A failure for one person must not break the whole batch: on error we cache `null`
+ * (so we don't retry it again this request) and the donation renders "Anonymous".
+ */
+const fetchPerson = async (personId: string, headers: any, cache: Map<string, any>): Promise<any> => {
+  if (cache.has(personId)) {
+    return cache.get(personId);
+  }
+
+  try {
+    const personResponse = await withRetry(() => axios.get(`${BASE_URL}/people/${personId}`, { headers }));
+    // PCO returns the resource under `data`; normalize so callers always get
+    // `{ type: 'Person', id, attributes: {...} }`.
+    const person = personResponse.data?.data ?? null;
+    cache.set(personId, person);
+    return person;
+  } catch (e) {
+    console.log('fetchPerson failed for id', personId, e?.message || e);
+    cache.set(personId, null);
+    return null;
+  }
+};
+
 export const getBatches = async (req: Request, res: Response) => {
   const { email, dateRange, offset = 0, filterDate, startFilterDate, endFilterDate, amount } = req.body;
   const jsonRes = { batches: [], synchedBatches: [], offSetRes: { next: 0, prev: 0 }, total_count: 0 };
@@ -257,10 +289,38 @@ export const getBatches = async (req: Request, res: Response) => {
       jsonRes.offSetRes = { next: Number(batchesData.offSetNext), prev: Number(batchesData.offSetPrev) };
       jsonRes.total_count = batchesData.total_count;
 
+      // Per-request donor cache so the same person isn't fetched twice across batches.
+      const personCache = new Map<string, any>();
+
       if (batchesData?.data && Array.isArray(batchesData.data)) {
         for (const batch of batchesData.data) {
           const batchId = batch.id;
           const donations = await fetchDonationsForBatch(batchId, headers);
+
+          // PCO can't include Person records on the donations endpoint, so resolve donor
+          // names per-person and merge them into donations.included for the frontend lookup.
+          // Donations with no person relationship are anonymous and skipped.
+          const donationsData: any[] = Array.isArray(donations?.data) ? donations.data : [];
+          const uniquePersonIds = Array.from(
+            new Set(
+              donationsData
+                .map((donation) => donation?.relationships?.person?.data?.id)
+                .filter((id): id is string => Boolean(id)),
+            ),
+          );
+
+          if (uniquePersonIds.length > 0) {
+            const people = await Promise.all(uniquePersonIds.map((id) => fetchPerson(id, headers, personCache)));
+            // Only add successfully-resolved people; a null (failed/anonymous) renders Anonymous.
+            const personResources = people.filter((person) => person && person.id);
+
+            if (personResources.length > 0) {
+              if (!Array.isArray(donations.included)) {
+                donations.included = [];
+              }
+              donations.included.push(...personResources);
+            }
+          }
 
           jsonRes.batches.push({
             batch,
@@ -502,9 +562,15 @@ function removeDuplicateFundDesignations(data: BatchData[]): BatchData[] {
     // Track funds and their associated designations
     const fundDesignations: { [fundId: string]: string[] } = {};
 
-    // Populate fundDesignations with designation IDs
+    // Populate fundDesignations with designation IDs.
+    // `included` may now also contain Person resources (donor names) merged in by
+    // getBatches; those have no fund relationship, so skip anything that isn't a
+    // designation referencing a fund.
     batch.donations.included.forEach((designation) => {
-      const fundId = designation.relationships.fund.data.id;
+      const fundId = designation?.relationships?.fund?.data?.id;
+      if (!fundId) {
+        return;
+      }
       if (!fundDesignations[fundId]) {
         fundDesignations[fundId] = [];
       }

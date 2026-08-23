@@ -68,3 +68,10 @@ deploy-backend:
 		--set-env-vars `cat ${ENV_VAR} | xargs | tr ' ' ','` \
 		--project ${GOOGLE_CLOUD_PROJECT}
 	gcloud run services update-traffic ${PROJECT_NAME} --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1
+
+# --- DB migrations (manual; deploy does NOT run these). See DEPLOY.md ---
+migrate-prd:
+	NODE_ENV=uat-prd npx sequelize-cli db:migrate
+
+migrate-uat:
+	NODE_ENV=uat npx sequelize-cli db:migrate

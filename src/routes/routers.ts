@@ -58,8 +58,9 @@ import {
   finalSyncStripe,
   getStripeList,
   getStripePayouts,
-  syncStripePayout,
-  syncStripePayoutRegistration,
+  // DEPRECATED: unused by UI
+  // syncStripePayout,
+  // syncStripePayoutRegistration,
 } from '../controller/stripe';
 import {
   automationScheduler,
@@ -68,6 +69,8 @@ import {
   latestFundAutomation,
   latestRegistrationAutomation,
 } from '../controller/automation';
+import { requireAutomationKey } from '../utils/automationAuth';
+import { getDailyJournalEntries } from '../controller/journalEntry';
 const routers = Router();
 // routers.post("/start", authorized, startTask);
 routers.get('/', tesst);
@@ -88,8 +91,10 @@ routers.post(pcRoutes.getBatches, verifySession(), getBatches);
 routers.post(pcRoutes.handleRegistrationEvents, verifySession(), handleRegistrationEvents);
 
 routers.get(stripeRoutes.getStripePayouts, verifySession(), getStripePayouts);
-routers.post(stripeRoutes.syncStripePayout, verifySession(), syncStripePayout);
-routers.post(stripeRoutes.syncStripePayoutRegistration, verifySession(), syncStripePayoutRegistration);
+// DEPRECATED: unused by UI
+// routers.post(stripeRoutes.syncStripePayout, verifySession(), syncStripePayout);
+// DEPRECATED: unused by UI
+// routers.post(stripeRoutes.syncStripePayoutRegistration, verifySession(), syncStripePayoutRegistration);
 routers.post(stripeRoutes.finalSyncStripe, verifySession(), finalSyncStripe);
 routers.post(stripeRoutes.getStripeList, verifySession(), getStripeList);
 routers.post(stripeRoutes.createPaymentIntent, createPaymentIntent);
@@ -107,6 +112,8 @@ routers.post(userRoutes.createSettings, verifySession(), createSettings);
 routers.post(userRoutes.updateRegisterSettings, verifySession(), updateRegisterSettings);
 routers.post(userRoutes.enableAutoSyncSetting, verifySession(), enableAutoSyncSetting);
 routers.get(userRoutes.getUserRelated, getUserRelated);
+// Public GET (matches getUserRelated wiring) to keep the daily-JE home screen simple.
+routers.get(userRoutes.getDailyJournalEntries, getDailyJournalEntries);
 routers.post(userRoutes.manualSync, verifySession(), manualSync);
 routers.post(userRoutes.isUserHaveTokens, verifySession(), isUserHaveTokens);
 routers.post(userRoutes.getTokenList, verifySession(), getTokenList);
@@ -127,13 +134,13 @@ routers.post(userRoutes.addUpdateBankCharges, verifySession(), addUpdateBankChar
 routers.post(userRoutes.crudUserEmailPreferences, crudUserEmailPreferences);
 routers.post(userRoutes.setStartDataAutomation, setStartDataAutomation);
 
-routers.post('/automationScheduler', automationScheduler);
-routers.post('/latestFundAutomation', latestFundAutomation);
+routers.post('/automationScheduler', requireAutomationKey, automationScheduler);
+routers.post('/latestFundAutomation', requireAutomationKey, latestFundAutomation);
 
 routers.post('/getDepositRef', getDepositRef);
 
-routers.post('/checkLatestFund', checkLatestFund);
-routers.post('/checkLatestRegistration', checkLatestRegistration);
-routers.post('/latestRegistrationAutomation', latestRegistrationAutomation);
+routers.post('/checkLatestFund', requireAutomationKey, checkLatestFund);
+routers.post('/checkLatestRegistration', requireAutomationKey, checkLatestRegistration);
+routers.post('/latestRegistrationAutomation', requireAutomationKey, latestRegistrationAutomation);
 
 export default routers;

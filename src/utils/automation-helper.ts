@@ -1,11 +1,10 @@
 import { isEmpty } from 'lodash';
-import { automationDeposit, generatePcToken, getFundInDonation } from '../controller/automation';
+import { automationDeposit, generatePcToken } from '../controller/automation';
 import UserSync from '../db/models/UserSync';
-import UserSettings from '../db/models/userSettings';
-import axios from 'axios';
 import { SettingsJsonProps, newRequestPayload } from './mapping';
 import { format } from 'date-fns';
 import { checkEmpty } from './helper';
+import { syncBatchToJournalEntries } from '../services/syncEngine';
 
 interface User {
   id: number;
@@ -136,155 +135,11 @@ const extractCategory = (description: string): string => {
   return category;
 };
 
+// Thin wrapper preserved for the automated path (`latestFundAutomation` calls this with the same
+// signature). All pipeline logic now lives in the shared `syncBatchToJournalEntries` engine so the
+// manual and automated paths produce identical per-day Journal Entries.
 export const dailySyncing = async (user: any, dataBatch: any, batchId = '0', realBatchId: any, bankData: any) => {
-  // const { email, dataBatch, batchId = '0', realBatchId, bankData } = req.body; // refresh token if for pc
-  const userDetails: User = user;
-  const { email, id: userId, token, UserSetting } = userDetails;
-
-  const jsonRes = { donation: [] as any }; //this is an array object
-  const bank = bankData as
-    | {
-        type: 'donation' | 'registration';
-        value: string;
-        label: string;
-      }[]
-    | null;
-
-  try {
-    const tokenEntity = await generatePcToken(String(email));
-
-    const { access_token } = tokenEntity;
-
-    const config = {
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-      },
-    };
-
-    if (batchId === '0') {
-      return 'Dont have batch id';
-    }
-
-    const synchedBatchesData = await UserSync.findAll({
-      where: { userId, batchId: realBatchId as string },
-      attributes: ['id', 'batchId', 'createdAt'],
-    });
-
-    const settingsJson = await UserSettings.findOne({ where: { userId } });
-    const settingsData = settingsJson.settingsData as any;
-
-    if (!isEmpty(synchedBatchesData)) {
-      return 'Batch ID is already synched';
-    }
-
-    if (isEmpty(settingsJson)) {
-      // return responseError({ res, code: 500, data: 'Settings not set !' });
-    }
-
-    const donationUrl = `https://api.planningcenteronline.com/giving/v2/batches/${batchId}/donations?include=designations`;
-    const responseDonation = await axios.get(donationUrl, config);
-    // return responseDonation.data;
-    const included = responseDonation.data.included;
-    let fData = responseDonation.data.data;
-
-    // Step 1: Map fund IDs to their related designations
-    const fundIdToDesignations = included.reduce((acc, designation) => {
-      const fundId = designation.relationships.fund.data.id;
-      if (!acc[fundId]) {
-        acc[fundId] = [];
-      }
-      acc[fundId].push(designation);
-      return acc;
-    }, {});
-
-    // Step 2: Find duplicates and sum their amounts
-    Object.keys(fundIdToDesignations).forEach((fundId) => {
-      if (fundIdToDesignations[fundId].length > 1) {
-        // Found duplicates
-        const summedAmount = fundIdToDesignations[fundId].reduce((sum, designation) => {
-          const donationId = designation.id;
-          const donation = fData.find((donation) =>
-            donation.relationships.designations.data.some((d) => d.id === donationId),
-          );
-          return sum + donation.attributes.amount_cents;
-        }, 0);
-
-        // Update the first donation with the summed amount and mark others for removal or update them as needed
-        let isFirstUpdated = false;
-        fundIdToDesignations[fundId].forEach((designation) => {
-          const donationId = designation.id;
-          const donationIndex = fData.findIndex((donation) =>
-            donation.relationships.designations.data.some((d) => d.id === donationId),
-          );
-          if (!isFirstUpdated) {
-            fData[donationIndex].attributes.amount_cents = summedAmount;
-            isFirstUpdated = true;
-          } else {
-            // Remove the duplicate donation or handle it as needed
-            // For example, to remove, you can mark it and then filter out later
-            fData[donationIndex]._remove = true; // Mark for removal
-          }
-        });
-      }
-    });
-
-    // Optional: Remove marked donations
-    const updatedData = fData.filter((donation) => !donation._remove);
-
-    for (const donationsData of updatedData) {
-      const fundsData = await getFundInDonation({
-        donationId: Number(donationsData.id),
-        access_token: String(access_token),
-      });
-      const fundName = fundsData[0].attributes.name;
-      const settingsItem = settingsData.find((item: SettingsJsonProps) => item.fundName === fundName);
-      const accountRef = settingsItem?.account?.value ?? '';
-      const receivedFrom = settingsItem?.customer?.value ?? '';
-      const classRef = settingsItem?.class?.value ?? '';
-      const paymentCheck = donationsData.attributes.payment_check_number || '';
-      const bankRef = bank.find((a) => a.type === 'donation') || {};
-
-      const donationDate = donationsData?.attributes?.completed_at
-        ? new Date(donationsData?.attributes?.completed_at)
-        : new Date();
-
-      const TxnDate = format(donationDate, 'yyyy-MM-dd');
-
-      jsonRes.donation = [
-        ...jsonRes.donation,
-        {
-          ...donationsData,
-          TxnDate,
-          fund: fundsData[0] || {},
-          batch: dataBatch,
-          accountRef,
-          receivedFrom,
-          classRef,
-          paymentCheck,
-          bankRef,
-        },
-      ];
-    }
-    if (!isEmpty(jsonRes.donation)) {
-      const data = newRequestPayload(jsonRes.donation);
-      const bqoCreatedDataId = await automationDeposit(email as string, data);
-      const batchExist = synchedBatchesData.find((a) => a.batchId === batchId && a.userId === user.id);
-
-      if (isEmpty(batchExist)) {
-        await UserSync.create({
-          syncedData: jsonRes.donation,
-          userId: user.id,
-          batchId: `${batchId} - ${email}`,
-          donationId: bqoCreatedDataId['Id'] || '',
-        });
-      }
-    }
-
-    // return responseSuccess(res, 'success');
-  } catch (e) {
-    console.log('error', e);
-    // return responseError({ res, code: 500, data: e });
-  }
+  return syncBatchToJournalEntries({ user, dataBatch, batchId, realBatchId, bankData });
 };
 
 export const dailySyncingRegistration = async (user: any, filterFundName: any, stripeData: any) => {
@@ -415,7 +270,7 @@ export const finalSyncStripe = async (data: any, user: any) => {
   const batchData: StripeSyncData = data;
   console.log('data', user.UserSetting);
   try {
-    let finalData: any = [];
+    const finalData: any = [];
     const keys = Object.keys(batchData);
 
     for (const key of keys) {

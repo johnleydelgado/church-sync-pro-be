@@ -6,10 +6,8 @@ import * as fs from 'fs';
 import user from '../db/models/user';
 import quickBookApi from '../utils/quickBookApi';
 import { responseError, responseSuccess } from '../utils/response';
-import { automationDeposit, generatePcToken, getFundInDonation } from './automation';
 import { isEmpty } from 'lodash';
 import UserSync from '../db/models/UserSync';
-import { SettingsJsonProps, newRequestPayload } from '../utils/mapping';
 import UserSettings from '../db/models/userSettings';
 import User from '../db/models/user';
 import crypto from 'crypto';
@@ -17,7 +15,7 @@ import bookkeeper from '../db/models/bookkeeper';
 import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
 import ThirdParty from 'supertokens-node/recipe/thirdparty';
 import EmailPassword from 'supertokens-node/recipe/emailpassword';
-import { format } from 'date-fns';
+import { syncBatchToJournalEntries } from '../services/syncEngine';
 
 const sgMail = require('@sendgrid/mail');
 const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
@@ -187,29 +185,18 @@ export const createPayment = async (req: Request, res: Response) => {
 };
 
 export const manualSync = async (req: Request, res: Response) => {
-  const { email, dataBatch, batchId = '0', realBatchId, bankData, donations } = req.body; // refresh token if for pc
-  const jsonRes = { donation: [] as any }; //this is an array object
-  const bank = bankData as
-    | {
-        type: 'donation' | 'registration';
-        value: string;
-        label: string;
-      }[]
-    | null;
+  const { email, batchId = '0', realBatchId, bankData, donations } = req.body; // refresh token if for pc
 
   try {
-    const tokenEntity = await generatePcToken(String(email));
     const user = await User.findOne({
       where: { email: email as string },
     });
 
-    const { access_token } = tokenEntity;
-
-    const config = {
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-      },
-    };
+    // Guard empty user BEFORE any `user.id` dereference below - a nonexistent email otherwise throws
+    // a TypeError (caught as a 404) instead of the intended "Empty User" 500.
+    if (isEmpty(user)) {
+      return responseError({ res, code: 500, data: 'Empty User' });
+    }
 
     if (batchId === '0') {
       return responseError({ res, code: 204, data: 'Dont have batch id' });
@@ -217,92 +204,37 @@ export const manualSync = async (req: Request, res: Response) => {
 
     const synchedBatchesData = await UserSync.findAll({
       where: { userId: user.id, batchId: realBatchId as string },
-      attributes: ['id', 'batchId', 'createdAt'],
+      attributes: ['id', 'batchId', 'status', 'createdAt'],
     });
 
     const settingsJson = await UserSettings.findOne({ where: { userId: user.id } });
-    const settingsData = settingsJson.settingsData as any;
 
-    if (!isEmpty(synchedBatchesData)) {
+    // Already-synced guard: if any day for this (userId + realBatchId) is already posted, treat as
+    // synced. The engine's own claim-then-post + fast-path is the authoritative dedupe; this keeps
+    // the previous fast-fail UX for an already-completed batch.
+    if (synchedBatchesData.some((a) => a.status === 'posted')) {
       return responseError({ res, code: 500, data: 'Batch ID is already synched' });
-    }
-
-    if (isEmpty(user)) {
-      return responseError({ res, code: 500, data: 'Empty User' });
     }
 
     if (isEmpty(settingsJson)) {
       return responseError({ res, code: 500, data: 'Settings not set !' });
     }
 
-    if (donations.length === 0 || !donations) {
+    if (!donations || donations.length === 0) {
       throw new Error(`Empty donations`);
     }
 
-    // jsonRes.donation = {...jsonRes.donation, responseDonation.data.data}
-    for (const donationsData of donations) {
-      const fundsData = await getFundInDonation({
-        donationId: Number(donationsData.id),
-        access_token: String(access_token),
-      });
-      const fundName = fundsData[0].attributes.name;
+    // Unified path: manual sync now produces the SAME per-day Journal Entries as automated sync
+    // (claim-then-post + fast-path + Stripe-electronic filter), replacing the old single Deposit.
+    // The engine records `UserSync.batchId = realBatchId`, so the batch-list checkmark keeps working.
+    const result = await syncBatchToJournalEntries({
+      user,
+      batchId: String(batchId),
+      realBatchId,
+      bankData,
+    });
 
-      const settingsItem = settingsData?.find((item: SettingsJsonProps) => item.fundName === fundName);
-
-      if (!settingsItem) {
-        throw new Error(`Settings for fund name "${fundName}" not found.`);
-      }
-
-      if (!bank) {
-        throw new Error(`Please setup bank details`);
-      }
-
-      // return responseSuccess(res, donationsData);
-
-      const accountRef = settingsItem?.account?.value ?? '';
-      const receivedFrom = settingsItem?.customer?.value ?? '';
-      const classRef = settingsItem?.class?.value ?? '';
-      const paymentCheck = donationsData.attributes.payment_check_number || '';
-      const bankRef = bank.find((a) => a.type === 'donation') || {};
-
-      const donationDate = donationsData?.attributes?.completed_at
-        ? new Date(donationsData?.attributes?.completed_at)
-        : new Date();
-
-      const TxnDate = format(donationDate, 'yyyy-MM-dd');
-
-      jsonRes.donation = [
-        ...jsonRes.donation,
-        {
-          ...donationsData,
-          TxnDate,
-          fund: fundsData[0] || {},
-          batch: dataBatch,
-          accountRef,
-          receivedFrom,
-          classRef,
-          paymentCheck,
-          bankRef,
-        },
-      ];
-    }
-    if (!isEmpty(jsonRes.donation)) {
-      const data = newRequestPayload(jsonRes.donation);
-      const bqoCreatedDataId = await automationDeposit(email as string, data);
-      const batchExist = synchedBatchesData.find((a) => a.batchId === batchId && a.userId === user.id);
-      const batchId = jsonRes.donation[0].batch.id;
-
-      if (isEmpty(batchExist)) {
-        await UserSync.create({
-          syncedData: jsonRes.donation,
-          userId: user.id,
-          batchId: `${batchId} - ${email}`,
-          donationId: bqoCreatedDataId['Id'] || '',
-        });
-      }
-    }
-
-    return responseSuccess(res, 'success');
+    return responseSuccess(res, result);
   } catch (e) {
     return responseError({ res, code: 404, message: e.message || 'Error' });
   }

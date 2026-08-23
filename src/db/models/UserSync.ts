@@ -9,6 +9,7 @@ export interface UserSyncAttributes {
   batchId?: string;
   donationId?: string;
   userId?: number;
+  status?: 'pending' | 'posted' | 'failed';
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -19,6 +20,7 @@ class UserSync extends Model<UserSyncAttributes> implements UserSyncAttributes {
   public batchId!: string;
   public donationId!: string;
   public userId!: number;
+  public status!: 'pending' | 'posted' | 'failed';
   public createdAt!: Date;
   public updatedAt!: Date;
 
@@ -51,6 +53,11 @@ UserSync.init(
     },
     donationId: {
       type: DataTypes.STRING,
+    },
+    status: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: 'pending',
     },
     createdAt: {
       type: DataTypes.DATE,

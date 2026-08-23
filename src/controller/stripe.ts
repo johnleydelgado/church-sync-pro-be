@@ -13,6 +13,7 @@ import axios from 'axios';
 import tokens from '../db/models/tokens';
 import tokenEntity from '../db/models/tokenEntity';
 import { checkEmpty } from '../utils/helper';
+import { withRetry } from '../utils/httpRetry';
 const { PC_CLIENT_ID, PC_SECRET_APP, PC_REDIRECT, STRIPE_SECRET_KEY, STRIPE_PUB_KEY, STRIPE_CLIENT_ID } = process.env;
 
 export interface SuccessToken {
@@ -62,15 +63,20 @@ export const getStripePayouts = async (req: Request, res: Response) => {
       include: tokens,
     });
 
+    const arr = data?.tokens?.find((item) => item.token_type === 'stripe');
+
+    // No Stripe integration connected yet -> no payouts to show. Return gracefully instead of 500.
+    if (!arr || isEmpty(arr)) {
+      return responseSuccess(res, []);
+    }
+
     const user = await User.findOne({
       where: { email: email as string },
     });
 
-    const arr = data?.tokens.find((item) => item.token_type === 'stripe');
-
-    const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
-    const settingsJson = userSettingsExist.dataValues.settingRegistrationData as any;
-    const settingsDataJson = userSettingsExist.dataValues.settingsData as any;
+    const userSettingsExist = user ? await UserSettings.findOne({ where: { userId: user.id } }) : null;
+    const settingsJson = userSettingsExist?.dataValues?.settingRegistrationData as any;
+    const settingsDataJson = userSettingsExist?.dataValues?.settingsData as any;
 
     if (arr && !isEmpty(arr)) {
       let tokensFinalJson: { access_token: string; refresh_token: string } = { access_token: '', refresh_token: '' };
@@ -109,7 +115,7 @@ export const getStripePayouts = async (req: Request, res: Response) => {
             params['starting_after'] = startingAfter;
           }
 
-          const response = await stripe.payouts.list(params);
+          const response = await withRetry(() => stripe.payouts.list(params));
 
           payouts = payouts.concat(response.data);
           hasMore = response.has_more;
@@ -130,7 +136,7 @@ export const getStripePayouts = async (req: Request, res: Response) => {
           console.log(`Payout amount: ${payout.amount / 100} ${payout.currency}`);
           console.log(`Payout date: ${new Date(payout.created * 1000).toISOString()}`);
 
-          const balanceTransactions = await stripe.balanceTransactions.list({ payout: payout.id });
+          const balanceTransactions = await withRetry(() => stripe.balanceTransactions.list({ payout: payout.id }));
           const arr = balanceTransactions.data.filter((item) => item.description !== 'STRIPE PAYOUT');
 
           // let clonedArr = [];
@@ -423,169 +429,192 @@ export const finalSyncStripe = async (req: Request, res: Response) => {
   const { data } = req.body; //refreshToken is just an empty valuec
   const batchData: StripeSyncData = data;
   try {
-    let finalData: any = [];
+    const finalData: any = [];
+    const synced: any[] = [];
+    const failed: { item: any; reason: string }[] = [];
     const keys = Object.keys(batchData);
 
+    // 1) Resolve token/user/settings ONCE up front (per unique email, cached).
+    //    A Stripe payout is for a single user, but items carry their own email,
+    //    so we cache per email to avoid redundant re-resolution.
+    const resolvedByEmail: Record<
+      string,
+      { tokenEntity: any; user: any; settings: any } | { error: string }
+    > = {};
+
+    const resolveContext = async (email: string) => {
+      if (resolvedByEmail[email]) {
+        return resolvedByEmail[email];
+      }
+      const tokenEntity = await generatePcToken(email);
+      const user = await User.findOne({ where: { email } });
+
+      if (isEmpty(tokenEntity)) {
+        return (resolvedByEmail[email] = { error: 'PCO token is null' });
+      }
+      if (isEmpty(user)) {
+        return (resolvedByEmail[email] = { error: 'Empty User' });
+      }
+
+      const settings = await UserSettings.findOne({ where: { userId: user.id } });
+      return (resolvedByEmail[email] = { tokenEntity, user, settings });
+    };
+
+    // 2) Iterate items collecting per-item outcomes. One bad fund does NOT abort the rest.
+    //    No responseError/responseSuccess is issued from inside the loop.
     for (const key of keys) {
-      // console.log(`Key: ${key}, Value: ${batchData[key]}`);
-      const promises = batchData[key].map(async (batchItem) => {
-        if (key !== 'Charge') {
-          const tokenEntity = await generatePcToken(batchItem.email as string);
-          const user = await User.findOne({
-            where: { email: batchItem.email as string },
-          });
-
-          if (isEmpty(tokenEntity)) {
-            return responseError({ res, code: 202, data: 'PCO token is null' });
+      const items = batchData[key] || [];
+      for (const batchItem of items) {
+        try {
+          const context = await resolveContext(batchItem.email as string);
+          if ('error' in context) {
+            throw new Error(context.error);
           }
+          const { user, settings: userSettingsExist } = context;
 
-          if (isEmpty(user)) {
-            return responseError({ res, code: 500, data: 'Empty User' });
-          }
+          if (key !== 'Charge') {
+            const settingsJson = userSettingsExist.settingsData as any;
+            const settingRegistrationJson = userSettingsExist.settingRegistrationData as any;
 
-          const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
+            let settingRegistration: any;
 
-          const settingsJson = userSettingsExist.settingsData as any;
-          const settingRegistrationJson = userSettingsExist.settingRegistrationData as any;
+            if (batchItem.batchData.type === 'batch') {
+              settingRegistration = settingsJson.find(
+                (item: SettingsJsonProps) =>
+                  item.fundName?.toLowerCase() === String(batchItem.batchData.fundName).toLowerCase(),
+              );
+            } else {
+              settingRegistration = settingRegistrationJson.find(
+                (item: { class: { label: string } }) =>
+                  item.class?.label?.toLowerCase() === String(batchItem.batchData.fundName).toLowerCase(),
+              );
+            }
 
-          let settingRegistration: any;
+            if (batchItem.batchData.description) {
+              const isRegistrationNameExist = settingRegistrationJson?.find(
+                (item: { registration: string }) =>
+                  item?.registration?.toLowerCase() === String(batchItem.batchData.description).toLowerCase(),
+              );
 
-          if (batchItem.batchData.type === 'batch') {
-            settingRegistration = settingsJson.find(
-              (item: SettingsJsonProps) =>
-                item.fundName?.toLowerCase() === String(batchItem.batchData.fundName).toLowerCase(),
-            );
+              const isRegistrationActive = settingRegistrationJson?.find(
+                (item: { isActive: boolean }) => item?.isActive,
+              );
+
+              if (!isRegistrationNameExist) {
+                throw new Error(`Settings for registration name "${batchItem.batchData.description}" not found.`);
+              }
+
+              if (!isRegistrationActive) {
+                throw new Error(`Settings for registration name "${batchItem.batchData.description}" is Deactivated`);
+              }
+            }
+
+            if (checkEmpty(settingRegistration)) {
+              throw new Error(`Settings for fund name "${batchItem.batchData.fundName}" not found.`);
+            }
+
+            const accountRef = settingRegistration?.account?.value ?? '';
+            const receivedFrom = settingRegistration?.customer?.value ?? '';
+            const classRef = settingRegistration?.class?.value ?? '';
+
+            const bankRef = batchItem.bankData.find((a) => a.type === 'registration') || {};
+            const donationDate = batchItem.batchData.payoutDate
+              ? new Date(batchItem.batchData.payoutDate)
+              : new Date();
+
+            const TxnDate = format(donationDate, 'yyyy-MM-dd');
+            const resolvedItem = {
+              TxnDate,
+              payoutDate: batchItem.batchData.payoutDate,
+              accountRef,
+              receivedFrom,
+              classRef,
+              batch: {
+                id: `Stripe payout - ${user.email} - ${batchItem.batchData.payoutDate}`,
+                attributes: {
+                  description: `Stripe payout ${batchItem.batchData.payoutDate}`,
+                  created_at: batchItem.batchData.payoutDate,
+                  total_cents: batchItem.batchData.totalAmount,
+                },
+              },
+              paymentCheck: '',
+              bankRef,
+              attributes: { payment_method: 'Stripe', amount_cents: batchItem.batchData.amount },
+              other: { email: batchItem.email, payoutDate: batchItem.batchData.payoutDate, userId: user.id },
+            };
+            finalData.push(resolvedItem);
+            synced.push(resolvedItem);
           } else {
-            settingRegistration = settingRegistrationJson.find(
-              (item: { class: { label: string } }) =>
-                item.class?.label?.toLowerCase() === String(batchItem.batchData.fundName).toLowerCase(),
-            );
-          }
+            const settingBankChargesJson = userSettingsExist.settingBankCharges as any;
+            const settingRegistrationJson = userSettingsExist.settingRegistrationData as any;
 
-          if (batchItem.batchData.description) {
-            const isRegistrationNameExist = settingRegistrationJson?.find(
-              (item: { registration: string }) =>
-                item?.registration?.toLowerCase() === String(batchItem.batchData.description).toLowerCase(),
-            );
-
-            const isRegistrationActive = settingRegistrationJson?.find((item: { isActive: boolean }) => item?.isActive);
-
-            if (!isRegistrationNameExist) {
-              throw new Error(`Settings for registration name "${batchItem.batchData.description}" not found.`);
+            if (checkEmpty(settingRegistrationJson)) {
+              throw new Error(
+                `Please ensure that your settings are configured correctly, as some registrations appear to be incomplete.`,
+              );
             }
 
-            if (!isRegistrationActive) {
-              throw new Error(`Settings for registration name "${batchItem.batchData.description}" is Deactivated`);
-            }
-          }
+            const accountRef = settingBankChargesJson?.account?.value ?? '';
+            const receivedFrom = '';
+            const classRef = settingBankChargesJson?.class?.value ?? '';
 
-          if (checkEmpty(settingRegistration)) {
-            throw new Error(`Settings for fund name "${batchItem.batchData.fundName}" not found.`);
-          }
+            const bankRef = batchItem.bankData.find((a) => a.type === 'registration') || {};
+            const donationDate = batchItem.batchData.payoutDate
+              ? new Date(batchItem.batchData.payoutDate)
+              : new Date();
 
-          const accountRef = settingRegistration?.account?.value ?? '';
-          const receivedFrom = settingRegistration?.customer?.value ?? '';
-          const classRef = settingRegistration?.class?.value ?? '';
-
-          const bankRef = batchItem.bankData.find((a) => a.type === 'registration') || {};
-          const donationDate = batchItem.batchData.payoutDate ? new Date(batchItem.batchData.payoutDate) : new Date();
-
-          const TxnDate = format(donationDate, 'yyyy-MM-dd');
-          finalData.push({
-            TxnDate,
-            payoutDate: batchItem.batchData.payoutDate,
-            accountRef,
-            receivedFrom,
-            classRef,
-            batch: {
-              id: `Stripe payout - ${user.email} - ${batchItem.batchData.payoutDate}`,
-              attributes: {
-                description: `Stripe payout ${batchItem.batchData.payoutDate}`,
-                created_at: batchItem.batchData.payoutDate,
-                total_cents: batchItem.batchData.totalAmount,
+            const TxnDate = format(donationDate, 'yyyy-MM-dd');
+            const resolvedItem = {
+              TxnDate,
+              payoutDate: batchItem.batchData.payoutDate,
+              accountRef,
+              receivedFrom,
+              classRef,
+              batch: {
+                id: `Stripe payout - ${user.email} - ${batchItem.batchData.payoutDate}`,
+                attributes: {
+                  description: `Stripe payout ${batchItem.batchData.payoutDate}`,
+                  created_at: batchItem.batchData.payoutDate,
+                  total_cents: batchItem.batchData.totalAmount,
+                },
               },
-            },
-            paymentCheck: '',
-            bankRef,
-            attributes: { payment_method: 'Stripe', amount_cents: batchItem.batchData.amount },
-            other: { email: batchItem.email, payoutDate: batchItem.batchData.payoutDate, userId: user.id },
-          });
-        } else {
-          const tokenEntity = await generatePcToken(batchItem.email as string);
-          const user = await User.findOne({
-            where: { email: batchItem.email as string },
-          });
-
-          if (isEmpty(tokenEntity)) {
-            return responseError({ res, code: 202, data: 'PCO token is null' });
+              paymentCheck: '',
+              bankRef,
+              attributes: { payment_method: 'Stripe', amount_cents: -batchItem.batchData.totalFee },
+              other: { email: batchItem.email, payoutDate: batchItem.batchData.payoutDate, userId: user.id },
+            };
+            finalData.push(resolvedItem);
+            synced.push(resolvedItem);
           }
-
-          if (isEmpty(user)) {
-            return responseError({ res, code: 500, data: 'Empty User' });
-          }
-
-          const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
-
-          const settingBankChargesJson = userSettingsExist.settingBankCharges as any;
-
-          const settingRegistrationJson = userSettingsExist.settingRegistrationData as any;
-
-          if (checkEmpty(settingRegistrationJson)) {
-            throw new Error(
-              `Please ensure that your settings are configured correctly, as some registrations appear to be incomplete.`,
-            );
-          }
-
-          const accountRef = settingBankChargesJson?.account?.value ?? '';
-          const receivedFrom = '';
-          const classRef = settingBankChargesJson?.class?.value ?? '';
-
-          const bankRef = batchItem.bankData.find((a) => a.type === 'registration') || {};
-          const donationDate = batchItem.batchData.payoutDate ? new Date(batchItem.batchData.payoutDate) : new Date();
-
-          const TxnDate = format(donationDate, 'yyyy-MM-dd');
-          finalData.push({
-            TxnDate,
-            payoutDate: batchItem.batchData.payoutDate,
-            accountRef,
-            receivedFrom,
-            classRef,
-            batch: {
-              id: `Stripe payout - ${user.email} - ${batchItem.batchData.payoutDate}`,
-              attributes: {
-                description: `Stripe payout ${batchItem.batchData.payoutDate}`,
-                created_at: batchItem.batchData.payoutDate,
-                total_cents: batchItem.batchData.totalAmount,
-              },
-            },
-            paymentCheck: '',
-            bankRef,
-            attributes: { payment_method: 'Stripe', amount_cents: -batchItem.batchData.totalFee },
-            other: { email: batchItem.email, payoutDate: batchItem.batchData.payoutDate, userId: user.id },
-          });
+        } catch (itemError) {
+          failed.push({ item: batchItem, reason: itemError?.message || 'Error' });
         }
-      });
-      await Promise.all(promises);
+      }
     }
 
-    const responsePayload = newRequestPayload(finalData);
-    const bqoCreatedDataId = await automationDeposit(finalData[0]?.other?.email as string, responsePayload);
-    const synchedBatchesData = await UserSync.findAll({
-      where: {
-        userId: finalData[0].other.userId,
-        batchId: `Stripe payout - ${finalData[0]?.other?.email} -  ${finalData[0]?.other?.payoutDate}`,
-      },
-      attributes: ['id', 'batchId', 'createdAt'],
-    });
-    if (isEmpty(synchedBatchesData)) {
-      await UserSync.create({
-        syncedData: finalData,
-        userId: finalData[0]?.other?.userId,
-        batchId: `Stripe payout - ${finalData[0]?.other?.email} - ${finalData[0]?.other?.payoutDate}`,
-        donationId: bqoCreatedDataId['Id'] || '',
+    // 3) Build the deposit payload from successfully-resolved items and post via automationDeposit.
+    if (!isEmpty(finalData)) {
+      const responsePayload = newRequestPayload(finalData);
+      const bqoCreatedDataId = await automationDeposit(finalData[0]?.other?.email as string, responsePayload);
+      const synchedBatchesData = await UserSync.findAll({
+        where: {
+          userId: finalData[0].other.userId,
+          batchId: `Stripe payout - ${finalData[0]?.other?.email} -  ${finalData[0]?.other?.payoutDate}`,
+        },
+        attributes: ['id', 'batchId', 'createdAt'],
       });
+      if (isEmpty(synchedBatchesData)) {
+        await UserSync.create({
+          syncedData: finalData,
+          userId: finalData[0]?.other?.userId,
+          batchId: `Stripe payout - ${finalData[0]?.other?.email} - ${finalData[0]?.other?.payoutDate}`,
+          donationId: bqoCreatedDataId['Id'] || '',
+        });
+      }
     }
-    return responseSuccess(res, 'success');
+
+    // 4) Send EXACTLY ONE response at the end.
+    return responseSuccess(res, { synced, failed });
   } catch (e) {
     if (e.Fault) return responseError({ res, code: 404, message: e.Fault.Error[0].Message });
     return responseError({ res, code: 404, message: e.message || 'Error' });

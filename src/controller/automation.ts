@@ -1,10 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import User, { UserAttributes } from '../db/models/user';
 import quickBookApi, { tokenProps } from '../utils/quickBookApi';
-import quickbookAuth from '../utils/quickbookAuth';
 import axios from 'axios';
 import { isEmpty, omit, sumBy } from 'lodash';
-const { PC_CLIENT_ID, PC_SECRET_APP, QBO_KEY, QBO_SECRET } = process.env;
+const { PC_CLIENT_ID, PC_SECRET_APP } = process.env;
 import { format, fromUnixTime, isSameDay, isToday, isWithinInterval, parseISO, startOfToday, subDays } from 'date-fns';
 import { zonedTimeToUtc } from 'date-fns-tz';
 
@@ -22,13 +21,26 @@ import { SuccessToken, checkAccessTokenValidity, refreshAccessToken, removeDupli
 import Stripe from 'stripe';
 import userEmailPreferences from '../db/models/userEmailPreferences';
 import { dailySyncing, dailySyncingRegistration } from '../utils/automation-helper';
+import { withRetry } from '../utils/httpRetry';
 import { id } from 'date-fns/locale';
 import EmailLog from '../db/models/emailLog';
+import SyncRun from '../db/models/SyncRun';
+import { getQboTokensForUser, refreshQboToken } from '../services/qboClient';
 
 const { SENDGRID_API_KEY, SETTING_FUND_URL } = process.env;
 
 const sgMail = require('@sendgrid/mail');
 sgMail.setApiKey(SENDGRID_API_KEY);
+
+// Minimal winston logger for the sync path. No existing logger module was found in the
+// codebase, so this is created inline to keep failures traceable with correlation context.
+const winston = require('winston');
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
+  defaultMeta: { module: 'automation' },
+  transports: [new winston.transports.Console()],
+});
 
 interface PaymentMethodsResponse {
   QueryResponse: {
@@ -39,64 +51,40 @@ interface PaymentMethodsResponse {
     }>;
   };
 }
-const base64encode = (str) => Buffer.from(str).toString('base64');
-
+// Thin wrapper kept for backwards compatibility. The canonical refresh+persist
+// implementation now lives in services/qboClient.ts to avoid an import cycle.
 export const generateQBOToken = async (refreshToken: string, email: string) => {
-  // if (!oauthClient.isAccessTokenValid()) {
-  const authHeader = 'Basic ' + base64encode(QBO_KEY + ':' + QBO_SECRET);
-  const requestBody = `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`;
-  try {
-    const data = await tokenEntity.findOne({
-      where: { email: email as string, isEnabled: true },
-      include: tokens,
-    });
-
-    const arr = data.tokens.find((item) => item.token_type === 'qbo');
-
-    const response = await axios.post('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', requestBody, {
-      headers: {
-        Accept: 'application/json',
-        Authorization: authHeader,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-    });
-
-    await tokens.update(
-      { access_token: response.data.access_token, refresh_token: response.data.refresh_token },
-      { where: { id: arr.id } },
-    );
-
-    return {
-      access_token: response.data.access_token,
-      refresh_token: response.data.refresh_token,
-      realm_id: arr.realm_id,
-    };
-  } catch (error) {
-    console.log('====ERROR:====', error);
-  }
+  return refreshQboToken(refreshToken, email);
 };
 
-export const getallUsers = async () => {
-  try {
-    const users = await User.findAll();
-    users.map(async (item: UserAttributes) => {
-      const userSettingsExist = await UserSettings.findOne({ where: { userId: item.id } });
-      const userSyncData = await UserSync.findAll({
-        where: {
-          userId: item.id,
-          createdAt: {
-            [Op.between]: [getDayBoundary(0, 0, 0, 0), getDayBoundary(23, 59, 59, 999)],
-          },
-        },
-      });
+export interface UserSyncResult {
+  email: string;
+  status: 'ok' | 'failed';
+  error?: string;
+}
 
-      if (userSettingsExist) {
-        // only automate if setting is exist
-        if (userSettingsExist.isAutomationEnable) {
-          const tokenEntity = await generatePcToken(String(item.email));
+export const getallUsers = async (): Promise<UserSyncResult[]> => {
+  const users = await User.findAll();
+
+  const results = await Promise.all(
+    users.map(async (item: UserAttributes): Promise<UserSyncResult> => {
+      const email = String(item.email);
+      try {
+        const userSettingsExist = await UserSettings.findOne({ where: { userId: item.id } });
+        const userSyncData = await UserSync.findAll({
+          where: {
+            userId: item.id,
+            createdAt: {
+              [Op.between]: [getDayBoundary(0, 0, 0, 0), getDayBoundary(23, 59, 59, 999)],
+            },
+          },
+        });
+
+        if (userSettingsExist && userSettingsExist.isAutomationEnable) {
+          // only automate if setting exists and automation is enabled
+          const tokenEntity = await generatePcToken(email);
           const { access_token } = tokenEntity;
           if (access_token) {
-            // // await generateQBOToken(item.refresh_token_qbo, item.email);
             await generateTodayBatches({
               userId: item.id,
               email: item.email,
@@ -106,9 +94,18 @@ export const getallUsers = async () => {
             });
           }
         }
+
+        return { email, status: 'ok' };
+      } catch (e) {
+        // Do NOT swallow: log the failure with correlation context and surface it to the caller.
+        const error = e instanceof Error ? e.message : String(e);
+        logger.error('getallUsers: failed to sync user', { email, error });
+        return { email, status: 'failed', error };
       }
-    });
-  } catch (e) {}
+    }),
+  );
+
+  return results;
 };
 
 export const getFundInDonation = async ({ donationId, access_token }: { donationId: number; access_token: string }) => {
@@ -123,7 +120,7 @@ export const getFundInDonation = async ({ donationId, access_token }: { donation
     const dataDesignation = getDesignation.data;
 
     if (isEmpty(dataDesignation.data)) {
-      //return empty here
+      // Legitimately empty: no designations on this donation.
       return [];
     }
 
@@ -133,7 +130,11 @@ export const getFundInDonation = async ({ donationId, access_token }: { donation
     const getFound = await axios.get(urlFund, config);
     return getFound.data.data;
   } catch (e) {
-    return [];
+    // RE-THROW: a transient PCO failure must not look like "no data". Let the caller's
+    // per-user/per-batch try/catch record this as a failure instead of silently syncing nothing.
+    const error = e instanceof Error ? e.message : String(e);
+    logger.error('getFundInDonation: PCO request failed', { donationId, error });
+    throw e;
   }
 };
 
@@ -155,6 +156,7 @@ export const getBatchInDonation = async ({
     const tempData = getBatchesRes.data.data;
 
     if (isEmpty(tempData)) {
+      // Legitimately empty: no committed batches.
       return [];
     }
 
@@ -165,7 +167,10 @@ export const getBatchInDonation = async ({
 
     return data;
   } catch (e) {
-    return [];
+    // RE-THROW: distinguish a real PCO failure from "no batches today" so the caller records a failure.
+    const error = e instanceof Error ? e.message : String(e);
+    logger.error('getBatchInDonation: PCO request failed', { error });
+    throw e;
   }
 };
 
@@ -235,30 +240,16 @@ export const generateTodayBatches = async ({
       await UserSync.create({ syncedData: jsonRes.donation, userId, batchId: jsonRes.donation[0].batch.id });
     }
   } catch (e) {
-    console.log('generate data', e);
+    // RE-THROW: let getallUsers' per-user try/catch record this as a failure rather than
+    // silently swallowing it (which would report the user as synced when nothing posted).
+    const error = e instanceof Error ? e.message : String(e);
+    logger.error('generateTodayBatches: failed to generate/post batches', { email, userId, error });
+    throw e;
   }
 };
 
 export const automationDeposit = async (email: string, jsonArr: any) => {
-  const data = await tokenEntity.findOne({
-    where: { email: email as string, isEnabled: true },
-    include: tokens,
-  });
-
-  const arr = data.tokens.find((item) => item.token_type === 'qbo');
-
-  let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
-
-  if (!quickbookAuth.isAccessTokenValid()) {
-    const result = await generateQBOToken(arr.refresh_token, email);
-    tokenJson = result;
-  }
-
-  const qboTokens = {
-    ACCESS_TOKEN: tokenJson.access_token,
-    REALM_ID: tokenJson.realm_id,
-    REFRESH_TOKEN: tokenJson.refresh_token,
-  };
+  const qboTokens = await getQboTokensForUser(email);
 
   try {
     const paymentMethods = await new Promise<PaymentMethodsResponse>((resolve, reject) => {
@@ -309,6 +300,21 @@ export const automationDeposit = async (email: string, jsonArr: any) => {
   // try {
   //   await createDepositInQBO();
   // } catch (err) {}
+};
+
+export const automationJournalEntry = async (email: string, jePayload: any) => {
+  const qboTokens = await getQboTokensForUser(email);
+
+  return new Promise(async (resolve, reject) => {
+    await quickBookApi(qboTokens).createJournalEntry(jePayload, function (err, createdData) {
+      if (err) {
+        return reject(err);
+      }
+
+      const data = isEmpty(createdData) ? [] : createdData;
+      resolve(data);
+    });
+  });
 };
 
 export const generatePcToken = async (email: string) => {
@@ -368,23 +374,51 @@ export const generatePcToken = async (email: string) => {
 };
 
 export const automationScheduler = async (req: Request, res: Response) => {
+  const run = await SyncRun.create({ trigger: 'automationScheduler', startedAt: new Date(), status: 'running' });
   try {
-    await getallUsers();
-    return responseSuccess(res, 'Sync completed');
+    const results = await getallUsers();
+    const failures = results.filter((r) => r.status === 'failed');
+    const summary = {
+      processed: results.length,
+      succeeded: results.length - failures.length,
+      failed: failures.length,
+      failures: failures.map((f) => ({ email: f.email, error: f.error })),
+    };
+
+    if (summary.failed > 0) {
+      logger.warn('automationScheduler: completed with failures', summary);
+    } else {
+      logger.info('automationScheduler: completed', { processed: summary.processed, succeeded: summary.succeeded });
+    }
+
+    await run.update({
+      finishedAt: new Date(),
+      processed: summary.processed,
+      succeeded: summary.succeeded,
+      failed: summary.failed,
+      failures: summary.failures,
+      status: 'completed',
+    });
+
+    return responseSuccess(res, summary);
   } catch (err) {
     // handle error here, perhaps by sending an error response
-    console.error(err);
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error('automationScheduler: unexpected error', { error });
+    await run.update({ finishedAt: new Date(), status: 'errored', failures: [{ email: '', error }] });
     return res.status(500).json({ error: 'An error occurred' });
   }
 };
 
 export const latestFundAutomation = async (req: Request, res: Response) => {
+  const run = await SyncRun.create({ trigger: 'latestFundAutomation', startedAt: new Date(), status: 'running' });
   try {
     const users = await User.findAll({
       include: [UserSettings, tokens],
     });
 
-    const promises = [];
+    const failures: { email: string; error: string }[] = [];
+    let processed = 0;
 
     for (const a of users) {
       if (
@@ -394,52 +428,91 @@ export const latestFundAutomation = async (req: Request, res: Response) => {
         a.UserSetting.isAutomationEnable &&
         a.role === 'client'
       ) {
-        const tokenEntity = await generatePcToken(a.email as string);
-        const { access_token } = tokenEntity;
-        const settingsJson = a.UserSetting.settingsData as any;
+        processed += 1;
+        // Per-user isolation: one user's failure must not abort the rest of the run.
+        try {
+          const tokenEntity = await generatePcToken(a.email as string);
+          const { access_token } = tokenEntity;
 
-        const config = {
-          method: 'get',
-          url: 'https://api.planningcenteronline.com/giving/v2/batches?per_page=50&order=-updated_at&filter=committed',
-          headers: {
-            Authorization: `Bearer ${access_token}`,
-          },
-        };
+          const headers = { Authorization: `Bearer ${access_token}` };
+          const start_date = new Date(a.UserSetting.startDateAutomationFund);
+          const end_date = new Date(); // Today's date
 
-      
+          // Paginate PCO batches via `links.next` (a full URL) instead of capping at the first
+          // page of 50. The list is ordered by `-updated_at`, so once a page's batches are all
+          // older than the automation window we can stop early. Each page GET is retried on
+          // transient failures (429/5xx/network).
+          const batchesInWindow: any[] = [];
+          let nextUrl: string | null =
+            'https://api.planningcenteronline.com/giving/v2/batches?per_page=50&order=-updated_at&filter=committed';
 
-        // Note: axios call is outside of the inner map to ensure proper handling of async operations
-        const response = await axios(config);
+          while (nextUrl) {
+            const response = await withRetry(() => axios({ method: 'get', url: nextUrl as string, headers }));
+            const pageData: any[] = response.data?.data ?? [];
 
-        const newArr = response.data.data
-        let isOneOfRegistrationDeactivated = !isEmpty(
-          newArr.filter((c) =>
-            settingsJson?.some((a) => c.description.includes(a.registration) && !a.isActive),
-          ),
-        );
+            for (const item of pageData) {
+              const created_at = parseISO(item.attributes.created_at);
+              if (isWithinInterval(created_at, { start: start_date, end: end_date })) {
+                batchesInWindow.push(item);
+              }
+            }
 
-        // Collect promises from map() operation
-        const innerPromises = response.data.data
-          .filter((item) => {
-            const start_date = new Date(a.UserSetting.startDateAutomationFund);
-            const end_date = new Date(); // Today's date
-            const created_at = parseISO(item.attributes.created_at);
-            return isWithinInterval(created_at, { start: start_date, end: end_date });
-          })
-          .map((item) => dailySyncing(a, item, item.id, `${item.id} - ${a.email}`, a.UserSetting.settingBankData));
+            // Early stop: ordered by -updated_at, so once a page's newest-to-oldest stream
+            // drops below the window start there are no more in-window batches to find.
+            const oldestUpdatedOnPage = pageData.reduce<Date | null>((oldest, item) => {
+              const updatedAt = parseISO(item.attributes.updated_at ?? item.attributes.created_at);
+              return oldest === null || updatedAt < oldest ? updatedAt : oldest;
+            }, null);
 
-        // Add all inner promises to the main promises array
-        promises.push(...innerPromises);
+            if (oldestUpdatedOnPage !== null && oldestUpdatedOnPage < start_date) {
+              break;
+            }
+
+            nextUrl = response.data?.links?.next ?? null;
+          }
+
+          // Collect per-batch promises for this user (keeps existing dailySyncing calls).
+          const innerPromises = batchesInWindow.map((item) =>
+            dailySyncing(a, item, item.id, `${item.id} - ${a.email}`, a.UserSetting.settingBankData),
+          );
+
+          await Promise.all(innerPromises);
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          logger.error('latestFundAutomation: failed to sync user', { email: a.email, error });
+          failures.push({ email: a.email as string, error });
+        }
       }
     }
 
-    // Wait for all promises to resolve
-    await Promise.all(promises);
+    const summary = {
+      processed,
+      succeeded: processed - failures.length,
+      failed: failures.length,
+      failures,
+    };
 
-    return responseSuccess(res, 'Sync completed');
+    if (summary.failed > 0) {
+      logger.warn('latestFundAutomation: completed with failures', summary);
+    } else {
+      logger.info('latestFundAutomation: completed', { processed: summary.processed, succeeded: summary.succeeded });
+    }
+
+    await run.update({
+      finishedAt: new Date(),
+      processed: summary.processed,
+      succeeded: summary.succeeded,
+      failed: summary.failed,
+      failures: summary.failures,
+      status: 'completed',
+    });
+
+    return responseSuccess(res, summary);
   } catch (err) {
     // handle error here, perhaps by sending an error response
-    console.error(err);
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error('latestFundAutomation: unexpected error', { error });
+    await run.update({ finishedAt: new Date(), status: 'errored', failures: [{ email: '', error }] });
     return res.status(500).json({ error: 'An error occurred' });
   }
 };

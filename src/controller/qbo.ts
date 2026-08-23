@@ -1,11 +1,6 @@
 import { Request, Response } from 'express';
-import quickBookApi from '../utils/quickBookApi';
 import { responseError, responseSuccess } from '../utils/response';
-import User from '../db/models/user';
-import quickbookAuth from '../utils/quickbookAuth';
-import { generateQBOToken } from './automation';
-import tokenEntity from '../db/models/tokenEntity';
-import tokens from '../db/models/tokens';
+import { getQboClientForUser } from '../services/qboClient';
 import { isEmpty } from 'lodash';
 import UserSync from '../db/models/UserSync';
 import { CustomerProps, projectPayload } from '../utils/mapping';
@@ -20,33 +15,17 @@ export interface QBODataProps {
 export const getAllQboData = async (req: Request, res: Response) => {
   const { email } = req.body;
 
-  const data = await tokenEntity.findOne({
-    where: { email: email as string, isEnabled: true },
-    include: tokens,
-  });
-
-  if (!data) {
-    console.log('Empty user data', email);
+  let qbo;
+  try {
+    qbo = await getQboClientForUser(email);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.log(message, email);
+    if (message === 'No qbo token') {
+      return responseError({ res, code: 500, data: 'No qbo token' });
+    }
     return res.status(500).json({ error: 'Empty user data' });
   }
-
-  const arr = data.tokens.find((item) => item.token_type === 'qbo');
-
-  if (!arr) {
-    return responseError({ res, code: 500, data: 'No qbo token' });
-  }
-  let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
-
-  if (!quickbookAuth.isAccessTokenValid()) {
-    const result = await generateQBOToken(arr.refresh_token, email);
-    tokenJson = result;
-  }
-
-  const qboTokens = {
-    ACCESS_TOKEN: tokenJson?.access_token,
-    REALM_ID: tokenJson?.realm_id,
-    REFRESH_TOKEN: tokenJson?.refresh_token,
-  };
 
   const fetchAccounts = async () => {
     const accountTypes = ['Income', 'Revenue', 'Bank', 'Expense', 'Credit Card'];
@@ -54,7 +33,7 @@ export const getAllQboData = async (req: Request, res: Response) => {
     let accountList = [];
 
     await new Promise<void>((resolve, reject) => {
-      quickBookApi(qboTokens).findAccounts(
+      qbo.findAccounts(
         {
           desc: 'MetaData.LastUpdatedTime',
         },
@@ -79,7 +58,7 @@ export const getAllQboData = async (req: Request, res: Response) => {
 
   const fetchClasses = async () => {
     return new Promise(async (resolve, reject) => {
-      await quickBookApi(qboTokens).findClasses((err, classes) => {
+      await qbo.findClasses((err, classes) => {
         if (err) {
           reject(err);
         }
@@ -94,7 +73,7 @@ export const getAllQboData = async (req: Request, res: Response) => {
 
   const fetchCustomers = async () => {
     return new Promise(async (resolve, reject) => {
-      await quickBookApi(qboTokens).findCustomers(
+      await qbo.findCustomers(
         {
           fetchAll: true,
         },
@@ -131,39 +110,12 @@ export const getAllQboData = async (req: Request, res: Response) => {
 export const deleteQboDeposit = async (req: Request, res: Response) => {
   const { email, synchData } = req.body;
   try {
-    const data = await tokenEntity.findOne({
-      where: { email: email as string, isEnabled: true },
-      include: tokens,
-    });
-
-    if (!data) {
-      console.log('Empty user data', email);
-      return res.status(500).json({ error: 'Empty user data' });
-    }
-
-    const arr = data.tokens.find((item) => item.token_type === 'qbo');
-
-    if (!arr) {
-      return responseError({ res, code: 500, data: 'No qbo token' });
-    }
-
-    let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
-
-    if (!quickbookAuth.isAccessTokenValid()) {
-      const result = await generateQBOToken(arr.refresh_token, email);
-      tokenJson = result;
-    }
-
-    const qboTokens = {
-      ACCESS_TOKEN: tokenJson.access_token,
-      REALM_ID: tokenJson.realm_id,
-      REFRESH_TOKEN: tokenJson.refresh_token,
-    };
+    const qbo = await getQboClientForUser(email);
 
     await Promise.all(
       synchData.map((a) => {
         new Promise(async (resolve, reject) => {
-          quickBookApi(qboTokens).deleteDeposit(a.donationId, function (err, deleteData) {
+          qbo.deleteDeposit(a.donationId, function (err, deleteData) {
             if (err) {
               reject(err);
             }
@@ -186,31 +138,9 @@ export const getDepositRef = async (req: Request, res: Response) => {
   const { email } = req.body;
 
   try {
-    const data = await tokenEntity.findOne({
-      where: { email: email as string, isEnabled: true },
-      include: tokens,
-    });
+    const qbo = await getQboClientForUser(email);
 
-    if (!data) {
-      console.log('Empty user data', email);
-      return res.status(500).json({ error: 'Empty user data' });
-    }
-
-    const arr = data.tokens.find((item) => item.token_type === 'qbo');
-    let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
-
-    if (!quickbookAuth.isAccessTokenValid()) {
-      const result = await generateQBOToken(arr.refresh_token, email);
-      tokenJson = result;
-    }
-
-    const qboTokens = {
-      ACCESS_TOKEN: tokenJson.access_token,
-      REALM_ID: tokenJson.realm_id,
-      REFRESH_TOKEN: tokenJson.refresh_token,
-    };
-
-    quickBookApi(qboTokens).findAccounts({ AccountType: 'Bank' }, function (err, data) {
+    qbo.findAccounts({}, function (err, data) {
       if (err) {
       }
       console.log('asdasdas', data.QueryResponse);
@@ -226,39 +156,12 @@ export const addProject = async (req: Request, res: Response) => {
   const { email, data } = req.body;
   const projectData: CustomerProps = data;
   try {
-    const data = await tokenEntity.findOne({
-      where: { email: email as string, isEnabled: true },
-      include: tokens,
-    });
-
-    if (!data) {
-      console.log('Empty user data', email);
-      return res.status(500).json({ error: 'Empty user data' });
-    }
-
-    const arr = data.tokens.find((item) => item.token_type === 'qbo');
-
-    if (!arr) {
-      return responseError({ res, code: 500, data: 'No qbo token' });
-    }
-
-    let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
-
-    if (!quickbookAuth.isAccessTokenValid()) {
-      const result = await generateQBOToken(arr.refresh_token, email);
-      tokenJson = result;
-    }
-
-    const qboTokens = {
-      ACCESS_TOKEN: tokenJson.access_token,
-      REALM_ID: tokenJson.realm_id,
-      REFRESH_TOKEN: tokenJson.refresh_token,
-    };
+    const qbo = await getQboClientForUser(email);
 
     const payload = projectPayload(projectData);
 
     return new Promise(async (resolve, reject) => {
-      await quickBookApi(qboTokens).createCustomer(payload, function (err, createdData) {
+      await qbo.createCustomer(payload, function (err, createdData) {
         if (err) {
           return responseError({ res, code: 500, data: err });
         }
@@ -278,39 +181,12 @@ export const updateProject = async (req: Request, res: Response) => {
   const { email, data } = req.body;
   const projectData: CustomerProps = data;
   try {
-    const data = await tokenEntity.findOne({
-      where: { email: email as string, isEnabled: true },
-      include: tokens,
-    });
-
-    if (!data) {
-      console.log('Empty user data', email);
-      return res.status(500).json({ error: 'Empty user data' });
-    }
-
-    const arr = data.tokens.find((item) => item.token_type === 'qbo');
-
-    if (!arr) {
-      return responseError({ res, code: 500, data: 'No qbo token' });
-    }
-
-    let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
-
-    if (!quickbookAuth.isAccessTokenValid()) {
-      const result = await generateQBOToken(arr.refresh_token, email);
-      tokenJson = result;
-    }
-
-    const qboTokens = {
-      ACCESS_TOKEN: tokenJson.access_token,
-      REALM_ID: tokenJson.realm_id,
-      REFRESH_TOKEN: tokenJson.refresh_token,
-    };
+    const qbo = await getQboClientForUser(email);
 
     const payload = projectPayload(projectData);
 
     return new Promise(async (resolve, reject) => {
-      await quickBookApi(qboTokens).updateCustomer(payload, function (err, createdData) {
+      await qbo.updateCustomer(payload, function (err, createdData) {
         if (err) {
           return responseError({ res, code: 400, data: err });
         }
@@ -330,32 +206,11 @@ export const findCustomer = async (req: Request, res: Response) => {
   try {
     const { email, Id } = req.body;
     console.log('findCustomer', email, Id);
-    const data = await tokenEntity.findOne({
-      where: { email: email as string, isEnabled: true },
-      include: tokens,
-    });
 
-    if (!data) {
-      console.log('Empty user data', email);
-      return res.status(500).json({ error: 'Empty user data' });
-    }
-
-    const arr = data.tokens.find((item) => item.token_type === 'qbo');
-    let tokenJson = { access_token: arr.access_token, refresh_token: arr.refresh_token, realm_id: arr.realm_id };
-
-    if (!quickbookAuth.isAccessTokenValid()) {
-      const result = await generateQBOToken(arr.refresh_token, email);
-      tokenJson = result;
-    }
-
-    const qboTokens = {
-      ACCESS_TOKEN: tokenJson.access_token,
-      REALM_ID: tokenJson.realm_id,
-      REFRESH_TOKEN: tokenJson.refresh_token,
-    };
+    const qbo = await getQboClientForUser(email);
 
     const customer = await new Promise((resolve, reject) => {
-      quickBookApi(qboTokens).getCustomer(Id, (err, customer) => {
+      qbo.getCustomer(Id, (err, customer) => {
         if (err) {
           reject(err);
         } else if (!customer.Active) {
