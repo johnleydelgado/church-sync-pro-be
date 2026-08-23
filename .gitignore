@@ -7,3 +7,8 @@ yarn-error.log
 src/db/config/config.json
 firebase-debug.log
 .DS_Store
+# env backups (contain real secrets)
+.env.*.bak-*
+.env.production.bak*
+.env.staging.bak*
+*.bak-[0-9]*
