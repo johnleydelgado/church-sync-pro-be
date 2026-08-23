@@ -215,6 +215,13 @@ export const isStripeElectronic = (donation: any): boolean => {
   const method = (a.payment_method ?? '').toLowerCase();
   if (!STRIPE_ELECTRONIC_METHODS.includes(method)) return false;
   if (a.refunded === true) return false;
+  // Only *completed* giving belongs in a journal entry. A pending or failed card
+  // payment would otherwise be recognised as income and debited to the clearing
+  // account, where it can never clear because the money never arrives.
+  // Donations with no payment_status are treated as complete: PCO omits the field
+  // on some records, and dropping those would under-report real income.
+  const status = (a.payment_status ?? '').toLowerCase();
+  if (status && status !== 'succeeded') return false;
   // fee_cents may arrive as a string from PCO; coerce before comparing.
   const fee = Number(a.fee_cents);
   const hasFee = !Number.isNaN(fee) && fee !== 0;

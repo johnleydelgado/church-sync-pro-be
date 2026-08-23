@@ -599,7 +599,7 @@ export const finalSyncStripe = async (req: Request, res: Response) => {
       const synchedBatchesData = await UserSync.findAll({
         where: {
           userId: finalData[0].other.userId,
-          batchId: `Stripe payout - ${finalData[0]?.other?.email} -  ${finalData[0]?.other?.payoutDate}`,
+          batchId: `Stripe payout - ${finalData[0]?.other?.email} - ${finalData[0]?.other?.payoutDate}`,
         },
         attributes: ['id', 'batchId', 'createdAt'],
       });

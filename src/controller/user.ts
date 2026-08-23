@@ -478,15 +478,22 @@ export const bookkeeperList = async (req: Request, res: Response) => {
 };
 
 export const updateInvitationStatus = async (req: Request, res: Response) => {
-  const { email, bookkeeperId } = req.body;
+  const { email, bookkeeperId, invitationToken } = req.body;
 
   try {
+    // This runs before the invitee has a session, so the invitation token IS the
+    // credential. Without it in the WHERE clause, anyone could post an invited email
+    // plus their own user id and attach themselves to that church's books.
+    if (!invitationToken) {
+      return responseError({ res, code: 401, message: 'Invitation token required' });
+    }
+
     const updateData = { inviteAccepted: true };
     if (bookkeeperId) {
       updateData['userId'] = bookkeeperId;
     }
 
-    const bookkeeperData = await bookkeeper.update(updateData, { where: { email } });
+    const bookkeeperData = await bookkeeper.update(updateData, { where: { email, invitationToken } });
 
     if (bookkeeperData) {
       return responseSuccess(res, bookkeeperData);

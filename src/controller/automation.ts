@@ -673,7 +673,7 @@ export const checkLatestFund = async (req: Request, res: Response) => {
     include: [tokens, userEmailPreferences],
   });
 
-  const filteredUsers = users.filter((user) => user.role === 'client' && user.email === 'llambas86@gmail.com');
+  const filteredUsers = users.filter((user) => user.role === 'client');
 
   const BASE_URL = 'https://api.planningcenteronline.com/giving/v2/funds';
 
@@ -766,7 +766,7 @@ export const checkLatestRegistration = async (req: Request, res: Response) => {
     include: [tokens, userEmailPreferences],
   });
 
-  const filteredUsers = users.filter((user) => user.role === 'client' && user.email === 'llambas86@gmail.com');
+  const filteredUsers = users.filter((user) => user.role === 'client');
 
   const twoDaysAgo = subDays(new Date(), 2);
 

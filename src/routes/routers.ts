@@ -50,7 +50,6 @@ import {
   deleteQboDeposit,
   findCustomer,
   getAllQboData,
-  getDepositRef,
   updateProject,
 } from '../controller/qbo';
 import {
@@ -97,7 +96,7 @@ routers.get(stripeRoutes.getStripePayouts, verifySession(), getStripePayouts);
 // routers.post(stripeRoutes.syncStripePayoutRegistration, verifySession(), syncStripePayoutRegistration);
 routers.post(stripeRoutes.finalSyncStripe, verifySession(), finalSyncStripe);
 routers.post(stripeRoutes.getStripeList, verifySession(), getStripeList);
-routers.post(stripeRoutes.createPaymentIntent, createPaymentIntent);
+routers.post(stripeRoutes.createPaymentIntent, verifySession(), createPaymentIntent);
 
 routers.post(qboRoutes.getAllQboData, verifySession(), getAllQboData);
 routers.post(qboRoutes.deleteQboDeposit, verifySession(), deleteQboDeposit);
@@ -111,15 +110,14 @@ routers.post(userRoutes.addTokenInUser, verifySession(), addTokenInUser);
 routers.post(userRoutes.createSettings, verifySession(), createSettings);
 routers.post(userRoutes.updateRegisterSettings, verifySession(), updateRegisterSettings);
 routers.post(userRoutes.enableAutoSyncSetting, verifySession(), enableAutoSyncSetting);
-routers.get(userRoutes.getUserRelated, getUserRelated);
-// Public GET (matches getUserRelated wiring) to keep the daily-JE home screen simple.
-routers.get(userRoutes.getDailyJournalEntries, getDailyJournalEntries);
+routers.get(userRoutes.getUserRelated, verifySession(), getUserRelated);
+routers.get(userRoutes.getDailyJournalEntries, verifySession(), getDailyJournalEntries);
 routers.post(userRoutes.manualSync, verifySession(), manualSync);
 routers.post(userRoutes.isUserHaveTokens, verifySession(), isUserHaveTokens);
 routers.post(userRoutes.getTokenList, verifySession(), getTokenList);
 routers.post(userRoutes.updateUserToken, verifySession(), updateUserToken);
 routers.post(userRoutes.deleteUserToken, verifySession(), deleteUserToken);
-routers.post(userRoutes.sendEmailInvitation, sendEmailInvitation);
+routers.post(userRoutes.sendEmailInvitation, verifySession(), sendEmailInvitation);
 routers.post(userRoutes.sendPasswordReset, sendPasswordReset);
 routers.post(userRoutes.resetPassword, resetPassword);
 routers.post(userRoutes.checkValidInvitation, checkValidInvitation);
@@ -131,13 +129,12 @@ routers.post(userRoutes.addUpdateBankSettings, verifySession(), addUpdateBankSet
 routers.post(userRoutes.addUpdateBilling, verifySession(), addUpdateBilling);
 routers.post(userRoutes.viewBilling, verifySession(), viewBilling);
 routers.post(userRoutes.addUpdateBankCharges, verifySession(), addUpdateBankCharges);
-routers.post(userRoutes.crudUserEmailPreferences, crudUserEmailPreferences);
-routers.post(userRoutes.setStartDataAutomation, setStartDataAutomation);
+routers.post(userRoutes.crudUserEmailPreferences, verifySession(), crudUserEmailPreferences);
+routers.post(userRoutes.setStartDataAutomation, verifySession(), setStartDataAutomation);
 
 routers.post('/automationScheduler', requireAutomationKey, automationScheduler);
 routers.post('/latestFundAutomation', requireAutomationKey, latestFundAutomation);
 
-routers.post('/getDepositRef', getDepositRef);
 
 routers.post('/checkLatestFund', requireAutomationKey, checkLatestFund);
 routers.post('/checkLatestRegistration', requireAutomationKey, checkLatestRegistration);
