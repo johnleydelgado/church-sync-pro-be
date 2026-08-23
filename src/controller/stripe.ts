@@ -14,6 +14,16 @@ import tokens from '../db/models/tokens';
 import tokenEntity from '../db/models/tokenEntity';
 import { checkEmpty } from '../utils/helper';
 import { withRetry } from '../utils/httpRetry';
+
+// Stripe's list endpoints return 10 items by default. A payout with more than ten
+// balance transactions was silently reporting the sum of only the first ten as the
+// payout total, under-stating real money. autoPagingToArray walks every page.
+const listAllBalanceTransactions = async (stripe: Stripe, payoutId: string) =>
+  withRetry(() =>
+    stripe.balanceTransactions
+      .list({ payout: payoutId, limit: 100 })
+      .autoPagingToArray({ limit: 10000 }),
+  );
 const { PC_CLIENT_ID, PC_SECRET_APP, PC_REDIRECT, STRIPE_SECRET_KEY, STRIPE_PUB_KEY, STRIPE_CLIENT_ID } = process.env;
 
 export interface SuccessToken {
@@ -136,8 +146,8 @@ export const getStripePayouts = async (req: Request, res: Response) => {
           console.log(`Payout amount: ${payout.amount / 100} ${payout.currency}`);
           console.log(`Payout date: ${new Date(payout.created * 1000).toISOString()}`);
 
-          const balanceTransactions = await withRetry(() => stripe.balanceTransactions.list({ payout: payout.id }));
-          const arr = balanceTransactions.data.filter((item) => item.description !== 'STRIPE PAYOUT');
+          const balanceTransactions = await listAllBalanceTransactions(stripe, payout.id);
+          const arr = balanceTransactions.filter((item) => item.description !== 'STRIPE PAYOUT');
 
           // let clonedArr = [];
 
@@ -783,9 +793,10 @@ export const getStripeList = async (req: Request, res: Response) => {
 
         // For each payout, retrieve the associated charges
         for (const payout of payouts.data) {
-          const balanceTransactions = await stripe.balanceTransactions.list({ payout: payout.id });
-          const arr = balanceTransactions.data
-            .filter((item) => item.description.includes('Registration')) // Returns a boolean to filter items
+          const balanceTransactions = await listAllBalanceTransactions(stripe, payout.id);
+          const arr = balanceTransactions
+            // description is nullable on a BalanceTransaction; guard before matching.
+            .filter((item) => (item.description ?? '').includes('Registration'))
             .map((item) => ({ name: item.description, date: item.created })); // Maps the filtered items to new objects
 
           if (!isEmpty(arr)) {

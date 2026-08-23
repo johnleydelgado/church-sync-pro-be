@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { isEmpty } from 'lodash';
+import { createLogger } from '../utils/logger';
 import axios from 'axios';
 import { format } from 'date-fns';
 import { automationJournalEntry, generatePcToken, getFundInDonation } from '../controller/automation';
@@ -15,14 +16,7 @@ import {
   journalEntryPayload,
 } from '../utils/mapping';
 
-// Minimal winston logger for the sync engine (mirrors the inline logger in automation-helper.ts).
-const winston = require('winston');
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
-  defaultMeta: { module: 'sync-engine' },
-  transports: [new winston.transports.Console()],
-});
+const logger = createLogger('sync-engine');
 
 export interface SyncBatchParams {
   user: any;

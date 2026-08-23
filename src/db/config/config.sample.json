@@ -1,0 +1,104 @@
+{
+  "development": {
+    "username": "<username>",
+    "password": "<password>",
+    "database": "supertokens",
+    "host": "<host>",
+    "dialect": "postgres",
+    "pool": {
+      "max": 5,
+      "min": 0,
+      "acquire": 30000,
+      "idle": 10000
+    }
+  },
+  "test": {
+    "username": "<username>",
+    "password": "<password>",
+    "database": "supertokens",
+    "host": "<host>",
+    "dialect": "postgres",
+    "pool": {
+      "max": 5,
+      "min": 0,
+      "acquire": 30000,
+      "idle": 10000
+    }
+  },
+  "staging": {
+    "username": "<username>",
+    "password": "<password>",
+    "database": "supertokens",
+    "host": "<host>",
+    "dialect": "postgres",
+    "port": 25060,
+    "dialectOptions": {
+      "ssl": {
+        "require": true,
+        "rejectUnauthorized": false,
+        "ca": "../../../cert/ca-certificate.crt"
+      }
+    },
+    "pool": {
+      "max": 5,
+      "min": 0,
+      "acquire": 30000,
+      "idle": 10000
+    }
+  },
+  "uat": {
+    "username": "<username>",
+    "password": "<password>",
+    "database": "supertokens",
+    "host": "<host>",
+    "dialect": "postgres",
+    "pool": {
+      "max": 5,
+      "min": 0,
+      "acquire": 30000,
+      "idle": 10000
+    }
+  },
+  "uat-prd": {
+    "username": "<username>",
+    "password": "<password>",
+    "database": "supertokens",
+    "host": "<host>",
+    "dialect": "postgres",
+    "port": 25060,
+    "dialectOptions": {
+      "ssl": {
+        "require": true,
+        "rejectUnauthorized": false,
+        "ca": "../../../cert/ca-certificate.crt"
+      }
+    },
+    "pool": {
+      "max": 44,
+      "min": 0,
+      "acquire": 30000,
+      "idle": 10000
+    }
+  },
+  "production": {
+    "username": "<username>",
+    "password": "<password>",
+    "database": "supertokens",
+    "host": "<host>",
+    "dialect": "postgres",
+    "port": 25060,
+    "dialectOptions": {
+      "ssl": {
+        "require": true,
+        "rejectUnauthorized": false,
+        "ca": "../../../cert/ca-certificate.crt"
+      }
+    },
+    "pool": {
+      "max": 44,
+      "min": 0,
+      "acquire": 30000,
+      "idle": 10000
+    }
+  }
+}

@@ -23,7 +23,7 @@ function returnObject(obj: resObject) {
 
 function responseData(res: Response, httpCode: number, apiResponse: resObject) {
   const { code, message, data, success } = returnObject(apiResponse);
-  console.log(success, httpCode, message, data);
+  // Do not log `data` - responses include OAuth tokens and church financial records.
   res.status(httpCode).json({ code, message, data, success });
 }
 

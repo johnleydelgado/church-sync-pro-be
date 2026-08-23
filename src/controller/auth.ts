@@ -98,7 +98,6 @@ export const callBackPC = async (req: Request, res: Response) => {
     const tokenJwt = jwt.sign({ accessToken: responseJson.access_token }, storageKey.QBQ_ACCESS_TOKEN, {
       expiresIn: '12h',
     });
-    console.log('responseJson.refresh_token', responseJson.refresh_token);
     res.json({
       access_token: responseJson.access_token,
       refresh_token: responseJson.refresh_token,
@@ -128,7 +127,6 @@ export const callBackStripe = async (req: Request, res: Response) => {
   // const clientId = STRIPE_PUB_KEY;
   // const clientSecret = STRIPE_SECRET_KEY;
   const code = req.body.code as string;
-  console.log('code', code);
   try {
     const response = await stripe.oauth.token({ grant_type: 'authorization_code', code });
 
@@ -148,9 +146,8 @@ export const callBackStripe = async (req: Request, res: Response) => {
     // }
 
     // Save the access_token, refresh_token, and other information as needed
-    console.log('Access Token:', response.access_token);
-    console.log('Refresh Token:', response.refresh_token);
-    console.log('Stripe User ID:', response.stripe_user_id);
+    // Never log access/refresh tokens. Account id alone is enough to correlate.
+    console.log('stripe connected', { stripeUserId: response.stripe_user_id });
 
     res.json({ access_token: response.access_token, refresh_token: response.refresh_token });
   } catch (err) {

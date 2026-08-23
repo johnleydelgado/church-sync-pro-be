@@ -341,7 +341,6 @@ export const generatePcToken = async (email: string) => {
       return { access_token: arr.access_token, refresh_token: arr.refresh_token };
     }
 
-    console.log('refresh token is 1: ', refresh_token);
 
     const response = await axios({
       method: 'post',
@@ -357,7 +356,6 @@ export const generatePcToken = async (email: string) => {
       },
     });
 
-    console.log('refresh token is: ', refresh_token, response.data);
 
     await tokens.update(
       { access_token: response.data.access_token, refresh_token: response.data.refresh_token },

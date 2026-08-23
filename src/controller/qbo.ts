@@ -112,25 +112,43 @@ export const deleteQboDeposit = async (req: Request, res: Response) => {
   try {
     const qbo = await getQboClientForUser(email);
 
-    await Promise.all(
-      synchData.map((a) => {
-        new Promise(async (resolve, reject) => {
-          qbo.deleteDeposit(a.donationId, function (err, deleteData) {
-            if (err) {
-              reject(err);
-            }
-
-            const data = isEmpty(deleteData) ? [] : deleteData;
-            resolve(data);
-          });
-        });
-      }),
+    // Delete in QuickBooks FIRST, and only forget the local record for the ones that
+    // actually succeeded. The previous version never returned the inner promise, so
+    // Promise.all resolved immediately on [undefined, ...] and the UserSync rows were
+    // destroyed whether or not QBO had deleted anything - leaving the deposit in
+    // QuickBooks with nothing recording that it had ever been synced, so the next run
+    // posted it again.
+    const results = await Promise.all(
+      synchData.map(
+        (a) =>
+          new Promise<{ row: any; ok: boolean; error?: string }>((resolve) => {
+            qbo.deleteDeposit(a.donationId, (err: any) => {
+              if (err) {
+                resolve({ row: a, ok: false, error: err?.Fault?.Error?.[0]?.Message ?? String(err?.message ?? err) });
+                return;
+              }
+              resolve({ row: a, ok: true });
+            });
+          }),
+      ),
     );
 
-    await Promise.all(synchData.map((a) => UserSync.destroy({ where: { id: a.id } })));
+    const deleted = results.filter((r) => r.ok);
+    const failed = results.filter((r) => !r.ok);
+
+    await Promise.all(deleted.map((r) => UserSync.destroy({ where: { id: r.row.id } })));
+
+    if (failed.length) {
+      return responseError({
+        res,
+        code: 500,
+        message: `Deleted ${deleted.length} of ${results.length}. QuickBooks rejected ${failed.length}; those remain synced so they are not re-posted.`,
+      });
+    }
+
     return responseSuccess(res, 'success');
   } catch (e) {
-    return responseError({ res, code: 500, data: e });
+    return responseError({ res, code: 500, message: 'Could not delete deposits' });
   }
 };
 

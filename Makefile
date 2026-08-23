@@ -1,18 +1,29 @@
 STAGING_PROJECT=church-sync-pro-385703
 
+# Secrets are NOT stored in this file. Export them before running deploy-supertoken: require-supertoken-secrets
+#   export SUPERTOKENS_DB_URI='postgresql://USER:PASSWORD@HOST:25060/supertokens'
+#   export SUPERTOKENS_API_KEY='...'
+require-supertoken-secrets:
+ifndef SUPERTOKENS_DB_URI
+	$(error SUPERTOKENS_DB_URI is not set - export it before deploying)
+endif
+ifndef SUPERTOKENS_API_KEY
+	$(error SUPERTOKENS_API_KEY is not set - export it before deploying)
+endif
+
 # gcloud sql instances create db-csp --project=church-sync-pro-385703 --database-version=POSTGRES_13 --tier=db-f1-micro --region=us-central1
-# gcloud sql users set-password postgres --host=% --instance=db-csp --password=n6yZ535P
+# gcloud sql users set-password postgres --host=% --instance=db-csp --password=<password>
 # gcloud sql databases create csp --instance=db-csp
 # gcloud sql instances describe db-csp --format="value(connectionName)" (result:church-sync-pro-385703:us-central1:db-csp)
-# gcloud run deploy supertokens --image gcr.io/church-sync-pro-385703/supertokens-postgresql:4.4 --allow-unauthenticated --set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://postgres:n6yZ535P@/csp?host=/cloudsql/church-sync-pro-385703:us-central1:db-csp' --add-cloudsql-instances church-sync-pro-385703:us-central1:db-csp --project church-sync-pro-385703
+# gcloud run deploy supertokens --image gcr.io/church-sync-pro-385703/supertokens-postgresql:4.4 --allow-unauthenticated --set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://<user>:<password>@/csp?host=/cloudsql/church-sync-pro-385703:us-central1:db-csp' --add-cloudsql-instances church-sync-pro-385703:us-central1:db-csp --project church-sync-pro-385703
 
 # 	docker build --platform linux/amd64 --cache-from gcr.io/church-sync-pro-385703/supertokens-postgresql:4.4 -t gcr.io/church-sync-pro-385703/supertokens-postgresql:4.4 .
 # 	docker push gcr.io/church-sync-pro-385703/supertokens-postgresql:4.4
-# 	gcloud run deploy supertokens --image gcr.io/church-sync-pro-385703/supertokens-postgresql:4.4 --port 3567 --allow-unauthenticated --set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://postgres:n6yZ535P@/csp?host=/cloudsql/church-sync-pro-385703:us-central1:db-csp' --add-cloudsql-instances church-sync-pro-385703:us-central1:db-csp --project church-sync-pro-385703
+# 	gcloud run deploy supertokens --image gcr.io/church-sync-pro-385703/supertokens-postgresql:4.4 --port 3567 --allow-unauthenticated --set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://<user>:<password>@/csp?host=/cloudsql/church-sync-pro-385703:us-central1:db-csp' --add-cloudsql-instances church-sync-pro-385703:us-central1:db-csp --project church-sync-pro-385703
 
 
 # postgresql://username:password@/dbname?host=/cloudsql/instance-connection-name
-# docker run -p 3567:3567 -e POSTGRESQL_CONNECTION_URI="postgresql://postgres:n6yZ535P@/csp?host=/cloudsql/church-sync-pro-385703:us-central1:db-csp" gcr.io/church-sync-pro-385703/supertokens-postgresql:4.6
+# docker run -p 3567:3567 -e POSTGRESQL_CONNECTION_URI="postgresql://<user>:<password>@/csp?host=/cloudsql/church-sync-pro-385703:us-central1:db-csp" gcr.io/church-sync-pro-385703/supertokens-postgresql:4.6
 
 # NOTE once 
 
@@ -46,7 +57,7 @@ deploy-supertoken:
 		--ingress all \
 		--allow-unauthenticated \
 		${VPC_CONNECTOR} \
-		--set-env-vars POSTGRESQL_CONNECTION_URI='postgresql://doadmin:AVNS_lpk1d8Y_bdAdnmZ6Xsb@db-csp-do-user-15692087-0.c.db.ondigitalocean.com:25060/supertokens',SUPERTOKENS_PORT=3567,API_KEYS=18be6f53-2e23-4fcc-bd17-2fecb798106e \
+		--set-env-vars POSTGRESQL_CONNECTION_URI='$(SUPERTOKENS_DB_URI)',SUPERTOKENS_PORT=3567,API_KEYS=$(SUPERTOKENS_API_KEY) \
 		--project ${GOOGLE_CLOUD_PROJECT}
 	gcloud run services update-traffic ${SUPER_TOKEN} --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1
 

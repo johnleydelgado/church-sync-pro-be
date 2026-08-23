@@ -1,10 +1,13 @@
 import { isEmpty } from 'lodash';
+import { createLogger } from './logger';
 import { automationDeposit, generatePcToken } from '../controller/automation';
 import UserSync from '../db/models/UserSync';
 import { SettingsJsonProps, newRequestPayload } from './mapping';
 import { format } from 'date-fns';
 import { checkEmpty } from './helper';
 import { syncBatchToJournalEntries } from '../services/syncEngine';
+
+const logger = createLogger('automation-helper');
 
 interface User {
   id: number;
@@ -261,7 +264,12 @@ export const dailySyncingRegistration = async (user: any, filterFundName: any, s
     try {
       await finalSyncStripe(groupedResults, user);
     } catch (e) {
-      console.error(e);
+      // Per-payout isolation: one failure must not abort the remaining payouts,
+      // but it must be visible rather than printed bare.
+      logger.error('dailySyncingRegistration: payout sync failed', {
+        email: user?.email,
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
   });
 };
@@ -427,9 +435,14 @@ export const finalSyncStripe = async (data: any, user: any) => {
       });
     }
   } catch (e) {
-    // // Log the error, rethrow it, or handle it as needed
-    // console.error(e.message || 'Error', e);
-    // // If you want to propagate the error to the caller, you can rethrow it
-    // throw e;
+    // Do NOT swallow: a QuickBooks rejection here previously reported success with
+    // nothing posted, nothing logged and nothing retried. Surface it so the caller
+    // records the failure, matching syncEngine's behaviour.
+    const error = e instanceof Error ? e.message : String(e);
+    logger.error('finalSyncStripe: failed to post Stripe payout deposit', {
+      email: user?.email,
+      error,
+    });
+    throw e;
   }
 };

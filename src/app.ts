@@ -26,23 +26,9 @@ interface ResultObject {
   [key: string]: string;
 }
 
-console.log('apiDomain', {
-  framework: 'express',
-  supertokens: {
-    // TODO: This is a core hosted for demo purposes. You can use this, but make sure to change it to your core instance URI eventually.
-    // connectionURI: 'http://localhost:3567',
-    connectionURI: apiDomain,
-    apiKey: API_KEYS, // OR can be undefined
-  },
-  appInfo: {
-    // learn more about this on https://supertokens.com/docs/thirdpartyemailpassword/appinfo
-    appName: 'Church Sync Pro', // TODO: Your app name
-    apiDomain, // TODO: Change to your app's API domain
-    websiteDomain, // TODO: Change to your app's website domain
-    apiBasePath: '/auth',
-    websiteBasePath: '/auth',
-  },
-});
+// Boot diagnostics only. The SuperTokens apiKey must never be logged - Cloud Run
+// log entries are readable by anyone with project viewer access.
+console.log('supertokens config', { apiDomain, websiteDomain, apiKeyConfigured: Boolean(API_KEYS) });
 
 supertokens.init({
   framework: 'express',
