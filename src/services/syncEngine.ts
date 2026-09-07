@@ -7,6 +7,7 @@ import { format } from 'date-fns';
 import { automationJournalEntry, generatePcToken, getFundInDonation } from '../controller/automation';
 import UserSync from '../db/models/UserSync';
 import DailyJeSync from '../db/models/DailyJeSync';
+import { refundJournalEntryPayload } from '../utils/mapping';
 import sequelize from '../db';
 import UserSettings from '../db/models/userSettings';
 import {
@@ -14,6 +15,7 @@ import {
   SettingsJsonProps,
   filterStripeElectronic,
   groupDonationsByDay,
+  dayKey,
   journalEntryPayload,
 } from '../utils/mapping';
 
@@ -73,6 +75,140 @@ const getOrganisationTimeZone = async (config: any): Promise<string | null> => {
     });
     return null;
   }
+};
+
+interface RefundPassParams {
+  email: string;
+  userId: number;
+  realBatchId: string;
+  config: any;
+  allDonations: any[];
+  fundIdToName: Record<string, string>;
+  settingsData: any[];
+  settingBankCharges: any;
+  bank: { type: string; value: string; label: string }[];
+  orgTimeZone: string | null;
+}
+
+/**
+ * Posts reversing entries for refunded donations, grouped by the day the refund was
+ * PROCESSED (the client's decision: "record them on the date they actually occur").
+ *
+ * Refunded donations never reach the giving entry - isStripeElectronic drops
+ * `refunded === true` - so they are found here from the unfiltered batch list, and each
+ * one's Refund record supplies the amount, any fee Stripe returned, and the refund
+ * date. Claimed per (batch, refund-day) on UserSync exactly like giving days, so a
+ * re-run cannot post the same reversal twice. Failures are returned, not thrown, so
+ * one bad refund does not abort the batch's giving entries.
+ */
+const postRefundEntries = async (p: RefundPassParams): Promise<{ posted: string[]; failures: { day: string; error: string }[] }> => {
+  const posted: string[] = [];
+  const failures: { day: string; error: string }[] = [];
+  const refunded = (p.allDonations ?? []).filter((d) => d?.attributes?.refunded === true);
+  if (refunded.length === 0) return { posted, failures };
+
+  const clearing = (p.bank?.find((a) => a.type === 'donation') || {}) as { value?: string; label?: string };
+  if (!clearing?.value) {
+    logger.warn('postRefundEntries: no clearing account configured - skipping refunds', { email: p.email, batchId: p.realBatchId });
+    return { posted, failures };
+  }
+  const feesValue = p.settingBankCharges?.account?.value ?? '';
+  const feesAccountRef = feesValue
+    ? { value: feesValue, name: p.settingBankCharges?.account?.label, classRef: p.settingBankCharges?.class?.value || undefined }
+    : undefined;
+
+  // day -> { lines, feeCents }
+  const byDay: Record<string, { lines: MappedDonationLine[]; feeCents: number }> = {};
+  for (const donation of refunded) {
+    try {
+      const res = await withRetry(() =>
+        axios.get(
+          `https://api.planningcenteronline.com/giving/v2/donations/${donation.id}/refund?include=designation_refunds`,
+          p.config,
+        ),
+      );
+      const refund = res.data?.data;
+      const included = (res.data?.included ?? []).filter((x: any) => x.type === 'DesignationRefund');
+      const day = dayKey({ attributes: { received_at: refund?.attributes?.refunded_at } }, p.orgTimeZone);
+      if (!day) {
+        logger.warn('postRefundEntries: refund has no refunded_at - skipping', { email: p.email, donationId: donation.id });
+        continue;
+      }
+      // Per-fund split when PCO provides it; otherwise the whole refund goes against the
+      // donation's own fund mapping.
+      const splits = included.length
+        ? included.map((dr: any) => ({ fundId: dr.relationships?.fund?.data?.id, cents: Number(dr.attributes?.amount_cents) || 0 }))
+        : [{ fundId: donation.relationships?.designations?.data?.[0]?.id && undefined, cents: Number(refund?.attributes?.amount_cents) || 0 }];
+
+      const bucket = (byDay[day] = byDay[day] ?? { lines: [], feeCents: 0 });
+      for (const sp of splits) {
+        const fundName = sp.fundId ? p.fundIdToName[sp.fundId] : undefined;
+        const mapping = fundName ? p.settingsData.find((it: any) => it.fundName === fundName) : undefined;
+        const accountRef = mapping?.account?.value ?? '';
+        if (!accountRef || sp.cents <= 0) {
+          logger.warn('postRefundEntries: refund line has no fund mapping - skipping line', { email: p.email, donationId: donation.id, fundId: sp.fundId });
+          continue;
+        }
+        bucket.lines.push({ AccountRef: accountRef, ClassRef: mapping?.class?.value || undefined, amount_cents: sp.cents, fundName });
+      }
+      bucket.feeCents += Number(refund?.attributes?.fee_cents) || 0;
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      logger.error('postRefundEntries: could not read refund', { email: p.email, donationId: donation.id, error });
+      failures.push({ day: `refund:${donation.id}`, error });
+    }
+  }
+
+  for (const [day, bucket] of Object.entries(byDay)) {
+    if (bucket.lines.length === 0) continue;
+    const [row, created] = await UserSync.findOrCreate({
+      where: { userId: p.userId, batchId: p.realBatchId, donationId: `refund:${day}` },
+      defaults: { status: 'pending', userId: p.userId, batchId: p.realBatchId, donationId: `refund:${day}` },
+    });
+    if (!created && (row.status === 'posted' || row.status === 'pending')) continue;
+
+    try {
+      await DailyJeSync.findOrCreate({
+        where: { userId: p.userId, day },
+        defaults: { userId: p.userId, day, postedGrossCents: 0, postedFeeCents: 0, entryCount: 0 },
+      });
+      const je = await sequelize.transaction(async (tx) => {
+        const ledger = await DailyJeSync.findOne({ where: { userId: p.userId, day }, transaction: tx, lock: tx.LOCK.UPDATE });
+        if (!ledger) throw new Error(`DailyJeSync row missing for ${p.userId} ${day}`);
+        const payload = refundJournalEntryPayload(bucket.lines, {
+          clearingAccountRef: { value: clearing.value!, name: clearing.label },
+          txnDate: day,
+          memo: `Church Sync Pro - PCO Electronic Giving Refund - ${day}`,
+          syncId: p.realBatchId,
+          feesAccountRef,
+          totalFeeCents: bucket.feeCents,
+        });
+        const createdData: any = await automationJournalEntry(p.email, payload);
+        const qboEntryId = createdData?.Id ? String(createdData.Id) : null;
+        const gross = bucket.lines.reduce((sum, l) => sum + Number(l.amount_cents), 0);
+        await ledger.update(
+          {
+            refundedGrossCents: Number(ledger.refundedGrossCents ?? 0) + gross,
+            refundedFeeCents: Number(ledger.refundedFeeCents ?? 0) + Math.abs(bucket.feeCents),
+            entryCount: Number(ledger.entryCount) + 1,
+            qboEntryIds: [...(ledger.qboEntryIds || []), ...(qboEntryId ? [qboEntryId] : [])],
+            batchIds: [...new Set([...(ledger.batchIds || []), p.realBatchId])],
+          },
+          { transaction: tx },
+        );
+        return payload;
+      });
+      await row.update({ status: 'posted', syncedData: je as any });
+      posted.push(`refund:${day}`);
+      logger.info('postRefundEntries: posted refund entry', { email: p.email, batchId: p.realBatchId, day });
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      logger.error('postRefundEntries: failed to post refund entry', { email: p.email, batchId: p.realBatchId, day, error });
+      await row.update({ status: 'failed' });
+      failures.push({ day: `refund:${day}`, error });
+    }
+  }
+  return { posted, failures };
 };
 
 export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promise<SyncBatchResult> => {
@@ -275,6 +411,16 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     // If every such day is already synced for this (userId + realBatchId), skip the expensive
     // per-donation getFundInDonation enrichment + posting entirely (avoids an N+1 PCO refetch).
     if (!isEmpty(updatedData)) {
+      // Refunds first: they are found on the UNFILTERED list (refunded donations never
+      // pass the giving filter) and must run even when every giving day below is already
+      // synced, which is exactly the case for a batch whose only news is a refund.
+      const refundPass = await postRefundEntries({
+        email: String(email), userId, realBatchId: String(realBatchId), config, allDonations,
+        fundIdToName, settingsData, settingBankCharges, bank, orgTimeZone,
+      });
+      postedDays.push(...refundPass.posted);
+      dayFailures.push(...refundPass.failures);
+
       const candidateDays = Object.keys(groupDonationsByDay(filterStripeElectronic(updatedData), orgTimeZone));
       const allDaysSynced =
         candidateDays.length > 0 &&

@@ -8,6 +8,8 @@ export interface DailyJeSyncAttributes {
   day?: string;
   postedGrossCents?: number;
   postedFeeCents?: number;
+  refundedGrossCents?: number;
+  refundedFeeCents?: number;
   entryCount?: number;
   qboEntryIds?: string[] | null;
   batchIds?: string[] | null;
@@ -32,6 +34,8 @@ class DailyJeSync extends Model<DailyJeSyncAttributes> implements DailyJeSyncAtt
   public day!: string;
   public postedGrossCents!: number;
   public postedFeeCents!: number;
+  public refundedGrossCents!: number;
+  public refundedFeeCents!: number;
   public entryCount!: number;
   public qboEntryIds!: string[] | null;
   public batchIds!: string[] | null;
@@ -64,6 +68,17 @@ DailyJeSync.init(
       defaultValue: 0,
     },
     postedFeeCents: {
+      type: DataTypes.BIGINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    // Reversed on this day by refunds (grouped by the refund date, not the gift date).
+    refundedGrossCents: {
+      type: DataTypes.BIGINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    refundedFeeCents: {
       type: DataTypes.BIGINT,
       allowNull: false,
       defaultValue: 0,

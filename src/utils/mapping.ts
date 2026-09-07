@@ -296,6 +296,83 @@ export interface JournalEntryOptions {
   totalFeeCents?: number;
 }
 
+/**
+ * Reversing entry for refunds processed on one day. Mirrors journalEntryPayload:
+ * the original credited revenue and debited fees + clearing, so a refund debits
+ * revenue and credits clearing for the money going back out. Stripe keeps its fee
+ * on most refunds; when PCO reports a returned fee (`fee_cents` on the Refund) it
+ * is credited back to the fees account and the clearing credit shrinks to match.
+ *
+ * Posted on the refund date - the client's decision - so the day's entries are an
+ * honest audit trail of what happened when, rather than a rewritten original.
+ */
+export const refundJournalEntryPayload = (
+  lines: MappedDonationLine[],
+  opts: JournalEntryOptions,
+) => {
+  const byAccount = new Map<string, { cents: number; classRef?: string }>();
+  for (const l of lines) {
+    const prev = byAccount.get(l.AccountRef) ?? { cents: 0, classRef: l.ClassRef };
+    prev.cents += l.amount_cents;
+    byAccount.set(l.AccountRef, prev);
+  }
+  const debitLines = [...byAccount.entries()].map(([accountRef, v]) => ({
+    Amount: centsToAmount(v.cents),
+    DetailType: 'JournalEntryLineDetail',
+    JournalEntryLineDetail: {
+      PostingType: 'Debit',
+      AccountRef: { value: accountRef },
+      ...(v.classRef ? { ClassRef: { value: v.classRef } } : {}),
+    },
+  }));
+  if (debitLines.length === 0) throw new Error('Cannot build refund entry: no refund lines');
+
+  const grossAmount = debitLines.reduce((s, l) => s + l.Amount, 0);
+  if (!Number.isFinite(grossAmount) || grossAmount <= 0) {
+    throw new Error(`Invalid refund entry total: ${grossAmount}`);
+  }
+
+  const feeReturned = centsToAmount(Math.abs(opts.totalFeeCents ?? 0));
+  const returnFee = feeReturned > 0 && !!opts.feesAccountRef?.value;
+  if (returnFee && feeReturned > grossAmount) {
+    throw new Error(`Returned fee ${feeReturned} exceeds refund ${grossAmount}`);
+  }
+  const clearingAmount = grossAmount - (returnFee ? feeReturned : 0);
+
+  const creditLines = [
+    ...(returnFee
+      ? [{
+          Amount: feeReturned,
+          DetailType: 'JournalEntryLineDetail',
+          JournalEntryLineDetail: {
+            PostingType: 'Credit',
+            AccountRef: { value: opts.feesAccountRef!.value, name: opts.feesAccountRef!.name },
+            ...(opts.feesAccountRef!.classRef ? { ClassRef: { value: opts.feesAccountRef!.classRef } } : {}),
+          },
+        }]
+      : []),
+    {
+      Amount: clearingAmount,
+      DetailType: 'JournalEntryLineDetail',
+      JournalEntryLineDetail: {
+        PostingType: 'Credit',
+        AccountRef: { value: opts.clearingAccountRef.value, name: opts.clearingAccountRef.name },
+      },
+    },
+  ];
+
+  const creditTotal = creditLines.reduce((s, l) => s + l.Amount, 0);
+  if (Math.abs(grossAmount - creditTotal) > 0.005) {
+    throw new Error(`Refund entry imbalance: debits ${grossAmount} != credits ${creditTotal}`);
+  }
+
+  return {
+    Line: [...debitLines, ...creditLines],
+    TxnDate: opts.txnDate,
+    PrivateNote: opts.syncId ? `${opts.memo} | ${opts.syncId}` : opts.memo,
+  };
+};
+
 export const journalEntryPayload = (lines: MappedDonationLine[], opts: JournalEntryOptions) => {
   const byAccount = new Map<string, { cents: number; classRef?: string }>();
   for (const l of lines) {

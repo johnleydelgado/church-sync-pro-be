@@ -49,6 +49,7 @@ const userRoutes = {
   crudUserEmailPreferences: '/user/crudUserEmailPreferences',
   setStartDataAutomation: '/user/setStartDataAutomation',
   getDailyJournalEntries: '/user/getDailyJournalEntries',
+  getClearingStatement: '/user/getClearingStatement',
 };
 
 export { pcRoutes, userRoutes, qboRoutes, stripeRoutes };
