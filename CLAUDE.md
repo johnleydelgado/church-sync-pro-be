@@ -81,6 +81,23 @@ Committing a PCO batch flips its donations from `pending` to `succeeded` — and
 sync only reads `filter=committed` batches, which is why the completeness check is
 safe.
 
+**Refunds** are reversing entries posted on the day the refund was *processed*
+(`refunded_at`), never an edit to the original day — the client's decision. They come
+from the unfiltered batch list (refunded donations never pass the giving filter), read
+each Refund's amount / returned fee / `designation_refunds` split, and are claimed on
+`UserSync` as `refund:<day>` so re-runs can't double-post. `DailyJeSync` carries
+`refundedGrossCents` / `refundedFeeCents` alongside the posted figures.
+
+**Days are the church's local date.** `dayKey(donation, timeZone)` converts PCO's UTC
+`received_at` using the org timezone from `GET /giving/v2` (`attributes.time_zone`).
+Without it an 8pm Eastern gift lands on the next day's entry.
+
+**The clearing "balance" CSP can compute is only what it added** — it never sees the
+accountant clearing deposits. `getDailyJournalEntries` and `getClearingStatement`
+therefore also read the account's live `CurrentBalance` from QuickBooks and return
+both; the statement returns the difference explicitly. Don't present the cumulative
+figure as the balance.
+
 This module, `services/qboClient.ts`, `utils/httpRetry.ts`, `utils/automationAuth.ts`
 and the JE builder in `utils/mapping.ts` are the standard for new code: integer cents
 throughout, balance assertions before posting, structured logging, rethrow rather
