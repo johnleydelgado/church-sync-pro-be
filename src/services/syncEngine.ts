@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { isEmpty } from 'lodash';
+import { withRetry } from '../utils/httpRetry';
 import { createLogger } from '../utils/logger';
 import axios from 'axios';
 import { format } from 'date-fns';
@@ -53,6 +54,27 @@ export interface SyncBatchResult {
  * Does NOT depend on Express req/res. Throws on any per-day failure so callers can record the
  * batch as failed.
  */
+/**
+ * The church's timezone, from `GET /giving/v2` (`attributes.time_zone`).
+ *
+ * Donations are grouped into days in this timezone, so an evening gift is
+ * recorded on the date the donor actually gave rather than rolling into the
+ * next day. Available under the `giving` scope we already hold, so it needs no
+ * per-church setup. Returns null on any failure - dayKey then falls back to the
+ * raw UTC date rather than failing the sync.
+ */
+const getOrganisationTimeZone = async (config: any): Promise<string | null> => {
+  try {
+    const res = await withRetry(() => axios.get('https://api.planningcenteronline.com/giving/v2', config));
+    return res.data?.data?.attributes?.time_zone ?? null;
+  } catch (error) {
+    logger.warn('syncBatchToJournalEntries: could not read organisation timezone, falling back to UTC dates', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+};
+
 export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promise<SyncBatchResult> => {
   const { user, batchId = '0', realBatchId, bankData, dataBatch } = params;
 
@@ -86,6 +108,9 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
         Authorization: `Bearer ${access_token}`,
       },
     };
+
+    // Resolved once per batch and threaded through both grouping calls below.
+    const orgTimeZone = await getOrganisationTimeZone(config);
 
     if (batchId === '0') {
       return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [] };
@@ -250,7 +275,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     // If every such day is already synced for this (userId + realBatchId), skip the expensive
     // per-donation getFundInDonation enrichment + posting entirely (avoids an N+1 PCO refetch).
     if (!isEmpty(updatedData)) {
-      const candidateDays = Object.keys(groupDonationsByDay(filterStripeElectronic(updatedData)));
+      const candidateDays = Object.keys(groupDonationsByDay(filterStripeElectronic(updatedData), orgTimeZone));
       const allDaysSynced =
         candidateDays.length > 0 &&
         candidateDays.every((day) => synchedBatchesData.some((a) => a.donationId === day && a.status === 'posted'));
@@ -317,7 +342,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     if (!isEmpty(jsonRes.donation)) {
       // New posting path: per-calendar-day Journal Entries for Stripe electronic giving.
       const stripeDonations = filterStripeElectronic(jsonRes.donation);
-      const byDay = groupDonationsByDay(stripeDonations);
+      const byDay = groupDonationsByDay(stripeDonations, orgTimeZone);
 
       // Clearing account = the donation-type bank entry (same value used for bankRef/DepositToAccountRef).
       const clearing = (bank?.find((a) => a.type === 'donation') || {}) as { value?: string; label?: string };

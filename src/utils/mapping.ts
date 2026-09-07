@@ -232,14 +232,43 @@ export const isStripeElectronic = (donation: any): boolean => {
 
 export const filterStripeElectronic = (donations: any[]): any[] => (donations ?? []).filter(isStripeElectronic);
 
-// Groups by the timestamp's own UTC offset (the YYYY-MM-DD prefix of the ISO string).
-// Normalizing to the org's timezone is a pending product decision.
-export const dayKey = (donation: any): string =>
-  String(donation?.attributes?.received_at ?? donation?.attributes?.created_at ?? '').slice(0, 10);
+/**
+ * The calendar day a donation belongs to, in the CHURCH's timezone.
+ *
+ * PCO stores `received_at` in UTC. Slicing the ISO string directly puts an
+ * 8pm gift in New York (00:00Z the next day) onto the following day's entry -
+ * which is exactly the Planning Center / QuickBooks mismatch this product
+ * exists to remove. The church's timezone comes from `GET /giving/v2`
+ * (`attributes.time_zone`), so no per-church configuration is needed.
+ *
+ * With no timeZone supplied, falls back to the raw UTC date so existing
+ * callers keep working rather than silently dropping donations.
+ */
+export const dayKey = (donation: any, timeZone?: string | null): string => {
+  const raw = String(donation?.attributes?.received_at ?? donation?.attributes?.created_at ?? '');
+  if (!raw) return '';
+  if (!timeZone) return raw.slice(0, 10);
 
-export const groupDonationsByDay = (donations: any[]): Record<string, any[]> =>
+  const at = new Date(raw);
+  if (Number.isNaN(at.getTime())) return raw.slice(0, 10);
+
+  try {
+    // en-CA formats as YYYY-MM-DD, which is the shape the rest of the pipeline expects.
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(at);
+  } catch {
+    // An unrecognised timezone must not take the whole sync down.
+    return raw.slice(0, 10);
+  }
+};
+
+export const groupDonationsByDay = (donations: any[], timeZone?: string | null): Record<string, any[]> =>
   (donations ?? []).reduce((acc: Record<string, any[]>, d) => {
-    const key = dayKey(d);
+    const key = dayKey(d, timeZone);
     if (!key) return acc;
     (acc[key] = acc[key] ?? []).push(d);
     return acc;
