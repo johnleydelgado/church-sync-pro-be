@@ -855,11 +855,17 @@ export const getStripeList = async (req: Request, res: Response) => {
 
         return responseSuccess(res, finalArr);
       } else {
-        return responseError({ res, code: 200, data: 'Access Token Invalid' });
+        return responseError({ res, code: 500, message: 'Stripe access token is no longer valid' });
       }
     }
+
+    // No Stripe connected. Stripe is optional - the daily journal entry is built
+    // entirely from Planning Center - so return an empty list rather than falling
+    // off the end of the handler, which left the request hanging until the proxy
+    // timed out and broke every page that loads this list.
+    return responseSuccess(res, []);
   } catch (e) {
-    return responseError({ res, code: 500, data: e });
+    return responseError({ res, code: 500, message: 'Could not load the Stripe list' });
   }
 };
 
