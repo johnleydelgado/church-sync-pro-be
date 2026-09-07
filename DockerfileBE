@@ -9,7 +9,7 @@ WORKDIR /usr/src/app
 # yarn.lock, so every build re-resolved dependencies from semver ranges and
 # no build was reproducible.
 COPY package.json yarn.lock ./
-RUN yarn install --frozen-lockfile
+RUN yarn install --frozen-lockfile --network-timeout 600000
 
 COPY tsconfig.json index.ts ./
 COPY src ./src
@@ -20,14 +20,19 @@ RUN yarn tsc
 RUN mkdir -p dist/src/db/config \
  && cp src/db/config/config.json dist/src/db/config/config.json
 
+# Prune dev dependencies HERE, where yarn's cache is already warm, instead of
+# doing a second full download in the runtime stage. That second fetch timed out
+# against the registry and failed the staging deploy; this stage needs no network.
+RUN yarn install --frozen-lockfile --production --ignore-scripts --network-timeout 600000 \
+ && yarn cache clean
+
 # Runtime stage -----------------------------------------------------------
 FROM node:18-slim AS runtime
 
 WORKDIR /usr/src/app
 
 COPY package.json yarn.lock ./
-RUN yarn install --frozen-lockfile --production && yarn cache clean
-
+COPY --from=build /usr/src/app/node_modules ./node_modules
 COPY --from=build /usr/src/app/dist ./dist
 
 EXPOSE 8080
