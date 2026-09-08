@@ -936,11 +936,28 @@ function formatFundList(events) {
  * night with no giving.
  */
 export const dailyJournalSync = async (req: Request, res: Response) => {
-  const run = await SyncRun.create({ trigger: 'dailyJournalSync', startedAt: new Date(), status: 'running' });
+  // Opening the run record is itself fallible - a missing column, a connection blip - and
+  // outside a try it took the whole process down rather than failing this one request.
+  let run: SyncRun;
+  try {
+    run = await SyncRun.create({ trigger: 'dailyJournalSync', startedAt: new Date(), status: 'running' });
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    logger.error('dailyJournalSync: could not open a run record', { error });
+    return responseError({ res, code: 500, data: `could not start sync run: ${error}` });
+  }
+
   const now = new Date();
+  // Optional operator overrides. The scheduler sends neither.
+  //   days:  ["2026-09-08"]  settle these exact days instead of yesterday
+  //   email: "a@b.c"          only this church
+  const days: string[] | undefined = Array.isArray(req.body?.days) && req.body.days.length ? req.body.days : undefined;
+  const onlyEmail: string | undefined = typeof req.body?.email === 'string' ? req.body.email : undefined;
 
   try {
-    const users = await User.findAll({ where: { role: 'client' } });
+    const users = await User.findAll({
+      where: onlyEmail ? { role: 'client', email: onlyEmail } : { role: 'client' },
+    });
 
     const failures: { email: string; error: string }[] = [];
     const skips: { email: string; reason: string }[] = [];
@@ -949,7 +966,7 @@ export const dailyJournalSync = async (req: Request, res: Response) => {
 
     for (const user of users) {
       try {
-        const result = await runDailyDonationSync(user, { now });
+        const result = await runDailyDonationSync(user, { now, days });
         if (result.status === 'skipped') {
           skips.push({ email: result.email, reason: result.reason ?? 'unknown' });
           continue;

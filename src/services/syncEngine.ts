@@ -20,6 +20,7 @@ import {
   wasStripeElectronic,
   groupDonationsByDay,
   dayKey,
+  journalDocNumber,
   journalEntryPayload,
 } from '../utils/mapping';
 
@@ -257,6 +258,7 @@ const postRefundEntries = async (p: RefundPassParams): Promise<{ posted: string[
         const payload = refundJournalEntryPayload(linesToPost, {
           clearingAccountRef: { value: clearing.value!, name: clearing.label },
           txnDate: day,
+          docNumber: journalDocNumber(day, Number(ledger.entryCount) + 1, 'refund'),
           memo: `Church Sync Pro - PCO Electronic Giving Refund - ${day}`,
           syncId: p.realBatchId,
           feesAccountRef,
@@ -769,6 +771,8 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
             const payload = journalEntryPayload(linesToPost, {
               clearingAccountRef: { value: clearing.value, name: clearing.label },
               txnDate: day,
+              // The "Journal no." a bookkeeper can cite without opening the entry.
+              docNumber: journalDocNumber(day, Number(ledger.entryCount) + 1),
               memo: adjusting
                 ? `Church Sync Pro - PCO Electronic Giving Adjustment - ${day}`
                 : `Church Sync Pro - PCO Electronic Giving Sync - ${day}`,

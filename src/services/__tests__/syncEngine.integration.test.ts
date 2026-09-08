@@ -300,6 +300,17 @@ describe('pagination', () => {
 });
 
 describe('the same day arriving twice', () => {
+  test('numbers each entry so a bookkeeper can cite it', async () => {
+    servePco([pcoPayload([{ id: 'd1', cents: 50000, feeCents: -758, receivedAt: '2026-08-23T14:00:00Z' }])]);
+    await run('b1');
+    expect(posted[0].DocNumber).toBe('CSP-2026-08-23-1');
+
+    servePco([pcoPayload([{ id: 'd2', cents: 19920, feeCents: -300, receivedAt: '2026-08-23T16:00:00Z' }])]);
+    await run('b2');
+    // The top-up gets the next number for that day, not a repeat of the first.
+    expect(posted[1].DocNumber).toBe('CSP-2026-08-23-2');
+  });
+
   test('a second batch for a posted day adds an adjusting entry, not a duplicate', async () => {
     servePco([pcoPayload([{ id: 'd1', cents: 50000, feeCents: -758, receivedAt: '2026-08-23T14:00:00Z' }])]);
     await run('b1');

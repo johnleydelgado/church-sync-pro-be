@@ -396,7 +396,27 @@ export interface JournalEntryOptions {
   // Total Stripe fee for the day in cents. PCO `fee_cents` is typically NEGATIVE; the magnitude
   // (Math.abs) is used as the fee amount.
   totalFeeCents?: number;
+  /** The "Journal no." a bookkeeper cites. See `journalDocNumber`. */
+  docNumber?: string;
 }
+
+/**
+ * The document number QuickBooks shows as "Journal no.".
+ *
+ * Left unset, QuickBooks leaves the field blank and the entry can only be referred to by its
+ * internal id, which is invisible in most reports - so a bookkeeper querying "which entry is
+ * this?" has nothing to quote. This gives every entry a name that says what it is on sight:
+ *
+ *   CSP-2026-09-08-1     first entry for that day's giving
+ *   CSP-2026-09-08-2     a later top-up for the same day
+ *   CSP-R-2026-09-08-1   a refund reversal dated that day
+ *
+ * The sequence comes from the day's ledger `entryCount`, so it stays unique across giving and
+ * refunds on the same day. QuickBooks caps DocNumber at 21 characters; the longest this
+ * produces is 19 (`CSP-R-2026-09-08-99`), and it is truncated defensively regardless.
+ */
+export const journalDocNumber = (day: string, sequence: number, kind: 'giving' | 'refund' = 'giving'): string =>
+  `CSP-${kind === 'refund' ? 'R-' : ''}${day}-${sequence}`.slice(0, 21);
 
 /**
  * Reversing entry for refunds processed on one day. Mirrors journalEntryPayload:
@@ -471,6 +491,7 @@ export const refundJournalEntryPayload = (
   return {
     Line: [...debitLines, ...creditLines],
     TxnDate: opts.txnDate,
+    ...(opts.docNumber ? { DocNumber: opts.docNumber } : {}),
     PrivateNote: opts.syncId ? `${opts.memo} | ${opts.syncId}` : opts.memo,
   };
 };
@@ -556,6 +577,7 @@ export const journalEntryPayload = (lines: MappedDonationLine[], opts: JournalEn
   return {
     Line: [...creditLines, ...debitLines],
     TxnDate: opts.txnDate,
+    ...(opts.docNumber ? { DocNumber: opts.docNumber } : {}),
     PrivateNote: opts.syncId ? `${opts.memo} | ${opts.syncId}` : opts.memo,
   };
 };

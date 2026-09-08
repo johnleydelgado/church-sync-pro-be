@@ -61,7 +61,17 @@ export const parseSyncStartDay = (raw: unknown): string | null => {
  */
 export const runDailyDonationSync = async (
   user: any,
-  opts: { now: Date; catchUpDays?: number },
+  opts: {
+    now: Date;
+    catchUpDays?: number;
+    /**
+     * Settle these exact days instead of "yesterday and the ones before it". Used to re-run a
+     * day by hand - after fixing a fund mapping, say, or to check a day an operator is unsure
+     * about. It changes WHICH days are settled, never what a day means: the window, the
+     * timezone and the posting rules are identical to the nightly run.
+     */
+    days?: string[];
+  },
 ): Promise<DailySyncResult> => {
   const email = String(user.email);
   const base: DailySyncResult = { email, status: 'skipped', daysExamined: [], postedDays: [], failedDays: [] };
@@ -98,12 +108,20 @@ export const runDailyDonationSync = async (
 
   // Yesterday first, then backwards. Yesterday is the day this run exists to post; the rest is
   // catching up money that has settled since.
-  const days: string[] = [];
-  let day = previousDay(today);
-  for (let i = 0; i <= catchUp; i += 1) {
-    if (startBound && day < startBound) break;
-    days.push(day);
-    day = previousDay(day);
+  let days: string[] = [];
+  if (opts.days?.length) {
+    const malformed = opts.days.filter((d) => !/^\d{4}-\d{2}-\d{2}$/.test(d));
+    if (malformed.length) throw new Error(`runDailyDonationSync: not a day: ${malformed.join(', ')}`);
+    // An explicitly requested day is honoured even if it precedes the church's sync start
+    // date - the operator asking for it is the authority, not the default bound.
+    days = [...opts.days];
+  } else {
+    let day = previousDay(today);
+    for (let i = 0; i <= catchUp; i += 1) {
+      if (startBound && day < startBound) break;
+      days.push(day);
+      day = previousDay(day);
+    }
   }
 
   if (!days.length) {
