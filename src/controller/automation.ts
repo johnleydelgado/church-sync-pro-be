@@ -8,7 +8,7 @@ import { format, fromUnixTime, isSameDay, isToday, isWithinInterval, parseISO, s
 import { zonedTimeToUtc } from 'date-fns-tz';
 
 import UserSettings from '../db/models/userSettings';
-import { SettingsJsonProps, newRequestPayload } from '../utils/mapping';
+import { SettingsJsonProps, filterStripeElectronic, newRequestPayload } from '../utils/mapping';
 import UserSync, { UserSyncAttributes } from '../db/models/UserSync';
 import { Op } from 'sequelize';
 import { checkEmpty, getDayBoundary } from '../utils/helper';
@@ -202,8 +202,12 @@ export const generateTodayBatches = async ({
       // get donation per batch
       const donationUrl = `https://api.planningcenteronline.com/giving/v2/batches/${dataOfBatches.id}/donations`;
       const responseDonation = await axios.get(donationUrl, config);
-      // jsonRes.donation = {...jsonRes.donation, responseDonation.data.data}
-      for (const donationsData of responseDonation.data.data) {
+      // Only Stripe-processed giving may reach QuickBooks, the same rule the daily
+      // journal entry follows - a church's cash and cheques are handled by its own
+      // bookkeeping, not by this automation. Filtering here rather than inside the
+      // loop also skips a fund lookup per excluded donation.
+      const electronicDonations = filterStripeElectronic(responseDonation.data.data);
+      for (const donationsData of electronicDonations) {
         const fundsData = await getFundInDonation({
           donationId: Number(donationsData.id),
           access_token: String(access_token),
