@@ -38,6 +38,14 @@ export interface SyncBatchResult {
   postedDays: string[];
   skippedDays: string[];
   failedDays: string[];
+  /**
+   * How many of the batch's donations were online (Stripe-processed) giving. Zero means the
+   * batch held only cash, cheques or gifts still in transit, so nothing was ever going to
+   * reach QuickBooks. Callers need this to tell "synced" apart from "there was nothing to
+   * sync" - reporting a cash-only batch as a successful sync sends people looking for
+   * entries in QuickBooks that were never meant to exist.
+   */
+  eligibleDonations: number;
 }
 
 /**
@@ -245,6 +253,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
 
   const postedDays: string[] = [];
   const skippedDays: string[] = [];
+  let eligibleDonations = 0;
 
   // Per-day JE failures within this batch. Collected so the batch can surface a failure to the
   // caller instead of silently swallowing it.
@@ -265,7 +274,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     const orgTimeZone = await getOrganisationTimeZone(config);
 
     if (batchId === '0') {
-      return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [] };
+      return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [], eligibleDonations };
     }
 
     const synchedBatchesData = await UserSync.findAll({
@@ -292,7 +301,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
         email,
         batchId: String(realBatchId),
       });
-      return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [] };
+      return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [], eligibleDonations };
     }
 
     const settingsJson = await UserSettings.findOne({ where: { userId } });
@@ -330,6 +339,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     // giving - which the brief explicitly excludes.
     const allDonations = donationPages;
     const fData = filterStripeElectronic(allDonations);
+    eligibleDonations = fData.length;
     if (fData.length !== allDonations.length) {
       logger.info('syncBatchToJournalEntries: excluded non-Stripe-electronic donations', {
         email,
@@ -430,7 +440,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
       };
       const allDaysSynced = candidateDays.length > 0 && candidateDays.every(alreadyCovered);
       if (allDaysSynced) {
-        return { batchId: String(realBatchId), postedDays, skippedDays: candidateDays, failedDays: [] };
+        return { batchId: String(realBatchId), postedDays, skippedDays: candidateDays, failedDays: [], eligibleDonations };
       }
     }
 
@@ -507,7 +517,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
           email,
           batchId: String(realBatchId),
         });
-        return { batchId: String(realBatchId), postedDays, skippedDays: Object.keys(byDay), failedDays: [] };
+        return { batchId: String(realBatchId), postedDays, skippedDays: Object.keys(byDay), failedDays: [], eligibleDonations };
       }
 
       for (const [day, donations] of Object.entries(byDay)) {
@@ -761,7 +771,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
       );
     }
 
-    return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [] };
+    return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [], eligibleDonations };
   } catch (e) {
     // RE-THROW: do not swallow. The caller's per-user/per-batch try/catch records the failure.
     const error = e instanceof Error ? e.message : String(e);
