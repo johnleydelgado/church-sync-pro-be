@@ -21,6 +21,7 @@ import { SuccessToken, checkAccessTokenValidity, refreshAccessToken, removeDupli
 import Stripe from 'stripe';
 import userEmailPreferences from '../db/models/userEmailPreferences';
 import { dailySyncing, dailySyncingRegistration } from '../utils/automation-helper';
+import { runDailyDonationSync } from '../services/dailyDonationSync';
 import { withRetry } from '../utils/httpRetry';
 import { id } from 'date-fns/locale';
 import EmailLog from '../db/models/emailLog';
@@ -917,3 +918,78 @@ function formatFundList(events) {
 //     return `A fund ${events.join(', ')} and ${lastEvent}`;
 //   }
 // }
+
+/**
+ * The nightly journal-entry run.
+ *
+ * Replaces `latestFundAutomation` as the automatic path. That one enumerated committed Planning
+ * Center batches, and online giving is not in batches - cash, cheques and imports are - so it
+ * was looking for Stripe money in the one place Planning Center never puts it. This sweeps each
+ * church's recent days from the organisation-level donations endpoint instead.
+ *
+ * Runs at 8am and settles the day that has just ended, then re-examines the days before it,
+ * because ACH gifts settle a few days after they are given. A day whose total has not changed
+ * posts nothing.
+ *
+ * Every church is accounted for: synced, failed, or skipped with a named reason. A run that
+ * touched nobody used to report `processed: 0, completed`, which read exactly like a quiet
+ * night with no giving.
+ */
+export const dailyJournalSync = async (req: Request, res: Response) => {
+  const run = await SyncRun.create({ trigger: 'dailyJournalSync', startedAt: new Date(), status: 'running' });
+  const now = new Date();
+
+  try {
+    const users = await User.findAll({ where: { role: 'client' } });
+
+    const failures: { email: string; error: string }[] = [];
+    const skips: { email: string; reason: string }[] = [];
+    let processed = 0;
+    let succeeded = 0;
+
+    for (const user of users) {
+      try {
+        const result = await runDailyDonationSync(user, { now });
+        if (result.status === 'skipped') {
+          skips.push({ email: result.email, reason: result.reason ?? 'unknown' });
+          continue;
+        }
+        processed += 1;
+        if (result.status === 'synced') {
+          succeeded += 1;
+        } else {
+          failures.push({ email: result.email, error: `days failed: ${result.failedDays.join(', ')}` });
+        }
+        logger.info('dailyJournalSync: church settled', {
+          email: result.email,
+          status: result.status,
+          daysExamined: result.daysExamined.length,
+          postedDays: result.postedDays,
+        });
+      } catch (e) {
+        processed += 1;
+        const error = e instanceof Error ? e.message : String(e);
+        logger.error('dailyJournalSync: church failed', { email: user.email, error });
+        failures.push({ email: String(user.email), error });
+      }
+    }
+
+    await run.update({
+      finishedAt: new Date(),
+      processed,
+      succeeded,
+      failed: failures.length,
+      failures,
+      skipped: skips.length,
+      skips,
+      status: 'completed',
+    });
+
+    return responseSuccess(res, { processed, succeeded, failed: failures.length, failures, skipped: skips.length, skips });
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    await run.update({ finishedAt: new Date(), status: 'errored', failures: [{ email: 'run', error }] });
+    logger.error('dailyJournalSync: run errored', { error });
+    return responseError({ res, code: 500, data: error });
+  }
+};

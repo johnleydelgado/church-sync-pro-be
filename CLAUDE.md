@@ -112,6 +112,36 @@ rather than re-posted; do not "helpfully" backfill those to zero, which would re
 whole day. And the cheap fast-path above compares amounts for the same reason - comparing
 only the posted flag made it skip a grown batch before the delta logic could run.
 
+**The nightly run sweeps donations, not batches.** `dailyJournalSync` (POST
+`/csp/dailyJournalSync`, Cloud Scheduler, 8am) calls `runDailyDonationSync` per church, which
+fetches each day from the organisation-level `/giving/v2/donations` endpoint and hands the
+result to the same engine. Planning Center puts cash, cheques, external sources and CSV imports
+into batches; online giving goes through Planning Center Payments and is NOT batched, so the old
+batch sweep (`latestFundAutomation`) was looking for Stripe money in the one place it never is.
+That endpoint is still routed and still works, but nothing schedules it.
+
+Three things about the day window are load-bearing, each established against the live API:
+
+- **Date-only strings, never instants.** PCO reads `2026-09-08` in the organisation's own
+  timezone and handles DST itself, so the server's day and `dayKey` agree by construction. An
+  explicit `Z` instant disagrees by a whole day.
+- **Half-open `[gte, lt)`.** With `lte`, consecutive days overlap and the same donation is
+  returned twice - proven live on donations 171050122 and 171050228. Delta posting then posts
+  real money twice. `gt` on the start is the mirror hazard: date-only gifts sit exactly at org
+  midnight and would all be dropped.
+- **No `filter=succeeded`.** Its meaning is undocumented and unverifiable, an unknown `filter=`
+  value returns 200 with every row, and if the scope also excludes refunded donations it would
+  starve the refund pass in silence. `isStripeElectronic` stays the authority.
+
+The claim scope is `daily:<YYYY-MM-DD>`, so the existing unique index on
+(userId, batchId, donationId) gives one row per church per day. It is keyed on `received_at`,
+which never moves - unlike `completed_at`, which jumps forward when an ACH gift settles.
+
+The run settles yesterday and re-examines the previous `DEFAULT_CATCH_UP_DAYS` days, because
+ACH settles late: a Tuesday gift is still `pending` at Wednesday 8am and correctly stays out,
+then tops Tuesday up as an adjusting entry once it clears. Re-examining a day costs nothing
+when its total has not changed.
+
 **Scope: this filter exists only for the daily journal entry.** `filterStripeElectronic`
 is used nowhere but `services/syncEngine.ts`, and `syncBatchToJournalEntries` has exactly
 two callers - the manual sync in `controller/index.ts` and `dailySyncing` in

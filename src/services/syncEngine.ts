@@ -32,6 +32,19 @@ export interface SyncBatchParams {
   bankData: any;
   // Optional, currently unused metadata attached to each donation (kept for caller parity).
   dataBatch?: any;
+  /**
+   * Donations to post, supplied by the caller instead of fetched from a batch.
+   *
+   * The nightly path uses this: online giving is not in batches at all, so it sweeps a day
+   * from the organisation-level donations endpoint and hands the result here. Everything after
+   * the fetch - the Stripe filter, day grouping, the per-day lock, delta posting and the refund
+   * pass - is identical either way, which is the point: one engine, two ways of finding the
+   * donations. `included` carries the side-loaded Designation and Fund resources.
+   */
+  donations?: any[];
+  included?: any[];
+  /** Saves re-resolving the org timezone when the caller already has it. */
+  orgTimeZone?: string | null;
 }
 
 export interface SyncBatchResult {
@@ -319,9 +332,11 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     };
 
     // Resolved once per batch and threaded through both grouping calls below.
-    const orgTimeZone = await getOrganisationTimeZone(config);
+    const orgTimeZone = params.orgTimeZone !== undefined ? params.orgTimeZone : await getOrganisationTimeZone(config);
 
-    if (batchId === '0') {
+    // A caller supplying its own donations has already decided what to post; `batchId === '0'`
+    // is a batch-path sentinel that does not apply to it.
+    if (batchId === '0' && !params.donations) {
       return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [], eligibleDonations };
     }
 
@@ -366,18 +381,25 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     // entries (used by the duplicate-summing logic below) AND `Fund` entries, letting us
     // resolve every donation's fund name from this single payload instead of making two
     // sequential PCO calls per donation (the old getFundInDonation N+1).
-    // Paginate. PCO defaults to per_page=25 and returns `links.next`, so a single GET
-    // silently truncates any batch bigger than that - dropping donations from the day's
-    // entry with no error. Retry each page: a bare GET meant one 429 aborted the batch.
-    let donationUrl: string | null =
-      `https://api.planningcenteronline.com/giving/v2/batches/${batchId}/donations?per_page=100&include=designations,designations.fund`;
     const donationPages: any[] = [];
     const included: any[] = [];
-    while (donationUrl) {
-      const page: any = await withRetry(() => axios.get(donationUrl as string, config));
-      donationPages.push(...((page.data?.data ?? []) as any[]));
-      included.push(...((page.data?.included ?? []) as any[]));
-      donationUrl = page.data?.links?.next ?? null;
+
+    if (params.donations) {
+      // Supplied by the caller (the nightly day sweep). Nothing to fetch.
+      donationPages.push(...params.donations);
+      included.push(...(params.included ?? []));
+    } else {
+      // Paginate. PCO defaults to per_page=25 and returns `links.next`, so a single GET
+      // silently truncates any batch bigger than that - dropping donations from the day's
+      // entry with no error. Retry each page: a bare GET meant one 429 aborted the batch.
+      let donationUrl: string | null =
+        `https://api.planningcenteronline.com/giving/v2/batches/${batchId}/donations?per_page=100&include=designations,designations.fund`;
+      while (donationUrl) {
+        const page: any = await withRetry(() => axios.get(donationUrl as string, config));
+        donationPages.push(...((page.data?.data ?? []) as any[]));
+        included.push(...((page.data?.included ?? []) as any[]));
+        donationUrl = page.data?.links?.next ?? null;
+      }
     }
 
     // Restrict to Stripe electronic giving BEFORE anything else touches the data.

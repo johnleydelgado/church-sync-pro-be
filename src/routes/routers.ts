@@ -64,6 +64,7 @@ import {
   automationScheduler,
   checkLatestFund,
   checkLatestRegistration,
+  dailyJournalSync,
   latestFundAutomation,
   latestRegistrationAutomation,
 } from '../controller/automation';
@@ -132,6 +133,9 @@ routers.post(userRoutes.crudUserEmailPreferences, verifySession(), crudUserEmail
 routers.post(userRoutes.setStartDataAutomation, verifySession(), setStartDataAutomation);
 
 routers.post('/automationScheduler', requireAutomationKey, automationScheduler);
+// The nightly journal entry. Sweeps each church's recent days from the donations endpoint;
+// `latestFundAutomation` below is the old batch-based path, kept for now but no longer scheduled.
+routers.post('/dailyJournalSync', requireAutomationKey, dailyJournalSync);
 routers.post('/latestFundAutomation', requireAutomationKey, latestFundAutomation);
 
 

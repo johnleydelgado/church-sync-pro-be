@@ -15,6 +15,8 @@ export interface SyncRunAttributes {
   succeeded?: number;
   failed?: number;
   failures?: SyncRunFailure[] | null;
+  skipped?: number;
+  skips?: { email: string; reason: string }[] | null;
   status?: 'running' | 'completed' | 'errored' | string;
   createdAt?: Date;
   updatedAt?: Date;
@@ -29,6 +31,9 @@ class SyncRun extends Model<SyncRunAttributes> implements SyncRunAttributes {
   public succeeded!: number;
   public failed!: number;
   public failures!: SyncRunFailure[] | null;
+  /** Churches the run passed over, and the named reason for each. */
+  public skipped!: number;
+  public skips!: { email: string; reason: string }[] | null;
   public status!: 'running' | 'completed' | 'errored' | string;
   public createdAt!: Date;
   public updatedAt!: Date;
@@ -62,6 +67,15 @@ SyncRun.init(
     failed: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
+    },
+    skipped: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    skips: {
+      type: DataTypes.JSONB,
+      allowNull: true,
     },
     failures: {
       type: DataTypes.JSON,
