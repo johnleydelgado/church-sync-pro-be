@@ -213,11 +213,11 @@ const projectPayload = (data: CustomerProps): MappingCustomerProps => {
 // 'bank_account' is not a value PCO emits; it is kept as a defensive alias only.
 const STRIPE_ELECTRONIC_METHODS = ['card', 'ach', 'bank_account'];
 
-export const isStripeElectronic = (donation: any): boolean => {
+const stripeElectronic = (donation: any, opts: { allowRefunded?: boolean } = {}): boolean => {
   const a = donation?.attributes ?? {};
   const method = (a.payment_method ?? '').toLowerCase();
   if (!STRIPE_ELECTRONIC_METHODS.includes(method)) return false;
-  if (a.refunded === true) return false;
+  if (!opts.allowRefunded && a.refunded === true) return false;
   // Only *completed* giving belongs in a journal entry. A pending or failed card
   // payment would otherwise be recognised as income and debited to the clearing
   // account, where it can never clear because the money never arrives.
@@ -232,6 +232,17 @@ export const isStripeElectronic = (donation: any): boolean => {
   const hasStripeSource = sourceName.includes('stripe');
   return hasFee || hasStripeSource;
 };
+
+/** Giving that belongs in the day's journal entry. */
+export const isStripeElectronic = (donation: any): boolean => stripeElectronic(donation);
+
+/**
+ * The same test, ignoring the refund flag: money this engine WOULD have posted before it
+ * was refunded. The refund pass used to select on `refunded === true` alone, so a refunded
+ * cash or cheque gift - which no journal entry ever recorded - got a reversing entry against
+ * the Stripe clearing account, driving it negative against a payout that never included it.
+ */
+export const wasStripeElectronic = (donation: any): boolean => stripeElectronic(donation, { allowRefunded: true });
 
 export const filterStripeElectronic = (donations: any[]): any[] => (donations ?? []).filter(isStripeElectronic);
 
@@ -285,6 +296,74 @@ export interface MappedDonationLine {
   amount_cents: number;
   fundName?: string;
 }
+
+export interface DesignationInfo {
+  fundName?: string;
+  amountCents: number;
+}
+
+/**
+ * Build the journal-entry lines for a single donation.
+ *
+ * A gift can be split across funds. Planning Center models that as several
+ * designations, and the donation's own `amount_cents` is documented as "the total of
+ * all of a donation's associated designation's `amount_cents` values". Reading only
+ * the first designation and pairing it with that total credits the whole gift to one
+ * fund - a $100 gift split $60 General / $40 Missions posted $100 to General and
+ * nothing to Missions, with the books still balancing so nothing looked wrong.
+ *
+ * Falls back to one line at the donation total when the designations cannot be
+ * resolved or do not add up to it (a partial PCO payload). Posting the whole gift
+ * against its resolved fund is wrong in the same way as before, but it is better than
+ * understating the day's revenue, which is what trusting an incomplete split would do.
+ */
+export const donationLines = (
+  donation: any,
+  designations: Record<string, DesignationInfo>,
+  settingsData: SettingsJsonProps[],
+  fallbackFundName?: string,
+): MappedDonationLine[] => {
+  const lineFor = (fundName: string | undefined, amountCents: number): MappedDonationLine => {
+    const settingsItem = (settingsData ?? []).find((item) => item.fundName === fundName);
+    return {
+      AccountRef: settingsItem?.account?.value ?? '',
+      ClassRef: settingsItem?.class?.value || undefined,
+      amount_cents: amountCents,
+      fundName: fundName ?? '',
+    };
+  };
+
+  const total = Number(donation?.attributes?.amount_cents) || 0;
+  const refs = (donation?.relationships?.designations?.data ?? []) as { id: string }[];
+  const resolved = refs
+    .map((r) => designations?.[r?.id])
+    .filter((d): d is DesignationInfo => !!d && Number.isFinite(Number(d.amountCents)));
+  const resolvedTotal = resolved.reduce((sum, d) => sum + Number(d.amountCents), 0);
+
+  // Only split the gift when EVERY share can be posted. The caller drops lines with a blank
+  // AccountRef, so splitting a gift whose second fund is unmapped posts part of its value
+  // while the whole donation's fee is still charged - revenue understated and the clearing
+  // account permanently short of what Stripe deposits. One line at the donation total is
+  // wrong about which fund, but it keeps the day reconcilable, which is the product's job.
+  const everyShareMapped =
+    resolved.length > 0 &&
+    resolved.every((d) => (settingsData ?? []).some((item) => item.fundName === (d.fundName ?? fallbackFundName)));
+
+  if (resolved.length > 0 && resolvedTotal === total && everyShareMapped) {
+    return resolved.map((d) => lineFor(d.fundName ?? fallbackFundName, Number(d.amountCents)));
+  }
+
+  // Fall back to the first share whose fund IS mapped, so a partly-unmapped split still
+  // posts its full value rather than vanishing; if none is mapped the blank AccountRef
+  // below drops the whole donation, exactly as before this helper existed.
+  const mappedFallback =
+    resolved.find((d) => (settingsData ?? []).some((item) => item.fundName === d.fundName))?.fundName ??
+    fallbackFundName ??
+    // Nothing is mapped: keep a fund name anyway so the caller's "skipped unmapped-fund"
+    // warning names the fund the church still has to map, rather than an empty string.
+    resolved[0]?.fundName;
+  return [lineFor(mappedFallback, total)];
+};
 
 export interface JournalEntryOptions {
   clearingAccountRef: { value: string; name?: string };

@@ -103,8 +103,11 @@ describe('mixed payment methods in one batch', () => {
 });
 
 // Regression: the method list said 'bank_account', which Planning Center never emits.
-// Verified against the live Giving API on 2026-09-08: payment_method is one of
-// 'cash', 'check', 'card', 'ach'. Every ACH gift was therefore dropped in silence —
+// The enum is 'cash', 'check', 'card', 'ach' - per PCO's own published field docs at
+// api.planningcenteronline.com/giving/v2/documentation/2019-10-18/vertices/donation.
+// Not observed in live data: the test organisation holds zero ACH donations, and an
+// unrecognised `where[payment_method]` returns 200 with no rows, so no live probe could
+// have established it either way. Every ACH gift was dropped in silence —
 // on a real church's giving that is a large share of the money (recurring bank
 // transfers), so the day's entry would have been short by all of it.
 describe('ACH donations, the value Planning Center actually returns', () => {

@@ -11,9 +11,12 @@ import { refundJournalEntryPayload } from '../utils/mapping';
 import sequelize from '../db';
 import UserSettings from '../db/models/userSettings';
 import {
+  DesignationInfo,
   MappedDonationLine,
   SettingsJsonProps,
+  donationLines,
   filterStripeElectronic,
+  wasStripeElectronic,
   groupDonationsByDay,
   dayKey,
   journalEntryPayload,
@@ -104,7 +107,14 @@ interface RefundPassParams {
 const postRefundEntries = async (p: RefundPassParams): Promise<{ posted: string[]; failures: { day: string; error: string }[] }> => {
   const posted: string[] = [];
   const failures: { day: string; error: string }[] = [];
-  const refunded = (p.allDonations ?? []).filter((d) => d?.attributes?.refunded === true);
+  // Only reverse money this engine could have posted. Selecting on `refunded === true`
+  // alone reversed refunded CASH and CHEQUE gifts too - never recorded by any journal
+  // entry - crediting the Stripe clearing account for a payout that never contained them.
+  // In the live test organisation every cash and cheque donation reports `refundable: true`
+  // while the one card donation reports false, so this is the common case, not the rare one.
+  const refunded = (p.allDonations ?? []).filter(
+    (d) => d?.attributes?.refunded === true && wasStripeElectronic(d),
+  );
   if (refunded.length === 0) return { posted, failures };
 
   const clearing = (p.bank?.find((a) => a.type === 'donation') || {}) as { value?: string; label?: string };
@@ -161,13 +171,19 @@ const postRefundEntries = async (p: RefundPassParams): Promise<{ posted: string[
 
   for (const [day, bucket] of Object.entries(byDay)) {
     if (bucket.lines.length === 0) continue;
-    const [row, created] = await UserSync.findOrCreate({
-      where: { userId: p.userId, batchId: p.realBatchId, donationId: `refund:${day}` },
-      defaults: { status: 'pending', userId: p.userId, batchId: p.realBatchId, donationId: `refund:${day}` },
-    });
-    if (!created && (row.status === 'posted' || row.status === 'pending')) continue;
-
+    // Declared out here so the catch can still mark a claimed row failed.
+    let row: any = null;
     try {
+      // Claiming inside the try: this call can throw (unique-index race, connection loss),
+      // and outside it that escaped the pass entirely and aborted the batch's giving
+      // entries too - contradicting this function's contract of returning failures.
+      const [claimed, created] = await UserSync.findOrCreate({
+        where: { userId: p.userId, batchId: p.realBatchId, donationId: `refund:${day}` },
+        defaults: { status: 'pending', userId: p.userId, batchId: p.realBatchId, donationId: `refund:${day}` },
+      });
+      row = claimed;
+      if (!created && (row.status === 'posted' || row.status === 'pending')) continue;
+
       await DailyJeSync.findOrCreate({
         where: { userId: p.userId, day },
         defaults: { userId: p.userId, day, postedGrossCents: 0, postedFeeCents: 0, entryCount: 0 },
@@ -204,7 +220,7 @@ const postRefundEntries = async (p: RefundPassParams): Promise<{ posted: string[
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       logger.error('postRefundEntries: failed to post refund entry', { email: p.email, batchId: p.realBatchId, day, error });
-      await row.update({ status: 'failed' });
+      if (row) await row.update({ status: 'failed' });
       failures.push({ day: `refund:${day}`, error });
     }
   }
@@ -263,7 +279,13 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     // batch (double count). If any such legacy posted row exists, treat the batch as already synced.
     if (
       synchedBatchesData.some(
-        (a) => a.status === 'posted' && !/^\d{4}-\d{2}-\d{2}$/.test(String(a.donationId)),
+        (a) =>
+          a.status === 'posted' &&
+          !/^\d{4}-\d{2}-\d{2}$/.test(String(a.donationId)) &&
+          // `refund:<day>` rows are written by this engine, not the legacy Deposit path.
+          // They also fail the day-shaped test, so without this a single posted refund
+          // made the batch look already-deposited and blocked every later donation in it.
+          !String(a.donationId).startsWith('refund:'),
       )
     ) {
       logger.info('syncBatchToJournalEntries: batch already synced via legacy Deposit path - skipping', {
@@ -287,17 +309,26 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     // entries (used by the duplicate-summing logic below) AND `Fund` entries, letting us
     // resolve every donation's fund name from this single payload instead of making two
     // sequential PCO calls per donation (the old getFundInDonation N+1).
-    const donationUrl = `https://api.planningcenteronline.com/giving/v2/batches/${batchId}/donations?include=designations,designations.fund`;
-    const responseDonation = await axios.get(donationUrl, config);
-    // return responseDonation.data;
-    const included = (responseDonation.data.included ?? []) as any[];
+    // Paginate. PCO defaults to per_page=25 and returns `links.next`, so a single GET
+    // silently truncates any batch bigger than that - dropping donations from the day's
+    // entry with no error. Retry each page: a bare GET meant one 429 aborted the batch.
+    let donationUrl: string | null =
+      `https://api.planningcenteronline.com/giving/v2/batches/${batchId}/donations?per_page=100&include=designations,designations.fund`;
+    const donationPages: any[] = [];
+    const included: any[] = [];
+    while (donationUrl) {
+      const page: any = await withRetry(() => axios.get(donationUrl as string, config));
+      donationPages.push(...((page.data?.data ?? []) as any[]));
+      included.push(...((page.data?.included ?? []) as any[]));
+      donationUrl = page.data?.links?.next ?? null;
+    }
 
     // Restrict to Stripe electronic giving BEFORE anything else touches the data.
     // The duplicate-designation summing below collapses every donation sharing a fund
     // into one and adds their amounts together. Run before this filter, a cash or cheque
     // gift to the same fund is folded into a card donation and rides through as online
     // giving - which the brief explicitly excludes.
-    const allDonations = responseDonation.data.data as any[];
+    const allDonations = donationPages;
     const fData = filterStripeElectronic(allDonations);
     if (fData.length !== allDonations.length) {
       logger.info('syncBatchToJournalEntries: excluded non-Stripe-electronic donations', {
@@ -342,85 +373,47 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
       {},
     );
 
-    // Step 1: Map fund IDs to their related designations
-    const fundIdToDesignations = includedDesignations.reduce((acc, designation) => {
-      // Guard against malformed/partial PCO payloads: a designation may be missing its fund
-      // relationship. Skip it rather than throwing a TypeError that aborts the whole batch.
-      const fundId = designation.relationships?.fund?.data?.id;
-      if (!fundId) {
+    // designationId -> its own amount and fund. A gift split across funds has one
+    // designation per fund, and the donation's amount_cents is their total.
+    const designationIndex: Record<string, DesignationInfo> = includedDesignations.reduce(
+      (acc: Record<string, DesignationInfo>, designation: any) => {
+        const fundId = designation.relationships?.fund?.data?.id;
+        acc[designation.id] = {
+          fundName: fundId ? fundIdToName[fundId] : undefined,
+          amountCents: Number(designation.attributes?.amount_cents),
+        };
         return acc;
-      }
-      if (!acc[fundId]) {
-        acc[fundId] = [];
-      }
-      acc[fundId].push(designation);
-      return acc;
-    }, {});
+      },
+      {},
+    );
 
-    // Step 2: Find duplicates and sum their amounts
-    Object.keys(fundIdToDesignations).forEach((fundId) => {
-      if (fundIdToDesignations[fundId].length > 1) {
-        // Found duplicates
-        const summedAmount = fundIdToDesignations[fundId].reduce((sum, designation) => {
-          const donationId = designation.id;
-          const donation = fData.find((donation) =>
-            donation.relationships?.designations?.data?.some((d) => d.id === donationId),
-          );
-          // Guard: the matching donation may be missing from a partial PCO payload. Skip it
-          // (don't add to the sum) rather than throwing a TypeError that aborts the batch.
-          if (!donation) {
-            logger.warn('syncBatchToJournalEntries: donation not found for designation during dedup sum - skipping', {
-              email,
-              batchId: String(realBatchId),
-              designationId: donationId,
-              fundId,
-            });
-            return sum;
-          }
-          return sum + donation.attributes.amount_cents;
-        }, 0);
-
-        // Update the first donation with the summed amount and mark others for removal or update them as needed
-        let isFirstUpdated = false;
-        fundIdToDesignations[fundId].forEach((designation) => {
-          const donationId = designation.id;
-          const donationIndex = fData.findIndex((donation) =>
-            donation.relationships?.designations?.data?.some((d) => d.id === donationId),
-          );
-          // Guard: no matching donation in a partial payload -> nothing to update/mark. Skip.
-          if (donationIndex === -1) {
-            return;
-          }
-          if (!isFirstUpdated) {
-            fData[donationIndex].attributes.amount_cents = summedAmount;
-            isFirstUpdated = true;
-          } else {
-            // Remove the duplicate donation or handle it as needed
-            // For example, to remove, you can mark it and then filter out later
-            fData[donationIndex]._remove = true; // Mark for removal
-          }
-        });
-      }
-    });
-
-    // Optional: Remove marked donations
-    const updatedData = fData.filter((donation) => !donation._remove);
+    // There used to be a duplicate-summing pass here: donations sharing a fund had their
+    // amounts folded onto the first and the rest dropped from `updatedData`. The day's fee
+    // total is summed over the survivors, so every dropped donation's `fee_cents` went with
+    // them - gross stayed right while fees were understated and the clearing debit was
+    // overstated by exactly the fees lost. It fired on any fund receiving more than one gift
+    // in a day, which for a real church is most days. The summing was also redundant:
+    // `journalEntryPayload` already aggregates lines by account.
+    const updatedData = fData;
 
     // Cheap batch-level fast-path: compute the distinct days that WOULD be posted from the RAW donations
     // (the filter/group helpers read `.attributes`, so they operate correctly on raw PCO donation objects).
     // If every such day is already synced for this (userId + realBatchId), skip the expensive
     // per-donation getFundInDonation enrichment + posting entirely (avoids an N+1 PCO refetch).
-    if (!isEmpty(updatedData)) {
-      // Refunds first: they are found on the UNFILTERED list (refunded donations never
-      // pass the giving filter) and must run even when every giving day below is already
-      // synced, which is exactly the case for a batch whose only news is a refund.
+    // Refunds run off the UNFILTERED list and must not depend on the batch also containing
+    // eligible giving. A refunded donation never passes `isStripeElectronic`, so a batch whose
+    // only news is a refund leaves `updatedData` empty - and while this sat inside that guard,
+    // the reversing entry was never posted and the money stayed in the clearing account.
+    if (!isEmpty(allDonations)) {
       const refundPass = await postRefundEntries({
         email: String(email), userId, realBatchId: String(realBatchId), config, allDonations,
         fundIdToName, settingsData, settingBankCharges, bank, orgTimeZone,
       });
       postedDays.push(...refundPass.posted);
       dayFailures.push(...refundPass.failures);
+    }
 
+    if (!isEmpty(updatedData)) {
       const candidateDays = Object.keys(groupDonationsByDay(filterStripeElectronic(updatedData), orgTimeZone));
       const allDaysSynced =
         candidateDays.length > 0 &&
@@ -464,6 +457,10 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
       const paymentCheck = donationsData.attributes.payment_check_number || '';
       const bankRef = bank.find((a) => a.type === 'donation') || {};
 
+      // One line per designation, so a gift split across funds credits each its own share.
+      // `fundName` is the fallback for a payload whose designations did not side-load.
+      const lines = donationLines(donationsData, designationIndex, settingsData, fundName);
+
       const donationDate = donationsData?.attributes?.completed_at
         ? new Date(donationsData?.attributes?.completed_at)
         : new Date();
@@ -482,6 +479,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
           classRef,
           paymentCheck,
           bankRef,
+          lines,
         },
       ];
     }
@@ -502,12 +500,18 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
       }
 
       for (const [day, donations] of Object.entries(byDay)) {
-        const mappedLines: MappedDonationLine[] = (donations as any[]).map((donation) => ({
-          AccountRef: donation.accountRef,
-          ClassRef: donation.classRef || undefined,
-          amount_cents: Number(donation.attributes.amount_cents),
-          fundName: donation.fund?.attributes?.name ?? '',
-        }));
+        const mappedLines: MappedDonationLine[] = (donations as any[]).flatMap((donation) =>
+          donation.lines?.length
+            ? (donation.lines as MappedDonationLine[])
+            : [
+                {
+                  AccountRef: donation.accountRef,
+                  ClassRef: donation.classRef || undefined,
+                  amount_cents: Number(donation.attributes.amount_cents),
+                  fundName: donation.fund?.attributes?.name ?? '',
+                },
+              ],
+        );
 
         // Drop unmapped-fund lines (blank AccountRef) - QBO rejects JE lines with no AccountRef.
         const validLines = mappedLines.filter((l) => l.AccountRef);

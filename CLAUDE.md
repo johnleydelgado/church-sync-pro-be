@@ -61,6 +61,18 @@ post one QuickBooks journal entry — credit revenue (gross), debit Stripe fees,
 a clearing account for the net Stripe will deposit later. PCO is the source of truth;
 the Stripe payout only matters when reconciling the clearing account afterwards.
 
+**Before the first church is mapped, the posting decision must become delta-based.**
+Today a day is skipped when its `(userId, batchId, day)` claim says `posted`, with no
+comparison against `DailyJeSync.postedGrossCents`. Two consequences, both currently
+harmless only because no journal-entry history exists in any environment (verified
+2026-09-08: `DailyJeSync` empty in staging and production, no user has automation on):
+removing the old duplicate-summing pass makes days it used to collapse reappear as fresh
+unposted days, and a batch that grows after its day was posted can never top that day up -
+the pagination fix fetches the missing donations and the claim row throws them away. Both
+dissolve once the decision is "does the day's recomputed total differ from what the ledger
+says was posted?", which `DailyJeSync` already stores. Do that before any real church has
+posted days.
+
 **Scope: this filter exists only for the daily journal entry.** `filterStripeElectronic`
 is used nowhere but `services/syncEngine.ts`, and `syncBatchToJournalEntries` has exactly
 two callers - the manual sync in `controller/index.ts` and `dailySyncing` in
@@ -72,8 +84,11 @@ change here can only affect the daily journal entry - and it affects all of it.
 Order of operations matters and is easy to break:
 
 1. `filterStripeElectronic` runs **first**. Planning Center's Giving API returns
-   exactly four `payment_method` values — `cash`, `check`, `card`, `ach` — verified
-   against the live API on 2026-09-08. Only `card` and `ach` are Stripe-processed.
+   exactly four `payment_method` values — `cash`, `check`, `card`, `ach` — per PCO's own
+   published field documentation, which is served without auth at
+   `api.planningcenteronline.com/giving/v2/documentation/2019-10-18/vertices/donation`
+   and is the authoritative source for this API (the interactive docs site is a JS app
+   and the live API accepts unknown filter values silently, so neither can settle an enum). Only `card` and `ach` are Stripe-processed.
    Also required: not refunded, `payment_status` not pending or failed, and a
    non-zero `fee_cents`. The payment source is named "Planning Center" on real
    records, never "Stripe", so the source-name check is a fallback that never fires
