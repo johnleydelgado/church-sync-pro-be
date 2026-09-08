@@ -101,3 +101,41 @@ describe('mixed payment methods in one batch', () => {
     expect(isStripeElectronic(donation('check', 25000, 0))).toBe(false);
   });
 });
+
+// Regression: the method list said 'bank_account', which Planning Center never emits.
+// Verified against the live Giving API on 2026-09-08: payment_method is one of
+// 'cash', 'check', 'card', 'ach'. Every ACH gift was therefore dropped in silence —
+// on a real church's giving that is a large share of the money (recurring bank
+// transfers), so the day's entry would have been short by all of it.
+describe('ACH donations, the value Planning Center actually returns', () => {
+  const ach = (over: Record<string, unknown> = {}) => ({
+    attributes: {
+      payment_method: 'ach',
+      amount_cents: 35000,
+      fee_cents: -87,
+      payment_status: 'succeeded',
+      ...over,
+    },
+  });
+
+  test('a settled ACH gift is online giving', () => {
+    expect(isStripeElectronic(ach())).toBe(true);
+  });
+
+  test('an ACH gift still in transit is left for a later run', () => {
+    expect(isStripeElectronic(ach({ payment_status: 'pending', fee_cents: 0 }))).toBe(false);
+  });
+
+  test('a refunded ACH gift is not posted as giving', () => {
+    expect(isStripeElectronic(ach({ refunded: true }))).toBe(false);
+  });
+
+  test('ACH and card are both kept when a batch mixes them with cash', () => {
+    const kept = filterStripeElectronic([
+      ach(),
+      { attributes: { payment_method: 'card', amount_cents: 19920, fee_cents: -300, payment_status: 'succeeded' } },
+      { attributes: { payment_method: 'cash', amount_cents: 25000, fee_cents: 0, payment_status: 'succeeded' } },
+    ]);
+    expect(kept.map((d: any) => d.attributes.amount_cents).sort((a, b) => a - b)).toEqual([19920, 35000]);
+  });
+});

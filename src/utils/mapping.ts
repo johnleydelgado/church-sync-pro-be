@@ -208,7 +208,10 @@ const projectPayload = (data: CustomerProps): MappingCustomerProps => {
   };
 };
 
-const STRIPE_ELECTRONIC_METHODS = ['card', 'bank_account'];
+// Planning Center's Giving API returns exactly four payment_method values:
+// 'cash', 'check', 'card' and 'ach'. Only the last two are processed by Stripe.
+// 'bank_account' is not a value PCO emits; it is kept as a defensive alias only.
+const STRIPE_ELECTRONIC_METHODS = ['card', 'ach', 'bank_account'];
 
 export const isStripeElectronic = (donation: any): boolean => {
   const a = donation?.attributes ?? {};

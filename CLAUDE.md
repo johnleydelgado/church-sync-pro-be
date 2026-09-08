@@ -63,9 +63,14 @@ the Stripe payout only matters when reconciling the clearing account afterwards.
 
 Order of operations matters and is easy to break:
 
-1. `filterStripeElectronic` runs **first**. Only `card` / `bank_account`, not
-   refunded, `payment_status` not pending or failed. Cash and cheques are out of
-   scope. This must stay ahead of the duplicate-designation summing below — that step
+1. `filterStripeElectronic` runs **first**. Planning Center's Giving API returns
+   exactly four `payment_method` values — `cash`, `check`, `card`, `ach` — verified
+   against the live API on 2026-09-08. Only `card` and `ach` are Stripe-processed.
+   Also required: not refunded, `payment_status` not pending or failed, and a
+   non-zero `fee_cents`. The payment source is named "Planning Center" on real
+   records, never "Stripe", so the source-name check is a fallback that never fires
+   in production — the fee is what marks Stripe's involvement. Cash and cheques are
+   out of scope. This must stay ahead of the duplicate-designation summing below — that step
    collapses every donation sharing a fund and adds their amounts, so running it
    first folds a cash gift into a card one and posts it as online giving.
 2. Duplicate designations per fund are summed.
