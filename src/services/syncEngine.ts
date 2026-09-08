@@ -270,7 +270,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
 
     const synchedBatchesData = await UserSync.findAll({
       where: { userId, batchId: realBatchId as string },
-      attributes: ['id', 'batchId', 'donationId', 'status', 'createdAt'],
+      attributes: ['id', 'batchId', 'donationId', 'status', 'createdAt', 'postedGrossCents'],
     });
 
     // Legacy Deposit-era short-circuit: old rows have `donationId = <QBO deposit Id>` (not a
@@ -414,10 +414,21 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     }
 
     if (!isEmpty(updatedData)) {
-      const candidateDays = Object.keys(groupDonationsByDay(filterStripeElectronic(updatedData), orgTimeZone));
-      const allDaysSynced =
-        candidateDays.length > 0 &&
-        candidateDays.every((day) => synchedBatchesData.some((a) => a.donationId === day && a.status === 'posted'));
+      const daysNow = groupDonationsByDay(filterStripeElectronic(updatedData), orgTimeZone);
+      const candidateDays = Object.keys(daysNow);
+      // A day counts as done only if this batch has not GAINED money for it since it was
+      // posted. Comparing only the posted flag made this fast-path skip a batch whose
+      // donation set had grown, which is precisely what the pagination fix produces the
+      // first time it fetches a batch that PCO had been truncating at 25.
+      const alreadyCovered = (day: string) => {
+        const claim = synchedBatchesData.find((a) => a.donationId === day && a.status === 'posted');
+        if (!claim) return false;
+        // Posted before the amounts were recorded: no baseline, so leave it alone.
+        if (claim.postedGrossCents == null) return true;
+        const grossNow = (daysNow[day] as any[]).reduce((sum, d) => sum + (Number(d?.attributes?.amount_cents) || 0), 0);
+        return Number(claim.postedGrossCents) >= grossNow;
+      };
+      const allDaysSynced = candidateDays.length > 0 && candidateDays.every(alreadyCovered);
       if (allDaysSynced) {
         return { batchId: String(realBatchId), postedDays, skippedDays: candidateDays, failedDays: [] };
       }
@@ -570,16 +581,77 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
           },
         });
 
+        // What this batch now says it owes the day, per revenue account. Compared against
+        // what the same claim posted last time, so a batch whose donation set GREW can top
+        // the day up instead of being skipped forever - which is what happened while the
+        // claim was a bare flag: the un-paginated fetch truncated a batch at 25 donations,
+        // and once the fix started returning all of them the extra money had nowhere to go.
+        const currentByAccount: Record<string, number> = {};
+        for (const l of validLines) {
+          currentByAccount[l.AccountRef] = (currentByAccount[l.AccountRef] ?? 0) + Number(l.amount_cents);
+        }
+        const currentFeeCents = Math.abs(totalFeeCents || 0);
+        const currentGrossCents = Object.values(currentByAccount).reduce((a, b) => a + b, 0);
+
+        let linesToPost = validLines;
+        let feeToPost = totalFeeCents;
+
         if (!created) {
-          if (row.status === 'posted') {
-            // Already synced for this (userId + realBatchId + day).
-            skippedDays.push(day);
-            continue;
-          }
           if (row.status === 'pending') {
             // Another worker claimed this day and is mid-flight.
             skippedDays.push(day);
             continue;
+          }
+          if (row.status === 'posted') {
+            if (row.postedByAccount == null) {
+              // Posted before this bookkeeping existed, so there is no baseline to compare
+              // against. Treat it as complete rather than re-posting the whole day.
+              skippedDays.push(day);
+              continue;
+            }
+
+            const already = row.postedByAccount as Record<string, number>;
+            const deltaLines = Object.entries(currentByAccount)
+              .map(([account, cents]) => ({ account, delta: cents - (Number(already[account]) || 0) }))
+              .filter((d) => d.delta > 0)
+              .map((d) => {
+                const template = validLines.find((v) => v.AccountRef === d.account);
+                return {
+                  AccountRef: d.account,
+                  ClassRef: template?.ClassRef,
+                  amount_cents: d.delta,
+                  fundName: template?.fundName,
+                } as MappedDonationLine;
+              });
+
+            if (deltaLines.length === 0) {
+              // Nothing new. This is the ordinary re-run.
+              skippedDays.push(day);
+              continue;
+            }
+
+            const deltaFee = currentFeeCents - (Number(row.postedFeeCents) || 0);
+            if (deltaFee < 0) {
+              // Fees going down means money left the day, which is a refund - and refunds
+              // have their own reversing entry. Never post a negative fee here.
+              logger.warn('syncBatchToJournalEntries: fees decreased for an already-posted day - not adjusting fees', {
+                email,
+                batchId: String(realBatchId),
+                day,
+                postedFeeCents: Number(row.postedFeeCents) || 0,
+                currentFeeCents,
+              });
+            }
+
+            linesToPost = deltaLines;
+            feeToPost = -Math.max(0, deltaFee);
+            logger.info('syncBatchToJournalEntries: batch grew since it was last synced - posting the difference', {
+              email,
+              batchId: String(realBatchId),
+              day,
+              previousGrossCents: Number(row.postedGrossCents) || 0,
+              currentGrossCents,
+            });
           }
           // row.status === 'failed' -> retry: fall through and reuse this same row.
         }
@@ -616,7 +688,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
 
             const adjusting = Number(ledger.entryCount) > 0;
 
-            const payload = journalEntryPayload(validLines, {
+            const payload = journalEntryPayload(linesToPost, {
               clearingAccountRef: { value: clearing.value, name: clearing.label },
               txnDate: day,
               memo: adjusting
@@ -624,18 +696,18 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
                 : `Church Sync Pro - PCO Electronic Giving Sync - ${day}`,
               syncId: String(realBatchId),
               feesAccountRef,
-              totalFeeCents,
+              totalFeeCents: feeToPost,
             });
 
             const createdData: any = await automationJournalEntry(email as string, payload);
             const qboEntryId = createdData?.Id ? String(createdData.Id) : null;
 
-            const contributionGross = validLines.reduce((sum, l) => sum + Number(l.amount_cents), 0);
+            const contributionGross = linesToPost.reduce((sum, l) => sum + Number(l.amount_cents), 0);
 
             await ledger.update(
               {
                 postedGrossCents: Number(ledger.postedGrossCents) + contributionGross,
-                postedFeeCents: Number(ledger.postedFeeCents) + Math.abs(totalFeeCents || 0),
+                postedFeeCents: Number(ledger.postedFeeCents) + Math.abs(feeToPost || 0),
                 entryCount: Number(ledger.entryCount) + 1,
                 qboEntryIds: [...(ledger.qboEntryIds || []), ...(qboEntryId ? [qboEntryId] : [])],
                 batchIds: [...new Set([...(ledger.batchIds || []), String(realBatchId)])],
@@ -654,7 +726,13 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
             });
           }
 
-          await row.update({ status: 'posted', syncedData: je as any });
+          await row.update({
+            status: 'posted',
+            syncedData: je as any,
+            postedGrossCents: currentGrossCents,
+            postedFeeCents: currentFeeCents,
+            postedByAccount: currentByAccount,
+          });
           postedDays.push(day);
         } catch (err) {
           // Per-day failure: mark the row failed (retryable) and continue with other days,

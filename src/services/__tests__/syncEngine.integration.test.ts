@@ -416,3 +416,91 @@ describe('the church timezone decides the day', () => {
     expect(result.postedDays).toEqual(['2026-08-23']);
   });
 });
+
+describe('a batch that grows after it was posted', () => {
+  // Regression: the claim row was a bare flag, so once a batch/day was posted that batch could
+  // never add to the day again. The un-paginated fetch had been truncating batches at 25
+  // donations, so fixing pagination meant the engine would fetch the missing gifts and then
+  // silently discard them - reporting success while the day stayed short.
+  test('tops the day up with the difference instead of discarding it', async () => {
+    servePco([pcoPayload([{ id: 'd1', cents: 50000, feeCents: -758, receivedAt: '2026-08-23T14:00:00Z' }])]);
+    await run('b1');
+    expect(posted).toHaveLength(1);
+    expect(amountFor(posted[0], ACCOUNTS.general)).toBeCloseTo(500, 2);
+
+    // Same batch, now returning a donation it had truncated away.
+    servePco([
+      pcoPayload([
+        { id: 'd1', cents: 50000, feeCents: -758, receivedAt: '2026-08-23T14:00:00Z' },
+        { id: 'd2', cents: 19920, feeCents: -300, receivedAt: '2026-08-23T15:00:00Z' },
+      ]),
+    ]);
+    const second = await run('b1');
+
+    expect(second.postedDays).toEqual(['2026-08-23']);
+    expect(posted).toHaveLength(2);
+    // Only the difference, not the whole day again.
+    expect(amountFor(posted[1], ACCOUNTS.general)).toBeCloseTo(199.2, 2);
+    expect(amountFor(posted[1], ACCOUNTS.fees)).toBeCloseTo(3.0, 2);
+    expect(totalOf(posted[1], 'Debit')).toBeCloseTo(totalOf(posted[1], 'Credit'), 2);
+
+    // The day's ledger now matches the full amount actually given.
+    const ledger = await DailyJeSync.findOne({ where: { userId: USER_ID, day: '2026-08-23' } });
+    expect(Number(ledger!.postedGrossCents)).toBe(69920);
+    expect(Number(ledger!.postedFeeCents)).toBe(1058);
+  });
+
+  test('an unchanged batch still posts nothing on a re-run', async () => {
+    const donations = [{ id: 'd1', cents: 50000, feeCents: -758, receivedAt: '2026-08-23T14:00:00Z' }];
+    servePco([pcoPayload(donations)]);
+    await run('b1');
+    servePco([pcoPayload(donations)]);
+    const again = await run('b1');
+    expect(posted).toHaveLength(1);
+    expect(again.postedDays).toEqual([]);
+  });
+
+  test('a new fund appearing in the batch is credited on its own line', async () => {
+    servePco([pcoPayload([{ id: 'd1', cents: 50000, feeCents: -758, receivedAt: '2026-08-23T14:00:00Z' }])]);
+    await run('b1');
+
+    servePco([
+      pcoPayload([
+        { id: 'd1', cents: 50000, feeCents: -758, receivedAt: '2026-08-23T14:00:00Z' },
+        {
+          id: 'd2',
+          cents: 10000,
+          feeCents: -320,
+          receivedAt: '2026-08-23T16:00:00Z',
+          designations: [{ id: 'd2-des', cents: 10000, fund: 'Missions' }],
+        },
+      ]),
+    ]);
+    await run('b1');
+
+    expect(amountFor(posted[1], ACCOUNTS.missions)).toBeCloseTo(100, 2);
+    expect(amountFor(posted[1], ACCOUNTS.general)).toBeCloseTo(0, 2);
+  });
+
+  // A claim written before this bookkeeping existed has no baseline. Re-posting the whole day
+  // against it would duplicate money already in the books, so it must stay skipped.
+  test('a claim with no recorded baseline is left alone', async () => {
+    servePco([pcoPayload([{ id: 'd1', cents: 50000, feeCents: -758, receivedAt: '2026-08-23T14:00:00Z' }])]);
+    await run('b1');
+    await UserSync.update(
+      { postedByAccount: null, postedGrossCents: null, postedFeeCents: null },
+      { where: { userId: USER_ID, batchId: 'b1', donationId: '2026-08-23' } },
+    );
+
+    servePco([
+      pcoPayload([
+        { id: 'd1', cents: 50000, feeCents: -758, receivedAt: '2026-08-23T14:00:00Z' },
+        { id: 'd2', cents: 19920, feeCents: -300, receivedAt: '2026-08-23T15:00:00Z' },
+      ]),
+    ]);
+    const second = await run('b1');
+
+    expect(posted).toHaveLength(1);
+    expect(second.postedDays).toEqual([]);
+  });
+});

@@ -84,17 +84,20 @@ npx sequelize-cli db:migrate --url postgres://admin:1234@127.0.0.1:55433/csp_tes
 `config/config.json`, which is gitignored. Add a case here before changing anything the engine
 does with money.
 
-**Before the first church is mapped, the posting decision must become delta-based.**
-Today a day is skipped when its `(userId, batchId, day)` claim says `posted`, with no
-comparison against `DailyJeSync.postedGrossCents`. Two consequences, both currently
-harmless only because no journal-entry history exists in any environment (verified
-2026-09-08: `DailyJeSync` empty in staging and production, no user has automation on):
-removing the old duplicate-summing pass makes days it used to collapse reappear as fresh
-unposted days, and a batch that grows after its day was posted can never top that day up -
-the pagination fix fetches the missing donations and the claim row throws them away. Both
-dissolve once the decision is "does the day's recomputed total differ from what the ledger
-says was posted?", which `DailyJeSync` already stores. Do that before any real church has
-posted days.
+**The posting decision is delta-based.** A `(userId, batchId, day)` claim records what it
+actually posted - `postedGrossCents`, `postedFeeCents` and a per-account `postedByAccount`
+split. On a later run the engine compares the batch's current contribution for that day
+against those amounts and posts only the increase, as an adjusting entry crediting the right
+funds. An unchanged batch posts nothing. This is what lets a batch that GREW top its day up:
+before it, the claim was a bare flag, so once a day was posted that batch could never add to
+it again - and the pagination fix produces exactly that situation the first time it fetches a
+batch Planning Center had been truncating at 25 donations.
+
+Two things to keep in mind when touching it. A claim whose `postedByAccount` is null was
+written before this bookkeeping existed and has no baseline, so it is treated as complete
+rather than re-posted; do not "helpfully" backfill those to zero, which would re-post the
+whole day. And the cheap fast-path above compares amounts for the same reason - comparing
+only the posted flag made it skip a grown batch before the delta logic could run.
 
 **Scope: this filter exists only for the daily journal entry.** `filterStripeElectronic`
 is used nowhere but `services/syncEngine.ts`, and `syncBatchToJournalEntries` has exactly

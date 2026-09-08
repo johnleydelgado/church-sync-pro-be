@@ -6,6 +6,10 @@ import User from './user';
 export interface UserSyncAttributes {
   id?: number;
   syncedData?: Json | any[];
+  /** What this (user, batch, day) claim has actually posted so far. */
+  postedGrossCents?: number | null;
+  postedFeeCents?: number | null;
+  postedByAccount?: Record<string, number> | null;
   batchId?: string;
   donationId?: string;
   userId?: number;
@@ -17,6 +21,9 @@ export interface UserSyncAttributes {
 class UserSync extends Model<UserSyncAttributes> implements UserSyncAttributes {
   public id!: number;
   public syncedData!: Json;
+  public postedGrossCents!: number | null;
+  public postedFeeCents!: number | null;
+  public postedByAccount!: Record<string, number> | null;
   public batchId!: string;
   public donationId!: string;
   public userId!: number;
@@ -43,6 +50,18 @@ UserSync.init(
     },
     syncedData: {
       type: DataTypes.JSON,
+    },
+    postedGrossCents: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    postedFeeCents: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    postedByAccount: {
+      type: DataTypes.JSONB,
+      allowNull: true,
     },
     batchId: {
       type: DataTypes.TEXT,
