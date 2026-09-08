@@ -169,21 +169,6 @@ export const tesst = async (req: Request, res: Response, next: NextFunction) => 
   }
 };
 
-export const createPayment = async (req: Request, res: Response) => {
-  const { amount, ACCESS_TOKEN, REALM_ID, REFRESH_TOKEN } = req.body;
-  // if (!ACCESS_TOKEN) {
-  //   getData(req, res);
-  // }
-  quickBookApi({ ACCESS_TOKEN, REALM_ID, REFRESH_TOKEN }).createPayment({
-    TotalAmt: amount,
-    CustomerRef: {
-      value: '20',
-    },
-  });
-
-  return responseSuccess(res, '');
-};
-
 export const manualSync = async (req: Request, res: Response) => {
   const { email, batchId = '0', realBatchId, bankData, donations } = req.body; // refresh token if for pc
 

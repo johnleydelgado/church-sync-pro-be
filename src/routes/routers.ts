@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import {
-  createPayment,
   deleteBookeeper,
   healthCheck,
   manualSync,
@@ -82,7 +81,6 @@ routers.post('/callBackStripe', callBackStripe);
 routers.get('/healthCheck', verifySession(), healthCheck);
 
 // routers.get('/getBatches', verifySession(), getBatches);
-routers.post('/createPayment', verifySession(), createPayment);
 routers.post('/deleteBookeeper', verifySession(), deleteBookeeper);
 
 routers.get(pcRoutes.getFunds, verifySession(), getFunds);
