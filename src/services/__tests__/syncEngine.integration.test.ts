@@ -59,6 +59,7 @@ type DonationSpec = {
   method?: string;
   status?: string;
   refunded?: boolean;
+  feeCovered?: boolean;
   designations?: { id: string; cents: number; fund: string }[];
 };
 
@@ -92,6 +93,7 @@ const pcoPayload = (donations: DonationSpec[]) => {
         payment_method: d.method ?? 'card',
         payment_status: d.status ?? 'succeeded',
         refunded: d.refunded ?? false,
+        fee_covered: d.feeCovered ?? false,
         received_at: d.receivedAt,
         completed_at: d.receivedAt,
       },
@@ -502,5 +504,37 @@ describe('a batch that grows after it was posted', () => {
 
     expect(posted).toHaveLength(1);
     expect(second.postedDays).toEqual([]);
+  });
+});
+
+describe('donors who cover the Stripe fee', () => {
+  // The donor is charged the gift plus the fee, so Stripe deposits the whole gift and the
+  // church never pays the fee. Booking it as an expense both overstates costs and leaves the
+  // clearing account short of the deposit it is supposed to match.
+  test('the whole gift reaches clearing and no fee is expensed', async () => {
+    servePco([
+      pcoPayload([{ id: 'covered', cents: 10000, feeCents: -320, feeCovered: true, receivedAt: '2026-08-23T14:00:00Z' }]),
+    ]);
+    await run('b1');
+
+    expect(amountFor(posted[0], ACCOUNTS.general)).toBeCloseTo(100, 2);
+    expect(amountFor(posted[0], ACCOUNTS.clearing)).toBeCloseTo(100, 2);
+    expect(amountFor(posted[0], ACCOUNTS.fees)).toBeCloseTo(0, 2);
+    expect(totalOf(posted[0], 'Debit')).toBeCloseTo(totalOf(posted[0], 'Credit'), 2);
+  });
+
+  test('a day mixing covered and uncovered fees matches the real deposit', async () => {
+    servePco([
+      pcoPayload([
+        { id: 'plain', cents: 10000, feeCents: -320, receivedAt: '2026-08-23T14:00:00Z' },
+        { id: 'covered', cents: 10000, feeCents: -320, feeCovered: true, receivedAt: '2026-08-23T15:00:00Z' },
+      ]),
+    ]);
+    await run('b1');
+
+    expect(amountFor(posted[0], ACCOUNTS.general)).toBeCloseTo(200, 2);
+    expect(amountFor(posted[0], ACCOUNTS.fees)).toBeCloseTo(3.2, 2);
+    // $96.80 from the ordinary gift plus $100.00 from the covered one.
+    expect(amountFor(posted[0], ACCOUNTS.clearing)).toBeCloseTo(196.8, 2);
   });
 });

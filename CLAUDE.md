@@ -84,6 +84,19 @@ npx sequelize-cli db:migrate --url postgres://admin:1234@127.0.0.1:55433/csp_tes
 `config/config.json`, which is gitignored. Add a case here before changing anything the engine
 does with money.
 
+**A donor-covered fee is not the church's expense.** When a donor ticks "cover the processing
+fee" they are charged the gift plus the fee, so Stripe deposits the whole gift and the church
+pays nothing. Planning Center marks that `fee_covered: true` while still populating `fee_cents`,
+so summing fees blindly books a cost the church never incurred and leaves the clearing account
+short of the deposit by exactly that amount. `chargeableFeeCents` skips them. PCO also documents
+that `fee_covered` can only be true for donations processed through Stripe, which makes it the
+one field that positively proves Stripe was involved.
+
+Not yet seen in live data: the test organisation has zero fee-covered donations, so this rests
+on PCO's field documentation (`amount_cents` is "derived from the total of all of a donation's
+associated designation's `amount_cents` values", i.e. the gift, not the gift plus the fee).
+Confirm against a real fee-covered record before treating it as settled.
+
 **The posting decision is delta-based.** A `(userId, batchId, day)` claim records what it
 actually posted - `postedGrossCents`, `postedFeeCents` and a per-account `postedByAccount`
 split. On a later run the engine compares the batch's current contribution for that day

@@ -15,6 +15,7 @@ import {
   MappedDonationLine,
   SettingsJsonProps,
   donationLines,
+  chargeableFeeCents,
   filterStripeElectronic,
   wasStripeElectronic,
   groupDonationsByDay,
@@ -549,11 +550,9 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
           continue;
         }
 
-        // Sum the day's total Stripe fee (PCO fee_cents is per donation, typically negative).
-        const totalFeeCents = (donations as any[]).reduce(
-          (s, donation) => s + (Number(donation.attributes.fee_cents) || 0),
-          0,
-        );
+        // The day's Stripe fee, excluding gifts whose donor covered it - the church did not
+        // pay those, and Stripe deposits the whole gift for them.
+        const totalFeeCents = chargeableFeeCents(donations as any[]);
 
         // Resolve the fees account from settingBankCharges (same shape used in automation-helper.ts).
         const feesAccountValue = settingBankCharges?.account?.value ?? '';
