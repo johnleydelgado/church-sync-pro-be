@@ -391,6 +391,44 @@ describe('refunds', () => {
     expect(linesOf(posted[0]).find((l: any) => l.account === ACCOUNTS.clearing)?.type).toBe('Credit');
   });
 
+  // Regression: a second refund landing on a day that already had a reversing entry hit the
+  // posted claim row and was dropped in silence - the money left the church's Stripe balance
+  // but the books never showed it.
+  test('a second refund on an already-reversed day posts the difference', async () => {
+    withRefund(
+      { id: 'card1', cents: 50000, feeCents: -758, refunded: true, receivedAt: '2026-08-23T14:00:00Z' },
+      { amount: 20000, fee: 300, at: '2026-09-01T10:00:00Z' },
+    );
+    await run('b1');
+    expect(posted).toHaveLength(1);
+    expect(amountFor(posted[0], ACCOUNTS.general)).toBeCloseTo(200, 2);
+
+    // The same day, now carrying a larger refund total.
+    withRefund(
+      { id: 'card1', cents: 50000, feeCents: -758, refunded: true, receivedAt: '2026-08-23T14:00:00Z' },
+      { amount: 50000, fee: 758, at: '2026-09-01T10:00:00Z' },
+    );
+    const second = await run('b1');
+
+    expect(second.postedDays).toContain('refund:2026-09-01');
+    expect(posted).toHaveLength(2);
+    // Only the extra $300 is reversed, not the whole $500 again.
+    expect(amountFor(posted[1], ACCOUNTS.general)).toBeCloseTo(300, 2);
+
+    const ledger = await DailyJeSync.findOne({ where: { userId: USER_ID, day: '2026-09-01' } });
+    expect(Number(ledger!.refundedGrossCents)).toBe(50000);
+  });
+
+  test('an unchanged refund is not reversed twice', async () => {
+    const spec = { id: 'card1', cents: 50000, feeCents: -758, refunded: true, receivedAt: '2026-08-23T14:00:00Z' } as const;
+    withRefund({ ...spec }, { amount: 50000, fee: 758, at: '2026-09-01T10:00:00Z' });
+    await run('b1');
+    withRefund({ ...spec }, { amount: 50000, fee: 758, at: '2026-09-01T10:00:00Z' });
+    const again = await run('b1');
+    expect(posted).toHaveLength(1);
+    expect(again.postedDays).not.toContain('refund:2026-09-01');
+  });
+
   // Regression: a posted `refund:<day>` row failed the legacy-Deposit test, so the batch looked
   // already-deposited and every later donation in it was blocked forever.
   test('a posted refund does not block later giving in the same batch', async () => {

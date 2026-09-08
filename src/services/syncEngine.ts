@@ -191,7 +191,48 @@ const postRefundEntries = async (p: RefundPassParams): Promise<{ posted: string[
         defaults: { status: 'pending', userId: p.userId, batchId: p.realBatchId, donationId: `refund:${day}` },
       });
       row = claimed;
-      if (!created && (row.status === 'posted' || row.status === 'pending')) continue;
+      if (!created && row.status === 'pending') continue;
+
+      // What this day's refunds now total, per revenue account. A second refund landing on a
+      // day that already has a reversing entry used to hit the posted claim and be dropped in
+      // silence - the money left the church's Stripe balance but the books never showed it.
+      const refundByAccount: Record<string, number> = {};
+      for (const l of bucket.lines) {
+        refundByAccount[l.AccountRef] = (refundByAccount[l.AccountRef] ?? 0) + Number(l.amount_cents);
+      }
+      const refundGrossCents = Object.values(refundByAccount).reduce((a, b) => a + b, 0);
+      const refundFeeCents = Math.abs(bucket.feeCents || 0);
+
+      let linesToPost = bucket.lines;
+      let feeToPost = bucket.feeCents;
+
+      if (!created && row.status === 'posted') {
+        if (row.postedByAccount == null) {
+          // Posted before these amounts were recorded: no baseline, so leave it alone rather
+          // than reversing the day a second time.
+          continue;
+        }
+        const already = row.postedByAccount as Record<string, number>;
+        linesToPost = Object.entries(refundByAccount)
+          .map(([account, cents]) => ({ account, delta: cents - (Number(already[account]) || 0) }))
+          .filter((d) => d.delta > 0)
+          .map((d) => {
+            const template = bucket.lines.find((l) => l.AccountRef === d.account);
+            return {
+              AccountRef: d.account,
+              ClassRef: template?.ClassRef,
+              amount_cents: d.delta,
+              fundName: template?.fundName,
+            } as MappedDonationLine;
+          });
+        if (linesToPost.length === 0) continue;
+        feeToPost = -Math.max(0, refundFeeCents - (Number(row.postedFeeCents) || 0));
+        logger.info('postRefundEntries: more refunds arrived for a day already reversed - posting the difference', {
+          email: p.email,
+          batchId: p.realBatchId,
+          day,
+        });
+      }
 
       await DailyJeSync.findOrCreate({
         where: { userId: p.userId, day },
@@ -200,21 +241,21 @@ const postRefundEntries = async (p: RefundPassParams): Promise<{ posted: string[
       const je = await sequelize.transaction(async (tx) => {
         const ledger = await DailyJeSync.findOne({ where: { userId: p.userId, day }, transaction: tx, lock: tx.LOCK.UPDATE });
         if (!ledger) throw new Error(`DailyJeSync row missing for ${p.userId} ${day}`);
-        const payload = refundJournalEntryPayload(bucket.lines, {
+        const payload = refundJournalEntryPayload(linesToPost, {
           clearingAccountRef: { value: clearing.value!, name: clearing.label },
           txnDate: day,
           memo: `Church Sync Pro - PCO Electronic Giving Refund - ${day}`,
           syncId: p.realBatchId,
           feesAccountRef,
-          totalFeeCents: bucket.feeCents,
+          totalFeeCents: feeToPost,
         });
         const createdData: any = await automationJournalEntry(p.email, payload);
         const qboEntryId = createdData?.Id ? String(createdData.Id) : null;
-        const gross = bucket.lines.reduce((sum, l) => sum + Number(l.amount_cents), 0);
+        const gross = linesToPost.reduce((sum, l) => sum + Number(l.amount_cents), 0);
         await ledger.update(
           {
             refundedGrossCents: Number(ledger.refundedGrossCents ?? 0) + gross,
-            refundedFeeCents: Number(ledger.refundedFeeCents ?? 0) + Math.abs(bucket.feeCents),
+            refundedFeeCents: Number(ledger.refundedFeeCents ?? 0) + Math.abs(feeToPost || 0),
             entryCount: Number(ledger.entryCount) + 1,
             qboEntryIds: [...(ledger.qboEntryIds || []), ...(qboEntryId ? [qboEntryId] : [])],
             batchIds: [...new Set([...(ledger.batchIds || []), p.realBatchId])],
@@ -223,7 +264,13 @@ const postRefundEntries = async (p: RefundPassParams): Promise<{ posted: string[
         );
         return payload;
       });
-      await row.update({ status: 'posted', syncedData: je as any });
+      await row.update({
+        status: 'posted',
+        syncedData: je as any,
+        postedGrossCents: refundGrossCents,
+        postedFeeCents: refundFeeCents,
+        postedByAccount: refundByAccount,
+      });
       posted.push(`refund:${day}`);
       logger.info('postRefundEntries: posted refund entry', { email: p.email, batchId: p.realBatchId, day });
     } catch (e) {
