@@ -15,7 +15,8 @@
     "db:uat:migrate:undo:all": "NODE_ENV=staging npx sequelize-cli db:migrate:undo:all",
     "format": "eslint src/**/*.ts --fix",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "test:integration": "NODE_ENV=test jest --config jest.integration.config.js"
   },
   "keywords": [
     "quickbooks"

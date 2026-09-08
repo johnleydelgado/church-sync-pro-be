@@ -61,6 +61,29 @@ post one QuickBooks journal entry — credit revenue (gross), debit Stripe fees,
 a clearing account for the net Stripe will deposit later. PCO is the source of truth;
 the Stripe payout only matters when reconciling the clearing account afterwards.
 
+### Tests
+
+`npm test` is the unit suite (pure functions in `src/utils`). It cannot see the wiring, and
+every defect found on 8-9 September 2026 lived in the wiring rather than inside any single
+function - fees dropped by a summing pass that ran before the fee total, a refund pass that
+never consulted the giving filter, a split-gift helper that met a drop-unmapped-lines guard
+downstream.
+
+`npm run test:integration` runs the real engine against a real Postgres, with Planning Center
+and QuickBooks faked, asserting on the journal entries it tries to post. Bring the database up
+first:
+
+```
+docker run -d --name csp-test-pg -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=1234 \
+  -e POSTGRES_DB=csp_test -p 55433:5432 postgres:15
+npx sequelize-cli db:migrate --url postgres://admin:1234@127.0.0.1:55433/csp_test \
+  --migrations-path src/db/migrations
+```
+
+`NODE_ENV=test` builds its connection from `TEST_DB_*` environment variables rather than
+`config/config.json`, which is gitignored. Add a case here before changing anything the engine
+does with money.
+
 **Before the first church is mapped, the posting decision must become delta-based.**
 Today a day is skipped when its `(userId, batchId, day)` claim says `posted`, with no
 comparison against `DailyJeSync.postedGrossCents`. Two consequences, both currently
