@@ -61,6 +61,14 @@ post one QuickBooks journal entry — credit revenue (gross), debit Stripe fees,
 a clearing account for the net Stripe will deposit later. PCO is the source of truth;
 the Stripe payout only matters when reconciling the clearing account afterwards.
 
+**Scope: this filter exists only for the daily journal entry.** `filterStripeElectronic`
+is used nowhere but `services/syncEngine.ts`, and `syncBatchToJournalEntries` has exactly
+two callers - the manual sync in `controller/index.ts` and `dailySyncing` in
+`utils/automation-helper.ts`, which the nightly Cloud Scheduler job drives. Both are the
+same feature: the daily sync a church configures under Automation -> Mapping. The
+transactions pages, batches view, payout view and registration sync do not use it. So a
+change here can only affect the daily journal entry - and it affects all of it.
+
 Order of operations matters and is easy to break:
 
 1. `filterStripeElectronic` runs **first**. Planning Center's Giving API returns
