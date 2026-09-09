@@ -3,6 +3,13 @@
 export interface JournalEntryCreditSummary {
   accountRef: string;
   amount: number;
+  /**
+   * The QuickBooks account's name, resolved from the church's fund mapping. The stored journal
+   * payload carries only the account id on its credit lines, so without this the page had
+   * nothing to show and fell back to the words "Revenue account" - useless to a bookkeeper
+   * looking at a day with several funds.
+   */
+  accountName?: string;
 }
 
 export interface JournalEntrySummary {

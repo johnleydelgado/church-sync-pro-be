@@ -78,6 +78,15 @@ export const getDailyJournalEntries = async (req: Request, res: Response) => {
       order: [['donationId', 'DESC']],
     });
 
+    // QuickBooks account id -> the name the church chose for it, from their fund mapping.
+    // The stored journal payload keeps only ids on its credit lines.
+    const accountNames = new Map<string, string>();
+    for (const item of ((settings?.settingsData as unknown as any[]) ?? [])) {
+      const value = item?.account?.value;
+      const label = item?.account?.label;
+      if (value && label) accountNames.set(String(value), String(label));
+    }
+
     const entries: DailyJournalEntry[] = syncRows.map((row) => {
       const r = row.toJSON() as any;
       const summary = summarizeJournalEntry(r.syncedData);
@@ -87,7 +96,10 @@ export const getDailyJournalEntries = async (req: Request, res: Response) => {
         gross: summary.gross,
         fees: summary.fees,
         net: summary.net,
-        credits: summary.credits,
+        credits: summary.credits.map((c) => ({
+          ...c,
+          accountName: accountNames.get(String(c.accountRef)),
+        })),
         memo: summary.memo,
         batchId: r.batchId,
       };
