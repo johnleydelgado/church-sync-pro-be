@@ -621,8 +621,9 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
           continue;
         }
 
-        // The day's Stripe fee, excluding gifts whose donor covered it - the church did not
-        // pay those, and Stripe deposits the whole gift for them.
+        // The day's Stripe fee - every gift's, including those the donor covered. A covered
+        // gift is a larger gift, not the donor paying Stripe for the church, so its fee is
+        // still the church's expense. See the docblock on `chargeableFeeCents`.
         const totalFeeCents = chargeableFeeCents(donations as any[]);
 
         // Resolve the fees account from settingBankCharges (same shape used in automation-helper.ts).

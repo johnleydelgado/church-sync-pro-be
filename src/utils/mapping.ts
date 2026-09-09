@@ -319,6 +319,13 @@ export interface MappedDonationLine {
  * contribution revenue, which GAAP does not permit and which understates both figures on the
  * church's return.
  *
+ * Planning Center says as much itself: "A donation where the donor covers the fee means it's a
+ * slightly more generous donation. So, the donation is not represented differently in your payout
+ * reports, and there's no change in your bookkeeping process." Their own worked example is a
+ * proof by contradiction: a $100 gift with a 30c covered ACH fee produces a year-end tax
+ * statement reading "$100.30 to that missions organization" while only $100 arrives - which is
+ * only possible if the recorded amount is the gross.
+ *
  * `fee_covered` therefore changes nothing about the entry. It remains useful for one thing:
  * Planning Center documents that it can only be true for donations processed through Stripe, so
  * it is the single field that positively proves Stripe handled a gift.
