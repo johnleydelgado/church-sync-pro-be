@@ -84,33 +84,26 @@ npx sequelize-cli db:migrate --url postgres://admin:1234@127.0.0.1:55433/csp_tes
 `config/config.json`, which is gitignored. Add a case here before changing anything the engine
 does with money.
 
-**A donor-covered fee is not the church's expense.** When a donor ticks "cover the processing
-fee" they are charged the gift plus the fee, so Stripe deposits the whole gift and the church
-pays nothing. Planning Center marks that `fee_covered: true` while still populating `fee_cents`,
-so summing fees blindly books a cost the church never incurred and leaves the clearing account
-short of the deposit by exactly that amount. `chargeableFeeCents` skips them. PCO also documents
-that `fee_covered` can only be true for donations processed through Stripe, which makes it the
-one field that positively proves Stripe was involved.
+**A donor-covered fee is still the church's expense.** When a donor "covers the fee", Planning
+Center bumps the charge - a $200.00 gift becomes a $204.70 charge - and records the donation at
+the GROSS $204.70, which is what the donor's receipt and giving statement show. The donor did not
+pay Stripe for the church; they made a larger gift. The church stays the merchant of record and
+incurs the whole $4.70. So the ordinary arithmetic is already right:
 
-Not yet seen in live data: the test organisation has zero fee-covered donations, so this rests
-on PCO's field documentation (`amount_cents` is "derived from the total of all of a donation's
-associated designation's `amount_cents` values", i.e. the gift, not the gift plus the fee).
-Confirm against a real fee-covered record before treating it as settled.
+    credit revenue   $204.70     the gift, as the donor's statement shows it
+    debit  fees        $4.70     what Stripe took
+    debit  clearing  $200.00     what Stripe deposits
 
-**The posting decision is delta-based.** A `(userId, batchId, day)` claim records what it
-actually posted - `postedGrossCents`, `postedFeeCents` and a per-account `postedByAccount`
-split. On a later run the engine compares the batch's current contribution for that day
-against those amounts and posts only the increase, as an adjusting entry crediting the right
-funds. An unchanged batch posts nothing. This is what lets a batch that GREW top its day up:
-before it, the claim was a bare flag, so once a day was posted that batch could never add to
-it again - and the pagination fix produces exactly that situation the first time it fetches a
-batch Planning Center had been truncating at 25 donations.
+`chargeableFeeCents` therefore counts every fee, `fee_covered` or not. Excluding covered fees was
+implemented here on 2026-09-09 and reverted the same day: it would have left the clearing account
+overstated by the fee against a deposit that will only ever be $200.00 - the exact reconciliation
+break the fee split exists to prevent - and netted a processing fee against contribution revenue,
+which GAAP does not permit and which understates both figures on the church's return.
 
-Two things to keep in mind when touching it. A claim whose `postedByAccount` is null was
-written before this bookkeeping existed and has no baseline, so it is treated as complete
-rather than re-posted; do not "helpfully" backfill those to zero, which would re-post the
-whole day. And the cheap fast-path above compares amounts for the same reason - comparing
-only the posted flag made it skip a grown batch before the delta logic could run.
+`fee_covered` stays useful for one thing: PCO documents that it can only be true for donations
+processed through Stripe, making it the one field that positively proves Stripe handled a gift.
+Still unobserved in live data - the test organisation has no fee-covered donations - so the
+amounts above come from PCO's help documentation, not a record.
 
 **The nightly run sweeps donations, not batches.** `dailyJournalSync` (POST
 `/csp/dailyJournalSync`, Cloud Scheduler, 8am) calls `runDailyDonationSync` per church, which

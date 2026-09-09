@@ -557,33 +557,32 @@ describe('a batch that grows after it was posted', () => {
 });
 
 describe('donors who cover the Stripe fee', () => {
-  // The donor is charged the gift plus the fee, so Stripe deposits the whole gift and the
-  // church never pays the fee. Booking it as an expense both overstates costs and leaves the
-  // clearing account short of the deposit it is supposed to match.
-  test('the whole gift reaches clearing and no fee is expensed', async () => {
+  // The donor made a larger gift rather than paying Stripe for the church, so the ordinary
+  // arithmetic is already right: gross credited, fee expensed, deposit to clearing.
+  test('credits the gross, expenses the fee, and lands the deposit in clearing', async () => {
     servePco([
-      pcoPayload([{ id: 'covered', cents: 10000, feeCents: -320, feeCovered: true, receivedAt: '2026-08-23T14:00:00Z' }]),
+      pcoPayload([{ id: 'covered', cents: 20470, feeCents: -470, feeCovered: true, receivedAt: '2026-08-23T14:00:00Z' }]),
     ]);
     await run('b1');
 
-    expect(amountFor(posted[0], ACCOUNTS.general)).toBeCloseTo(100, 2);
-    expect(amountFor(posted[0], ACCOUNTS.clearing)).toBeCloseTo(100, 2);
-    expect(amountFor(posted[0], ACCOUNTS.fees)).toBeCloseTo(0, 2);
+    expect(amountFor(posted[0], ACCOUNTS.general)).toBeCloseTo(204.7, 2);
+    expect(amountFor(posted[0], ACCOUNTS.fees)).toBeCloseTo(4.7, 2);
+    expect(amountFor(posted[0], ACCOUNTS.clearing)).toBeCloseTo(200, 2);
     expect(totalOf(posted[0], 'Debit')).toBeCloseTo(totalOf(posted[0], 'Credit'), 2);
   });
 
-  test('a day mixing covered and uncovered fees matches the real deposit', async () => {
+  test('a day mixing covered and uncovered fees matches the real deposits', async () => {
     servePco([
       pcoPayload([
         { id: 'plain', cents: 10000, feeCents: -320, receivedAt: '2026-08-23T14:00:00Z' },
-        { id: 'covered', cents: 10000, feeCents: -320, feeCovered: true, receivedAt: '2026-08-23T15:00:00Z' },
+        { id: 'covered', cents: 20470, feeCents: -470, feeCovered: true, receivedAt: '2026-08-23T15:00:00Z' },
       ]),
     ]);
     await run('b1');
 
-    expect(amountFor(posted[0], ACCOUNTS.general)).toBeCloseTo(200, 2);
-    expect(amountFor(posted[0], ACCOUNTS.fees)).toBeCloseTo(3.2, 2);
-    // $96.80 from the ordinary gift plus $100.00 from the covered one.
-    expect(amountFor(posted[0], ACCOUNTS.clearing)).toBeCloseTo(196.8, 2);
+    expect(amountFor(posted[0], ACCOUNTS.general)).toBeCloseTo(304.7, 2);
+    expect(amountFor(posted[0], ACCOUNTS.fees)).toBeCloseTo(7.9, 2);
+    // $96.80 from the ordinary gift plus $200.00 from the covered one.
+    expect(amountFor(posted[0], ACCOUNTS.clearing)).toBeCloseTo(296.8, 2);
   });
 });

@@ -298,24 +298,35 @@ export interface MappedDonationLine {
 }
 
 /**
- * The day's Stripe fee that the CHURCH actually paid.
+ * The day's Stripe fee.
  *
- * When a donor ticks "cover the processing fee" they are charged the gift plus the fee, so
- * Stripe still takes its cut but the church receives the whole gift. Planning Center records
- * that as `fee_covered: true`, with `amount_cents` still the gift (it is derived from the
- * designations) and `fee_cents` still the fee. Counting those fees as an expense books a cost
- * the church never incurred AND leaves the clearing account short by the same amount, because
- * Stripe deposits the full gift. PCO also documents that `fee_covered` can only be true for
- * donations processed through Stripe.
+ * Every fee counts, including gifts marked `fee_covered`. That is worth explaining, because the
+ * opposite looks reasonable at first glance and was briefly implemented here.
  *
- * Returns a negative number, matching PCO's own sign convention for fee_cents.
+ * When a donor "covers the fee", Planning Center bumps the charge - a $200.00 gift becomes a
+ * $204.70 charge - and records the donation at the GROSS $204.70, which is also what appears on
+ * the donor's receipt and giving statement. The donor did not pay Stripe on the church's behalf;
+ * they simply made a larger gift. The church remains the merchant of record and incurs the whole
+ * $4.70. So the ordinary arithmetic is already correct:
+ *
+ *     credit revenue   $204.70     the gift, as the donor's statement shows it
+ *     debit  fees        $4.70     what Stripe took
+ *     debit  clearing  $200.00     what Stripe deposits - what the donor meant the church to get
+ *
+ * Excluding covered fees would credit $204.70 and debit $204.70 to clearing, leaving it
+ * overstated by the fee against a deposit that will only ever be $200.00 - the exact
+ * reconciliation break the split exists to prevent. It would also net a processing fee against
+ * contribution revenue, which GAAP does not permit and which understates both figures on the
+ * church's return.
+ *
+ * `fee_covered` therefore changes nothing about the entry. It remains useful for one thing:
+ * Planning Center documents that it can only be true for donations processed through Stripe, so
+ * it is the single field that positively proves Stripe handled a gift.
+ *
+ * Returns a negative number, matching PCO's own sign convention for `fee_cents`.
  */
 export const chargeableFeeCents = (donations: any[]): number =>
-  (donations ?? []).reduce((sum, donation) => {
-    const a = donation?.attributes ?? {};
-    if (a.fee_covered === true) return sum;
-    return sum + (Number(a.fee_cents) || 0);
-  }, 0);
+  (donations ?? []).reduce((sum, donation) => sum + (Number(donation?.attributes?.fee_cents) || 0), 0);
 
 export interface DesignationInfo {
   fundName?: string;
