@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-import { fetchDonationsForDay, localToday, nextDay, previousDay } from '../donationSweep';
+import { fetchDonationsForDay, fetchDonationsForRange, localToday, nextDay, previousDay } from '../donationSweep';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -104,5 +104,54 @@ describe('fetchDonationsForDay', () => {
     } as any);
     const { donations } = await fetchDonationsForDay({}, '2026-09-08');
     expect(donations).toHaveLength(2);
+  });
+});
+
+describe('fetchDonationsForRange', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('asks for one half-open window covering the whole range', async () => {
+    mockedAxios.get.mockResolvedValue({ data: { data: [], included: [], links: {} } } as any);
+    await fetchDonationsForRange({}, '2026-09-01', '2026-09-08');
+
+    // One request, not one per day - a month of history must not cost thirty round trips.
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    const url = mockedAxios.get.mock.calls[0][0] as string;
+    expect(url).toContain('where[received_at][gte]=2026-09-01');
+    // `lt` the day AFTER `to`, so the last day of the range is included exactly once.
+    expect(url).toContain('where[received_at][lt]=2026-09-09');
+    expect(url).not.toContain('[lte]');
+  });
+
+  test('follows pagination to the end', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({
+        data: { data: [donation('1', '2026-09-01')], included: [], links: { next: 'https://pco/page2' } },
+      } as any)
+      .mockResolvedValueOnce({ data: { data: [donation('2', '2026-09-02')], included: [], links: {} } } as any);
+
+    const { donations } = await fetchDonationsForRange({}, '2026-09-01', '2026-09-02');
+    expect(donations.map((d) => d.id)).toEqual(['1', '2']);
+  });
+
+  test('refuses a result the date filter clearly did not apply to', async () => {
+    // A misspelled `where` key returns the church's entire history with HTTP 200.
+    mockedAxios.get.mockResolvedValue({
+      data: {
+        data: [donation('1', '2019-01-01'), donation('2', '2020-06-06'), donation('3', '2026-09-01')],
+        included: [],
+        links: {},
+      },
+    } as any);
+
+    await expect(fetchDonationsForRange({}, '2026-09-01', '2026-09-02')).rejects.toThrow(
+      /date filter did not apply/,
+    );
+  });
+
+  test('rejects a malformed or backwards range before calling Planning Center', async () => {
+    await expect(fetchDonationsForRange({}, '09-01-2026', '2026-09-02')).rejects.toThrow(/YYYY-MM-DD from/);
+    await expect(fetchDonationsForRange({}, '2026-09-08', '2026-09-01')).rejects.toThrow(/is after/);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
   });
 });

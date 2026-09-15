@@ -11,8 +11,19 @@ import { summarizeJournalEntry } from '../utils/summarizeJournalEntry';
 import DailyJeSync from '../db/models/DailyJeSync';
 import { getQboTokensForUser } from '../services/qboClient';
 import quickBookApi from '../utils/quickBookApi';
+import { fetchDonationsForRange } from '../services/donationSweep';
+import { getOrgTimeZone, runDailyDonationSync } from '../services/dailyDonationSync';
+import { generatePcToken } from './automation';
+import { chargeableFeeCents, filterStripeElectronic, groupDonationsByDay } from '../utils/mapping';
 
 const toDollars = (cents: number | string | null | undefined) => Math.round(Number(cents ?? 0)) / 100;
+
+/** Widest range the Stripe giving table will ask Planning Center for in one go. */
+const MAX_RANGE_DAYS = 92;
+
+/** Inclusive day count between two date-only strings. Pure UTC maths, no timezone involved. */
+const daysBetween = (from: string, to: string) =>
+  Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1;
 
 /**
  * The clearing account's LIVE balance from QuickBooks, including whatever the
@@ -210,5 +221,142 @@ export const getClearingStatement = async (req: Request, res: Response) => {
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Could not build the statement' });
+  }
+};
+
+/**
+ * Each day's Stripe-processed giving, straight from Planning Center, with whatever CSP has
+ * already posted for that day alongside it.
+ *
+ * This backs the Stripe page's table. It is deliberately READ-ONLY and deliberately sourced
+ * from Planning Center rather than from Stripe: CSP has no Stripe Connect grant for a church's
+ * own account, so the payouts endpoint it used to call returned nothing at all and the page sat
+ * empty. Planning Center already knows every gift Stripe processed, and its `fee_cents` is the
+ * same fee Stripe charged - so the giving side of the ledger is fully knowable without Stripe.
+ *
+ * The arithmetic is the journal entry's, so the numbers a church reads here are the numbers that
+ * will be posted:
+ *
+ *     gross   the donations, as the donor's receipt shows them
+ *     fees    what Stripe took (`chargeableFeeCents`, covered fees included)
+ *     net     what Stripe will deposit - the amount that lands in the clearing account
+ *
+ * `status` is what CSP has done about the day, not what Planning Center thinks: `posted` once a
+ * journal entry exists, `failed` if an attempt errored, and `pending` for a day that has giving
+ * but no entry yet - which is the whole point of showing unposted days here.
+ */
+export const getStripeGivingByDay = async (req: Request, res: Response) => {
+  const email = String(req.query.email ?? '');
+  const from = String(req.query.from ?? '');
+  const to = String(req.query.to ?? '');
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return res.status(400).json({ success: false, message: 'from and to must be YYYY-MM-DD' });
+  }
+  if (from > to) {
+    return res.status(400).json({ success: false, message: 'from must not be after to' });
+  }
+  // A church with years of history would otherwise ask Planning Center for all of it in one
+  // request the moment someone widens the date picker.
+  if (daysBetween(from, to) > MAX_RANGE_DAYS) {
+    return res.status(400).json({ success: false, message: `range must be ${MAX_RANGE_DAYS} days or fewer` });
+  }
+
+  try {
+    const userData = await Users.findOne({ where: { email } });
+    if (!userData) return responseSuccess(res, { days: [], unavailable: 'no_user' });
+
+    const userId = (userData.toJSON() as any).id;
+
+    let config: any;
+    try {
+      const tokenEntity = await generatePcToken(email);
+      if (!tokenEntity?.access_token) return responseSuccess(res, { days: [], unavailable: 'no_pco_token' });
+      config = { headers: { Authorization: `Bearer ${tokenEntity.access_token}` } };
+    } catch {
+      return responseSuccess(res, { days: [], unavailable: 'no_pco_token' });
+    }
+
+    // The church's own timezone decides which day a gift belongs to. Without it this page would
+    // group by UTC and disagree with the entries the nightly run actually posts.
+    const orgTimeZone = await getOrgTimeZone(config);
+    if (!orgTimeZone) return responseSuccess(res, { days: [], unavailable: 'no_org_timezone' });
+
+    const { donations } = await fetchDonationsForRange(config, from, to);
+    const stripeOnly = filterStripeElectronic(donations);
+    const byDay = groupDonationsByDay(stripeOnly, orgTimeZone);
+
+    // What CSP has already done about these days. `donationId` holds the day for daily rows.
+    const syncRows = await UserSync.findAll({
+      where: { userId, donationId: { [Op.between]: [from, to] } },
+    });
+    const postedByDay = new Map<string, any>();
+    for (const row of syncRows) {
+      const r = row.toJSON() as any;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(r.donationId))) postedByDay.set(String(r.donationId), r);
+    }
+
+    const days = Object.keys(byDay)
+      .sort()
+      .reverse()
+      .map((day) => {
+        const items = byDay[day];
+        const grossCents = items.reduce((s, d) => s + (Number(d?.attributes?.amount_cents) || 0), 0);
+        // chargeableFeeCents keeps PCO's negative sign; the ledger wants a positive debit.
+        const feeCents = Math.abs(chargeableFeeCents(items));
+        const posted = postedByDay.get(day);
+        return {
+          date: day,
+          donations: items.length,
+          gross: toDollars(grossCents),
+          fees: toDollars(feeCents),
+          net: toDollars(grossCents - feeCents),
+          status: posted?.status ?? 'pending',
+          postedGross: posted ? toDollars(posted.postedGrossCents ?? 0) : 0,
+        };
+      });
+
+    return responseSuccess(res, { days, orgTimeZone, from, to });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.log('getStripeGivingByDay ERROR:', message);
+    // Surfaced rather than swallowed: an empty table that means "Planning Center refused the
+    // query" must not look like an empty table that means "no giving that week".
+    return res.status(502).json({ success: false, message });
+  }
+};
+
+/**
+ * Post one day's Stripe giving to QuickBooks by hand.
+ *
+ * The manual counterpart to the 8am run, and deliberately the SAME engine: same window, same
+ * Stripe-electronic filter, same claim, same delta arithmetic. A day posted here is
+ * indistinguishable from one the scheduler posted, and posting a day twice is a no-op because
+ * the engine compares the day's total against what it already posted and writes only the
+ * difference.
+ */
+export const postStripeGivingDay = async (req: Request, res: Response) => {
+  const email = String(req.body?.email ?? '');
+  const day = String(req.body?.day ?? '');
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    return res.status(400).json({ success: false, message: 'day must be YYYY-MM-DD' });
+  }
+
+  try {
+    const userData = await Users.findOne({ where: { email } });
+    if (!userData) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const result = await runDailyDonationSync(userData.toJSON() as any, {
+      now: new Date(),
+      days: [day],
+      manual: true,
+    });
+
+    return responseSuccess(res, result);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.log('postStripeGivingDay ERROR:', message);
+    return res.status(502).json({ success: false, message });
   }
 };

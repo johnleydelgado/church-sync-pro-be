@@ -69,7 +69,12 @@ import {
   latestRegistrationAutomation,
 } from '../controller/automation';
 import { requireAutomationKey } from '../utils/automationAuth';
-import { getDailyJournalEntries, getClearingStatement } from '../controller/journalEntry';
+import {
+  getDailyJournalEntries,
+  getClearingStatement,
+  getStripeGivingByDay,
+  postStripeGivingDay,
+} from '../controller/journalEntry';
 const routers = Router();
 // routers.post("/start", authorized, startTask);
 routers.get('/', tesst);
@@ -112,6 +117,8 @@ routers.post(userRoutes.enableAutoSyncSetting, verifySession(), enableAutoSyncSe
 routers.get(userRoutes.getUserRelated, verifySession(), getUserRelated);
 routers.get(userRoutes.getDailyJournalEntries, verifySession(), getDailyJournalEntries);
 routers.get(userRoutes.getClearingStatement, verifySession(), getClearingStatement);
+routers.get(userRoutes.getStripeGivingByDay, verifySession(), getStripeGivingByDay);
+routers.post(userRoutes.postStripeGivingDay, verifySession(), postStripeGivingDay);
 routers.post(userRoutes.manualSync, verifySession(), manualSync);
 routers.post(userRoutes.isUserHaveTokens, verifySession(), isUserHaveTokens);
 routers.post(userRoutes.getTokenList, verifySession(), getTokenList);

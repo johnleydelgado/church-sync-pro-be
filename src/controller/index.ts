@@ -20,6 +20,21 @@ import { syncBatchToJournalEntries } from '../services/syncEngine';
 const sgMail = require('@sendgrid/mail');
 const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
 
+/**
+ * Send transactional links exactly as written.
+ *
+ * SendGrid's account-wide click tracking rewrites every URL in an email to
+ * `https://url3979.churchsyncpro.com/ls/click?upn=<300 opaque characters>` so it can count
+ * clicks. For a newsletter that is harmless; for an invitation or a password reset it is not.
+ * The recipient is being asked to trust a link that no longer shows where it goes, which is the
+ * exact shape of a phishing email - and spam filters score it that way too. The invite also
+ * carries a one-time token, so a rewritten URL is an extra hop that can break it.
+ *
+ * Disabled per message rather than on the account, so anything else the account sends keeps its
+ * tracking.
+ */
+const NO_CLICK_TRACKING = { trackingSettings: { clickTracking: { enable: false, enableText: false } } };
+
 export const sendEmailInvitation = async (req: Request, res: Response) => {
   const { name, emailTo, clientId, createdByBk, bookkeeperId } = req.body;
   const rand = crypto.randomBytes(16).toString('hex');
@@ -49,6 +64,7 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
         dynamicTemplateData: {
           inviteLink,
         },
+        ...NO_CLICK_TRACKING,
       };
       await sgMail.send(msg);
     }
@@ -85,6 +101,7 @@ export const sendPasswordReset = async (req: Request, res: Response) => {
         name: userDetails.firstName,
         gotoUrl,
       },
+      ...NO_CLICK_TRACKING,
     };
     await sgMail.send(msg);
     return responseSuccess(res, 'email sent password reset');

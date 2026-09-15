@@ -50,6 +50,8 @@ const userRoutes = {
   setStartDataAutomation: '/user/setStartDataAutomation',
   getDailyJournalEntries: '/user/getDailyJournalEntries',
   getClearingStatement: '/user/getClearingStatement',
+  getStripeGivingByDay: '/user/getStripeGivingByDay',
+  postStripeGivingDay: '/user/postStripeGivingDay',
 };
 
 export { pcRoutes, userRoutes, qboRoutes, stripeRoutes };

@@ -109,3 +109,61 @@ export const previousDay = (day: string): string => {
  */
 export const localToday = (timeZone: string, now: Date): string =>
   new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+
+/**
+ * Fetch every donation Planning Center dates to a range of local days, in one paginated sweep.
+ *
+ * Same contract as {@link fetchDonationsForDay} - date-only strings interpreted in the
+ * organisation's timezone, half-open `[from, to+1)` - but asks for the whole range at once.
+ * A day-at-a-time loop costs one round trip per day, which turns a month of history into thirty
+ * sequential requests and a page that takes half a minute to paint. Grouping into days is then
+ * done locally with `dayKey(donation, orgTimeZone)`, which agrees with the server's day by
+ * construction because both use the same timezone.
+ *
+ * Read-only. Nothing here posts; callers use it to SHOW a church what a day holds.
+ */
+export const fetchDonationsForRange = async (config: any, from: string, to: string): Promise<SweepPage> => {
+  for (const [name, value] of [['from', from], ['to', to]] as const) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new Error(`fetchDonationsForRange: expected a YYYY-MM-DD ${name}, got "${value}"`);
+    }
+  }
+  if (from > to) throw new Error(`fetchDonationsForRange: ${from} is after ${to}`);
+
+  const end = nextDay(to);
+
+  let url: string | null =
+    `${PCO_DONATIONS}?per_page=100&include=designations,designations.fund` +
+    `&where[received_at][gte]=${from}&where[received_at][lt]=${end}`;
+
+  const donations: any[] = [];
+  const included: any[] = [];
+  let pages = 0;
+
+  while (url) {
+    const res: any = await withRetry(() => axios.get(url as string, config));
+    donations.push(...((res.data?.data ?? []) as any[]));
+    included.push(...((res.data?.included ?? []) as any[]));
+    url = res.data?.links?.next ?? null;
+    pages += 1;
+    if (pages > 200) {
+      throw new Error(`fetchDonationsForRange: refusing to page past ${pages} pages for ${from}..${to}`);
+    }
+  }
+
+  // Same guard as the single-day sweep: a misspelled `where` key is ignored by PCO and returns
+  // the organisation's ENTIRE history with HTTP 200. Showing a church every gift it has ever
+  // received under the heading "last 30 days" is a lie, so refuse the result instead.
+  const outsideWindow = donations.filter((d) => {
+    const at = String(d?.attributes?.received_at ?? '').slice(0, 10);
+    return at && (at < from || at > end);
+  });
+  if (outsideWindow.length > donations.length / 2) {
+    throw new Error(
+      `fetchDonationsForRange: ${outsideWindow.length} of ${donations.length} donations fall outside ` +
+        `${from}..${to} - the date filter did not apply, refusing to use this result`,
+    );
+  }
+
+  return { donations, included };
+};

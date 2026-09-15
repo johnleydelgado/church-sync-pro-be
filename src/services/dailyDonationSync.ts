@@ -71,6 +71,14 @@ export const runDailyDonationSync = async (
      * timezone and the posting rules are identical to the nightly run.
      */
     days?: string[];
+    /**
+     * Post even when the church has auto-sync switched off.
+     *
+     * Only the manual "post this day" button sets this. The nightly run must always respect the
+     * toggle, but a person clicking Post has just asked for this day by hand, and refusing them
+     * with a silent `automation_off` would make the button look broken.
+     */
+    manual?: boolean;
   },
 ): Promise<DailySyncResult> => {
   const email = String(user.email);
@@ -78,7 +86,7 @@ export const runDailyDonationSync = async (
 
   const settings = await UserSettings.findOne({ where: { userId: user.id } });
   if (!settings) return { ...base, reason: 'no_settings' };
-  if (!settings.isAutomationEnable) return { ...base, reason: 'automation_off' };
+  if (!settings.isAutomationEnable && !opts.manual) return { ...base, reason: 'automation_off' };
 
   const settingsData = (settings.settingsData as unknown as any[]) ?? [];
   if (!settingsData.length) return { ...base, reason: 'no_fund_mapping' };
@@ -167,7 +175,7 @@ export const runDailyDonationSync = async (
 };
 
 /** The organisation's timezone, e.g. America/Denver. Null when PCO does not report one. */
-const getOrgTimeZone = async (config: any): Promise<string | null> => {
+export const getOrgTimeZone = async (config: any): Promise<string | null> => {
   const axios = (await import('axios')).default;
   try {
     const res: any = await axios.get('https://api.planningcenteronline.com/giving/v2', config);
