@@ -31,6 +31,13 @@ import { getQboTokensForUser, refreshQboToken } from '../services/qboClient';
 const { SENDGRID_API_KEY, SETTING_FUND_URL } = process.env;
 
 const sgMail = require('@sendgrid/mail');
+
+/**
+ * Send transactional links exactly as written - see the note on the same constant in
+ * controller/index.ts. Both of these emails carry a link back into the app, so a rewritten
+ * URL breaks them the same way it broke the bookkeeper invitation.
+ */
+const NO_CLICK_TRACKING = { trackingSettings: { clickTracking: { enable: false, enableText: false } } };
 sgMail.setApiKey(SENDGRID_API_KEY);
 
 // Minimal winston logger for the sync path. No existing logger module was found in the
@@ -747,6 +754,7 @@ export const checkLatestFund = async (req: Request, res: Response) => {
           fund: formattedFundList,
           name: a.firstName + ' ' + a.lastName,
         },
+        ...NO_CLICK_TRACKING,
       };
       await sgMail.send(msg);
       await EmailLog.create({ emailType: 'fund', userId });
@@ -871,6 +879,7 @@ export const checkLatestRegistration = async (req: Request, res: Response) => {
                 name: a.firstName + ' ' + a.lastName,
                 url: SETTING_FUND_URL,
               },
+              ...NO_CLICK_TRACKING,
             };
             await sgMail.send(msg);
             await EmailLog.create({ emailType: 'stripe', userId: a.id });
