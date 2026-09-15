@@ -51,6 +51,7 @@ const userRoutes = {
   getDailyJournalEntries: '/user/getDailyJournalEntries',
   getClearingStatement: '/user/getClearingStatement',
   getStripeGivingByDay: '/user/getStripeGivingByDay',
+  getStripeGivingDayDetail: '/user/getStripeGivingDayDetail',
   postStripeGivingDay: '/user/postStripeGivingDay',
 };
 

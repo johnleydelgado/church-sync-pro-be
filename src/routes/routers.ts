@@ -73,6 +73,7 @@ import {
   getDailyJournalEntries,
   getClearingStatement,
   getStripeGivingByDay,
+  getStripeGivingDayDetail,
   postStripeGivingDay,
 } from '../controller/journalEntry';
 const routers = Router();
@@ -118,6 +119,7 @@ routers.get(userRoutes.getUserRelated, verifySession(), getUserRelated);
 routers.get(userRoutes.getDailyJournalEntries, verifySession(), getDailyJournalEntries);
 routers.get(userRoutes.getClearingStatement, verifySession(), getClearingStatement);
 routers.get(userRoutes.getStripeGivingByDay, verifySession(), getStripeGivingByDay);
+routers.get(userRoutes.getStripeGivingDayDetail, verifySession(), getStripeGivingDayDetail);
 routers.post(userRoutes.postStripeGivingDay, verifySession(), postStripeGivingDay);
 routers.post(userRoutes.manualSync, verifySession(), manualSync);
 routers.post(userRoutes.isUserHaveTokens, verifySession(), isUserHaveTokens);

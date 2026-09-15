@@ -11,10 +11,15 @@ import { summarizeJournalEntry } from '../utils/summarizeJournalEntry';
 import DailyJeSync from '../db/models/DailyJeSync';
 import { getQboTokensForUser } from '../services/qboClient';
 import quickBookApi from '../utils/quickBookApi';
-import { fetchDonationsForRange } from '../services/donationSweep';
+import { fetchDonationsForDay, fetchDonationsForRange } from '../services/donationSweep';
 import { getOrgTimeZone, runDailyDonationSync } from '../services/dailyDonationSync';
 import { generatePcToken } from './automation';
-import { chargeableFeeCents, filterStripeElectronic, groupDonationsByDay } from '../utils/mapping';
+import {
+  chargeableFeeCents,
+  filterStripeElectronic,
+  groupDonationsByDay,
+  stripeGivingDayDetail,
+} from '../utils/mapping';
 
 const toDollars = (cents: number | string | null | undefined) => Math.round(Number(cents ?? 0)) / 100;
 
@@ -329,6 +334,57 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
     console.log('getStripeGivingByDay ERROR:', message);
     // Surfaced rather than swallowed: an empty table that means "Planning Center refused the
     // query" must not look like an empty table that means "no giving that week".
+    return res.status(502).json({ success: false, message });
+  }
+};
+
+/**
+ * One day's Stripe giving, gift by gift.
+ *
+ * What opens under a day on the Stripe giving page. `getStripeGivingByDay` answers how much a
+ * day raised; this answers which gifts made it up, which is the question a bookkeeper actually
+ * has when a day's total is not the number they expected - and the one they previously had to
+ * leave CSP and open Planning Center to answer.
+ *
+ * Same window, same Stripe-electronic filter and same fee arithmetic as the day totals and the
+ * posted entry, because it is the same day sweep the nightly run uses. Read-only; nothing here
+ * posts.
+ */
+export const getStripeGivingDayDetail = async (req: Request, res: Response) => {
+  const email = String(req.query.email ?? '');
+  const day = String(req.query.day ?? '');
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    return res.status(400).json({ success: false, message: 'day must be YYYY-MM-DD' });
+  }
+
+  try {
+    const userData = await Users.findOne({ where: { email } });
+    if (!userData) return responseSuccess(res, { donations: [], unavailable: 'no_user' });
+
+    let config: any;
+    try {
+      const tokenEntity = await generatePcToken(email);
+      if (!tokenEntity?.access_token) return responseSuccess(res, { donations: [], unavailable: 'no_pco_token' });
+      config = { headers: { Authorization: `Bearer ${tokenEntity.access_token}` } };
+    } catch {
+      return responseSuccess(res, { donations: [], unavailable: 'no_pco_token' });
+    }
+
+    // Planning Center resolves the date-only window in the church's own timezone, and the day
+    // list above this groups by the same zone. Guessing at UTC here would list gifts the day
+    // it expands does not count.
+    const orgTimeZone = await getOrgTimeZone(config);
+    if (!orgTimeZone) return responseSuccess(res, { donations: [], unavailable: 'no_org_timezone' });
+
+    const { donations, included } = await fetchDonationsForDay(config, day);
+
+    return responseSuccess(res, { day, orgTimeZone, ...stripeGivingDayDetail(donations, included) });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.log('getStripeGivingDayDetail ERROR:', message);
+    // Surfaced rather than swallowed, same as the day list: an empty table that means "Planning
+    // Center refused the query" must not look like one that means "no giving that day".
     return res.status(502).json({ success: false, message });
   }
 };

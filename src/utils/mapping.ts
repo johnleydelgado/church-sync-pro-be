@@ -403,6 +403,108 @@ export const donationLines = (
   return [lineFor(mappedFallback, total)];
 };
 
+/** Shown when the sweep's `included[]` does not carry the designation's fund. */
+const UNRESOLVED_FUND_NAME = 'Unknown fund';
+
+export interface DonationDesignationDetail {
+  fundName: string;
+  amount: number;
+}
+
+export interface DonationDetail {
+  id: string;
+  receivedAt: string;
+  completedAt: string | null;
+  gross: number;
+  fee: number;
+  net: number;
+  paymentMethod: string;
+  paymentMethodSub: string | null;
+  paymentStatus: string;
+  feeCovered: boolean;
+  designations: DonationDesignationDetail[];
+}
+
+export interface StripeGivingDayDetail {
+  donations: DonationDetail[];
+  totals: { gross: number; fees: number; net: number; count: number };
+}
+
+/**
+ * One day's Stripe giving, gift by gift, for a church to read.
+ *
+ * Selection and fee arithmetic are the journal entry's - `filterStripeElectronic`, then
+ * `chargeableFeeCents` - so these rows always add up to the day total shown above them and to
+ * the entry that gets posted. Reaching for anything looser here (every donation, or fees summed
+ * per row) would hand a bookkeeper two figures for the same day that disagree by design.
+ *
+ * Amounts come out in DOLLARS with fees POSITIVE, which is neither PCO's convention (cents,
+ * fees negative) nor the ledger's. It is what the table renders, and converting once here keeps
+ * the sign flip out of every caller.
+ */
+export const stripeGivingDayDetail = (donations: any[], included: any[]): StripeGivingDayDetail => {
+  const fundNames = new Map<string, string>();
+  const designations = new Map<string, { fundId?: string; amountCents: number }>();
+  for (const item of included ?? []) {
+    if (item?.type === 'Fund') fundNames.set(String(item.id), String(item.attributes?.name ?? ''));
+    if (item?.type === 'Designation') {
+      const fundId = item.relationships?.fund?.data?.id;
+      designations.set(String(item.id), {
+        fundId: fundId ? String(fundId) : undefined,
+        amountCents: Number(item.attributes?.amount_cents) || 0,
+      });
+    }
+  }
+
+  const eligible = filterStripeElectronic(donations);
+
+  const rows: DonationDetail[] = eligible.map((d: any) => {
+    const a = d?.attributes ?? {};
+    const grossCents = Number(a.amount_cents) || 0;
+    // chargeableFeeCents keeps PCO's negative sign; a reader wants the fee as a cost.
+    const feeCents = Math.abs(chargeableFeeCents([d]));
+
+    const refs = (d?.relationships?.designations?.data ?? []) as { id: string }[];
+    const split = refs
+      .map((r) => designations.get(String(r?.id)))
+      .filter((x): x is { fundId?: string; amountCents: number } => !!x)
+      .map((x) => ({
+        fundName: (x.fundId ? fundNames.get(x.fundId) : '') || UNRESOLVED_FUND_NAME,
+        amount: centsToAmount(x.amountCents),
+      }));
+
+    return {
+      id: String(d?.id ?? ''),
+      receivedAt: String(a.received_at ?? ''),
+      completedAt: a.completed_at ?? null,
+      gross: centsToAmount(grossCents),
+      fee: centsToAmount(feeCents),
+      net: centsToAmount(grossCents - feeCents),
+      paymentMethod: String(a.payment_method ?? ''),
+      paymentMethodSub: a.payment_method_sub ?? null,
+      paymentStatus: String(a.payment_status ?? ''),
+      feeCovered: a.fee_covered === true,
+      // A gift whose designations did not side-load still has to account for its whole value,
+      // or the breakdown quietly sums to less than the gift it sits under.
+      designations: split.length ? split : [{ fundName: UNRESOLVED_FUND_NAME, amount: centsToAmount(grossCents) }],
+    };
+  });
+
+  // Summed in cents, then converted once - adding the rounded dollar figures drifts.
+  const grossCents = eligible.reduce((s, d: any) => s + (Number(d?.attributes?.amount_cents) || 0), 0);
+  const feeCents = Math.abs(chargeableFeeCents(eligible));
+
+  return {
+    donations: rows,
+    totals: {
+      gross: centsToAmount(grossCents),
+      fees: centsToAmount(feeCents),
+      net: centsToAmount(grossCents - feeCents),
+      count: rows.length,
+    },
+  };
+};
+
 export interface JournalEntryOptions {
   clearingAccountRef: { value: string; name?: string };
   txnDate: string;
