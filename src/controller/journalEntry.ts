@@ -18,8 +18,15 @@ import { chargeableFeeCents, filterStripeElectronic, groupDonationsByDay } from 
 
 const toDollars = (cents: number | string | null | undefined) => Math.round(Number(cents ?? 0)) / 100;
 
-/** Widest range the Stripe giving table will ask Planning Center for in one go. */
-const MAX_RANGE_DAYS = 92;
+/**
+ * Widest range the Stripe giving table will ask Planning Center for in one go.
+ *
+ * A year covers reviewing a full giving year or backfilling one, which is the realistic outer
+ * bound for this page. The limit exists at all because the sweep is a single paginated request:
+ * a church with a decade of history would otherwise ask for all of it the moment someone dragged
+ * the date picker back, and wait minutes for a page it did not mean to open.
+ */
+const MAX_RANGE_DAYS = 366;
 
 /** Inclusive day count between two date-only strings. Pure UTC maths, no timezone involved. */
 const daysBetween = (from: string, to: string) =>
@@ -259,7 +266,7 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
   // A church with years of history would otherwise ask Planning Center for all of it in one
   // request the moment someone widens the date picker.
   if (daysBetween(from, to) > MAX_RANGE_DAYS) {
-    return res.status(400).json({ success: false, message: `range must be ${MAX_RANGE_DAYS} days or fewer` });
+    return res.status(400).json({ success: false, message: `range must be ${MAX_RANGE_DAYS} days (one year) or fewer` });
   }
 
   try {
