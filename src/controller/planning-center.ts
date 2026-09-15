@@ -13,6 +13,7 @@ import quickbookAuth from '../utils/quickbookAuth';
 import registration from '../db/models/registration';
 import { endOfMonth, endOfYear, format, parseISO, startOfMonth, startOfYear, subDays, subMonths } from 'date-fns';
 import { withRetry } from '../utils/httpRetry';
+import { createLogger } from '../utils/logger';
 
 const BASE_URL = 'https://api.planningcenteronline.com/giving/v2';
 
@@ -31,6 +32,9 @@ type dateRangeProps =
   | '2019'
   | '2018'
   | 'Custom';
+
+
+const logger = createLogger('planning-center');
 
 export const isAccessTokenValidPCO = async ({ accessToken }: { accessToken: string }) => {
   const config = {
@@ -403,6 +407,20 @@ export const getBatches = async (req: Request, res: Response) => {
 //   }
 // };
 
+/**
+ * A fund Planning Center still considers live.
+ *
+ * `visibility` is one of `everywhere`, `admin_only`, `nowhere` or `hidden`. The first two are
+ * both in use - `admin_only` simply keeps a fund off Church Center while staff can still record
+ * gifts against it - so both belong on the mapping page. `nowhere` and `hidden` are retired
+ * funds; listing them makes a church map accounts for giving that can no longer happen, and the
+ * Save button refuses to submit until EVERY fund on the page is mapped.
+ */
+const isLiveFund = (fund: any): boolean => {
+  const visibility = String(fund?.attributes?.visibility ?? '').toLowerCase();
+  return visibility !== 'nowhere' && visibility !== 'hidden';
+};
+
 export const getFunds = async (req: Request, res: Response) => {
   const { email } = req.query;
 
@@ -410,17 +428,28 @@ export const getFunds = async (req: Request, res: Response) => {
     const tokenEntity = await generatePcToken(email as string);
     const { access_token } = tokenEntity;
     if (access_token) {
-      const config = {
-        method: 'get',
-        url: 'https://api.planningcenteronline.com/giving/v2/funds',
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-        },
-      };
+      const headers = { Authorization: `Bearer ${access_token}` };
 
-      const response = await axios(config);
-      const data = response.data.data;
-      return responseSuccess(res, data);
+      // Paginate. PCO defaults to 25 per page, so a church with more funds than that silently
+      // lost the rest - and a fund missing from this list can never be mapped, which means its
+      // giving never reaches QuickBooks.
+      let url: string | null = 'https://api.planningcenteronline.com/giving/v2/funds?per_page=100';
+      const funds: any[] = [];
+      while (url) {
+        const response: any = await withRetry(() => axios.get(url as string, { headers }));
+        funds.push(...((response.data?.data ?? []) as any[]));
+        url = response.data?.links?.next ?? null;
+      }
+
+      const live = funds.filter(isLiveFund);
+      if (live.length !== funds.length) {
+        logger.info('getFunds: excluded retired funds', {
+          email: String(email),
+          excluded: funds.length - live.length,
+          kept: live.length,
+        });
+      }
+      return responseSuccess(res, live);
     }
     return responseError({ res, code: 500, data: 'not found !' });
   } catch (e) {
