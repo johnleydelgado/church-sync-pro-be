@@ -12,7 +12,7 @@ import DailyJeSync from '../db/models/DailyJeSync';
 import { getQboTokensForUser } from '../services/qboClient';
 import quickBookApi from '../utils/quickBookApi';
 import { fetchDonationsForDay, fetchDonationsForRange } from '../services/donationSweep';
-import { getOrgTimeZone, runDailyDonationSync } from '../services/dailyDonationSync';
+import { getOrgTimeZone, parseSyncStartDay, runDailyDonationSync } from '../services/dailyDonationSync';
 import { generatePcToken } from './automation';
 import {
   chargeableFeeCents,
@@ -294,6 +294,13 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
     const orgTimeZone = await getOrgTimeZone(config);
     if (!orgTimeZone) return responseSuccess(res, { days: [], unavailable: 'no_org_timezone' });
 
+    // The church's sync start date - everything before it is giving they have decided not to
+    // bring across. The nightly run already stops there; returning it lets the page say so
+    // instead of listing a month of history as work still outstanding.
+    // parseSyncStartDay returns null for an unset or unparseable value, which means no cutoff.
+    const settings = await UserSettings.findOne({ where: { userId } });
+    const syncStartDay = parseSyncStartDay(settings?.startDateAutomationFund);
+
     const { donations } = await fetchDonationsForRange(config, from, to);
     const stripeOnly = filterStripeElectronic(donations);
     const byDay = groupDonationsByDay(stripeOnly, orgTimeZone);
@@ -328,7 +335,7 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
         };
       });
 
-    return responseSuccess(res, { days, orgTimeZone, from, to });
+    return responseSuccess(res, { days, orgTimeZone, syncStartDay, from, to });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.log('getStripeGivingByDay ERROR:', message);

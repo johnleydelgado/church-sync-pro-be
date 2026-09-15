@@ -162,14 +162,16 @@ export const setStartDataAutomation = async (req: Request, res: Response) => {
       if (type === 'donation') {
         await UserSettings.create({
           userId: user.id,
-          startDateAutomationFund: String(date) /* your new start date value for fund automation */,
-          // Include other default or necessary fields for a new UserSettings record
+          startDateAutomationFund: String(date),
+          // isAutomationEnable is NOT NULL with no database default, so omitting it made the
+          // very first start-date save for a church throw into the 400 handler below.
+          isAutomationEnable: false,
         });
       } else if (type === 'registration') {
         await UserSettings.create({
           userId: user.id,
-          startDateAutomationRegistration: String(date) /* your new start date value for registration automation */,
-          // Include other default or necessary fields for a new UserSettings record
+          startDateAutomationRegistration: String(date),
+          isAutomationEnable: false,
         });
       } else {
         return responseError({ res, code: 400, data: 'Invalid type' });
