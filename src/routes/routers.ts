@@ -75,7 +75,7 @@ import {
   getStripeGivingByDay,
   getStripeGivingDayDetail,
   postStripeGivingDay,
-  markTransitionTruedUp
+  markTransitionTruedUp,
 } from '../controller/journalEntry';
 const routers = Router();
 // routers.post("/start", authorized, startTask);
