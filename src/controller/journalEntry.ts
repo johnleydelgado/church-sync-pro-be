@@ -12,6 +12,7 @@ import DailyJeSync from '../db/models/DailyJeSync';
 import { fetchDonationsForDay, fetchDonationsForRange } from '../services/donationSweep';
 import { getOrgTimeZone, parseSyncStartDay, runDailyDonationSync } from '../services/dailyDonationSync';
 import { netCentsOf, readQboClearingBalance } from '../services/clearingSnapshot';
+import { transitionFigures } from '../utils/transition';
 import { generatePcToken } from './automation';
 import {
   chargeableFeeCents,
@@ -195,6 +196,38 @@ export const getClearingStatement = async (req: Request, res: Response) => {
     const closingCents = running;
     const qboBalance = await readQboClearingBalance(email, clearingAccount?.value);
 
+    // The switch-over, for a church that went live mid-period. Null when no go-live date is
+    // set. Figures are null - never zero - when either input is missing, because a zero here
+    // reads as "nothing to true up" and would be a lie.
+    const goLiveDay = parseSyncStartDay(settings?.startDateAutomationFund);
+    let transition: any = null;
+    if (goLiveDay) {
+      const s: any = settings;
+      const postedSinceGoLiveCents = rows
+        .filter((r: any) => String(r.day) >= goLiveDay)
+        .reduce((sum: number, r: any) => sum + netOf(r), 0);
+      const snapshotCents = s?.clearingBalanceAtGoLiveCents == null ? null : Number(s.clearingBalanceAtGoLiveCents);
+      const figures =
+        qboBalance !== null && snapshotCents !== null
+          ? transitionFigures({
+              balanceAtGoLiveCents: snapshotCents,
+              postedSinceGoLiveCents,
+              qboBalanceCents: Math.round(qboBalance * 100),
+            })
+          : null;
+      transition = {
+        goLiveDay,
+        balanceAtGoLive: snapshotCents === null ? null : toDollars(snapshotCents),
+        snapshotAt: s?.clearingSnapshotAt ?? null,
+        postedSinceGoLive: toDollars(postedSinceGoLiveCents),
+        qboBalance,
+        released: figures ? toDollars(figures.releasedCents) : null,
+        inTransit: figures ? toDollars(figures.inTransitCents) : null,
+        trueUp: figures ? toDollars(figures.trueUpCents) : null,
+        truedUpAt: s?.transitionTruedUpAt ?? null,
+      };
+    }
+
     return responseSuccess(res, {
       month,
       clearingAccount: clearingAccount ? { value: clearingAccount.value, name: clearingAccount.label } : null,
@@ -205,6 +238,7 @@ export const getClearingStatement = async (req: Request, res: Response) => {
       qboBalance,
       // Positive = deposits the accountant has already reconciled out of clearing.
       difference: qboBalance === null ? null : Math.round((toDollars(closingCents) - qboBalance) * 100) / 100,
+      transition,
       generatedAt: new Date().toISOString(),
     });
   } catch (e) {
