@@ -14,6 +14,7 @@ import User from '../db/models/user';
 import { uploadImage } from '../utils/storage';
 import userEmailPreferences from '../db/models/userEmailPreferences';
 import Billing from '../db/models/billing';
+import { captureClearingSnapshot } from '../services/clearingSnapshot';
 
 export const updateUser = async (req: Request, res: Response) => {
   const data = req.body;
@@ -145,8 +146,9 @@ export const setStartDataAutomation = async (req: Request, res: Response) => {
     if (userSettings) {
       // User settings exist, update based on the type
       if (type === 'donation') {
-        const [numberOfAffectedRows] = await UserSettings.update(
-          { startDateAutomationFund: String(date) },
+        // A new go-live date re-opens the transition: whatever was trued up was for the old date.
+        await UserSettings.update(
+          { startDateAutomationFund: String(date), transitionTruedUpAt: null },
           { where: { userId: user.id } },
         );
       } else if (type === 'registration') {
@@ -175,6 +177,17 @@ export const setStartDataAutomation = async (req: Request, res: Response) => {
         });
       } else {
         return responseError({ res, code: 400, data: 'Invalid type' });
+      }
+    }
+
+    if (type === 'donation') {
+      // What the clearing account holds right now, net of CSP's postings, is the baseline the
+      // transition panel measures from. Best effort: QuickBooks being unreachable must not stop
+      // the date from saving - the panel reports "not captured" and the church can re-save.
+      try {
+        await captureClearingSnapshot(String(email), user.id);
+      } catch (e) {
+        console.error('captureClearingSnapshot failed', e instanceof Error ? e.message : e);
       }
     }
 

@@ -11,7 +11,7 @@ import { summarizeJournalEntry } from '../utils/summarizeJournalEntry';
 import DailyJeSync from '../db/models/DailyJeSync';
 import { fetchDonationsForDay, fetchDonationsForRange } from '../services/donationSweep';
 import { getOrgTimeZone, parseSyncStartDay, runDailyDonationSync } from '../services/dailyDonationSync';
-import { captureClearingSnapshot, netCentsOf, readQboClearingBalance } from '../services/clearingSnapshot';
+import { netCentsOf, readQboClearingBalance } from '../services/clearingSnapshot';
 import { generatePcToken } from './automation';
 import {
   chargeableFeeCents,
