@@ -14,6 +14,9 @@ export interface UserSettingsAttributes {
   userId?: number;
   startDateAutomationFund?: string;
   startDateAutomationRegistration?: string;
+  clearingBalanceAtGoLiveCents?: number | null;
+  clearingSnapshotAt?: Date | null;
+  transitionTruedUpAt?: Date | null;
 }
 
 class UserSettings extends Model<UserSettingsAttributes> implements UserSettingsAttributes {
@@ -27,6 +30,9 @@ class UserSettings extends Model<UserSettingsAttributes> implements UserSettings
   public userId!: number;
   public startDateAutomationFund!: string;
   public startDateAutomationRegistration!: string;
+  public clearingBalanceAtGoLiveCents!: number | null;
+  public clearingSnapshotAt!: Date | null;
+  public transitionTruedUpAt!: Date | null;
 
   public readonly user?: User; // Define the association property
 
@@ -76,6 +82,9 @@ UserSettings.init(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    clearingBalanceAtGoLiveCents: { type: DataTypes.BIGINT, allowNull: true },
+    clearingSnapshotAt: { type: DataTypes.DATE, allowNull: true },
+    transitionTruedUpAt: { type: DataTypes.DATE, allowNull: true },
   },
   {
     sequelize,
