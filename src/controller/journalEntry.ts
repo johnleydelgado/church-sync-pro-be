@@ -9,10 +9,9 @@ import SyncRun from '../db/models/SyncRun';
 import { responseSuccess } from '../utils/response';
 import { summarizeJournalEntry } from '../utils/summarizeJournalEntry';
 import DailyJeSync from '../db/models/DailyJeSync';
-import { getQboTokensForUser } from '../services/qboClient';
-import quickBookApi from '../utils/quickBookApi';
 import { fetchDonationsForDay, fetchDonationsForRange } from '../services/donationSweep';
 import { getOrgTimeZone, parseSyncStartDay, runDailyDonationSync } from '../services/dailyDonationSync';
+import { captureClearingSnapshot, netCentsOf, readQboClearingBalance } from '../services/clearingSnapshot';
 import { generatePcToken } from './automation';
 import {
   chargeableFeeCents,
@@ -36,27 +35,6 @@ const MAX_RANGE_DAYS = 366;
 /** Inclusive day count between two date-only strings. Pure UTC maths, no timezone involved. */
 const daysBetween = (from: string, to: string) =>
   Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1;
-
-/**
- * The clearing account's LIVE balance from QuickBooks, including whatever the
- * accountant has cleared against bank deposits. CSP only ever sees what it adds,
- * so a running sum of its own entries grows forever and stops meaning anything
- * once reconciliation starts. Returns null if the account can't be read, and the
- * caller says so rather than showing a wrong number.
- */
-const readQboClearingBalance = async (email: string, accountId: string | undefined): Promise<number | null> => {
-  if (!accountId) return null;
-  try {
-    const qb: any = quickBookApi(await getQboTokensForUser(email));
-    const account: any = await new Promise((resolve, reject) =>
-      qb.getAccount(accountId, (err: any, data: any) => (err ? reject(err) : resolve(data))),
-    );
-    const bal = Number(account?.CurrentBalance);
-    return Number.isFinite(bal) ? bal : null;
-  } catch {
-    return null;
-  }
-};
 
 // Match day-keyed donationId rows (YYYY-MM-DD ...); legacy deposit-id rows are ignored.
 const DAY_ID_PATTERN = '____-__-__%';
@@ -184,9 +162,7 @@ export const getClearingStatement = async (req: Request, res: Response) => {
     const rows = await DailyJeSync.findAll({ where: { userId: user.id }, order: [['day', 'ASC']] });
     const monthStart = `${month}-01`;
     const monthEnd = `${month}-31`;
-    const netOf = (r: any) =>
-      Number(r.postedGrossCents ?? 0) - Number(r.postedFeeCents ?? 0)
-      - (Number(r.refundedGrossCents ?? 0) - Number(r.refundedFeeCents ?? 0));
+    const netOf = netCentsOf;
 
     const before = rows.filter((r: any) => r.day < monthStart);
     const within = rows.filter((r: any) => r.day >= monthStart && r.day <= monthEnd);
