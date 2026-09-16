@@ -440,3 +440,20 @@ export const postStripeGivingDay = async (req: Request, res: Response) => {
     return res.status(502).json({ success: false, message });
   }
 };
+
+/**
+ * The church has made its one-time adjusting entry. The transition panel retires itself;
+ * saving a new go-live date re-opens it (see setStartDataAutomation).
+ */
+export const markTransitionTruedUp = async (req: Request, res: Response) => {
+  const email = String(req.body?.email ?? '');
+  try {
+    const user = await Users.findOne({ where: { email } });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    const truedUpAt = new Date();
+    await UserSettings.update({ transitionTruedUpAt: truedUpAt }, { where: { userId: user.id } });
+    return responseSuccess(res, { truedUpAt });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Could not record the true-up' });
+  }
+};

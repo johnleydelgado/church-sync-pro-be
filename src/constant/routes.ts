@@ -53,6 +53,7 @@ const userRoutes = {
   getStripeGivingByDay: '/user/getStripeGivingByDay',
   getStripeGivingDayDetail: '/user/getStripeGivingDayDetail',
   postStripeGivingDay: '/user/postStripeGivingDay',
+  markTransitionTruedUp: '/user/markTransitionTruedUp',
 };
 
 export { pcRoutes, userRoutes, qboRoutes, stripeRoutes };

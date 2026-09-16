@@ -75,6 +75,7 @@ import {
   getStripeGivingByDay,
   getStripeGivingDayDetail,
   postStripeGivingDay,
+  markTransitionTruedUp
 } from '../controller/journalEntry';
 const routers = Router();
 // routers.post("/start", authorized, startTask);
@@ -121,6 +122,7 @@ routers.get(userRoutes.getClearingStatement, verifySession(), getClearingStateme
 routers.get(userRoutes.getStripeGivingByDay, verifySession(), getStripeGivingByDay);
 routers.get(userRoutes.getStripeGivingDayDetail, verifySession(), getStripeGivingDayDetail);
 routers.post(userRoutes.postStripeGivingDay, verifySession(), postStripeGivingDay);
+routers.post(userRoutes.markTransitionTruedUp, verifySession(), markTransitionTruedUp);
 routers.post(userRoutes.manualSync, verifySession(), manualSync);
 routers.post(userRoutes.isUserHaveTokens, verifySession(), isUserHaveTokens);
 routers.post(userRoutes.getTokenList, verifySession(), getTokenList);

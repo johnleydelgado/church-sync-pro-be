@@ -113,3 +113,23 @@ describe('getClearingStatement: transition block', () => {
     expect(new Date(d.transition.truedUpAt).toISOString()).toBe(at.toISOString());
   });
 });
+
+import { markTransitionTruedUp } from '../journalEntry';
+
+describe('markTransitionTruedUp', () => {
+  test('stamps the settings row and returns the timestamp', async () => {
+    users.findOne.mockResolvedValue({ id: 1 });
+    settings.update.mockResolvedValue([1]);
+    const res = makeRes();
+    await markTransitionTruedUp({ body: { email: 'a@b.test' } } as any, res);
+    expect(settings.update).toHaveBeenCalledWith({ transitionTruedUpAt: expect.any(Date) }, { where: { userId: 1 } });
+    expect(res.json.mock.calls[0][0].data.truedUpAt).toBeTruthy();
+  });
+
+  test('404 for an unknown email', async () => {
+    users.findOne.mockResolvedValue(null);
+    const res = makeRes();
+    await markTransitionTruedUp({ body: { email: 'nobody@b.test' } } as any, res);
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+});
