@@ -24,7 +24,27 @@ yarn db:migrate:undo         # undo last
 yarn db:migrate:undo:all     # undo all
 ```
 
-No test suite exists. Node version is pinned to **v18.13.0** (`.nvmrc`), though the deploy image (`DockerfileBE`) still uses `node:14-slim` — prefer matching `.nvmrc` locally.
+There IS a test suite (the "no test suite" note here was stale): `npx jest` runs the unit
+suites — 195 tests / 29 suites as of 2026-09-18. Read the **`Test Suites:`** line, not just
+`Tests:` — a suite that fails to LOAD reports 0 tests while the others still read green.
+
+Integration tests are a separate config and are EXCLUDED from `npx jest`
+(`testPathIgnorePatterns`). They need a real Postgres, in a container that does not restart
+itself after a reboot, so a green `npx jest` proves nothing about them:
+
+```bash
+docker start csp-test-pg   # or the docker run in jest.integration.config.js the first time
+npx sequelize-cli db:migrate --url postgres://admin:1234@127.0.0.1:55433/csp_test \
+  --migrations-path src/db/migrations
+npm run test:integration   # 33 tests: the sync engine against real Postgres, PCO+QBO faked
+```
+
+If every integration test fails at once, check the container before the code — a stopped
+`csp-test-pg` fails all 33 with `SequelizeConnectionRefusedError ... 55433`. A fresh worktree
+also needs `src/db/config/config.json` copied in; it is gitignored, and without it every suite
+fails to load with `Cannot find module './config/config.json'`.
+
+Node version is pinned to **v18.13.0** (`.nvmrc`), though the deploy image (`DockerfileBE`) still uses `node:14-slim` — prefer matching `.nvmrc` locally.
 
 ### Local dependencies (Postgres + SuperTokens core)
 
@@ -125,6 +145,13 @@ Three things about the day window are load-bearing, each established against the
 - **No `filter=succeeded`.** Its meaning is undocumented and unverifiable, an unknown `filter=`
   value returns 200 with every row, and if the scope also excludes refunded donations it would
   starve the refund pass in silence. `isStripeElectronic` stays the authority.
+
+**`isStripeInTransit` is its sibling, and is never posted.** Same payment-method test, but
+`payment_status === 'pending'` and not refunded: giving Stripe has accepted and not finished.
+It exists only so `getStripeGivingByDay` can TELL a church what is still coming
+(`inTransit` / `inTransitGross`); it must never feed a journal entry, because the money has
+not arrived and the clearing account could never clear it. A refunded pending gift is a
+cancellation, not money in transit, so it is excluded.
 
 The claim scope is `daily:<YYYY-MM-DD>`, so the existing unique index on
 (userId, batchId, donationId) gives one row per church per day. It is keyed on `received_at`,
