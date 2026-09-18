@@ -17,6 +17,7 @@ import { generatePcToken } from './automation';
 import {
   chargeableFeeCents,
   filterStripeElectronic,
+  filterStripeInTransit,
   groupDonationsByDay,
   stripeGivingDayDetail,
 } from '../utils/mapping';
@@ -315,6 +316,11 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
     const stripeOnly = filterStripeElectronic(donations);
     const byDay = groupDonationsByDay(stripeOnly, orgTimeZone);
 
+    // Gifts Stripe has not finished processing - ACH, mostly. They stay out of the totals and
+    // out of the entry until they settle, but a Posted day that silently omits them looks
+    // complete when it is not. Reported separately so the page can say "3 in transit".
+    const inTransitByDay = groupDonationsByDay(filterStripeInTransit(donations), orgTimeZone);
+
     // What CSP has already done about these days. `donationId` holds the day for daily rows.
     const syncRows = await UserSync.findAll({
       where: { userId, donationId: { [Op.between]: [from, to] } },
@@ -325,14 +331,19 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
       if (/^\d{4}-\d{2}-\d{2}$/.test(String(r.donationId))) postedByDay.set(String(r.donationId), r);
     }
 
-    const days = Object.keys(byDay)
+    // A day whose only gifts are still in transit has nothing to post yet, but it is not
+    // nothing: the church gave that day and the money is coming. List it.
+    const dayKeys = new Set([...Object.keys(byDay), ...Object.keys(inTransitByDay)]);
+    const days = [...dayKeys]
       .sort()
       .reverse()
       .map((day) => {
-        const items = byDay[day];
+        const items = byDay[day] ?? [];
+        const waiting = inTransitByDay[day] ?? [];
         const grossCents = items.reduce((s, d) => s + (Number(d?.attributes?.amount_cents) || 0), 0);
         // chargeableFeeCents keeps PCO's negative sign; the ledger wants a positive debit.
         const feeCents = Math.abs(chargeableFeeCents(items));
+        const inTransitCents = waiting.reduce((s, d) => s + (Number(d?.attributes?.amount_cents) || 0), 0);
         const posted = postedByDay.get(day);
         return {
           date: day,
@@ -342,6 +353,8 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
           net: toDollars(grossCents - feeCents),
           status: posted?.status ?? 'pending',
           postedGross: posted ? toDollars(posted.postedGrossCents ?? 0) : 0,
+          inTransit: waiting.length,
+          inTransitGross: toDollars(inTransitCents),
         };
       });
 
