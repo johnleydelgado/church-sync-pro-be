@@ -15,6 +15,9 @@ import { uploadImage } from '../utils/storage';
 import userEmailPreferences from '../db/models/userEmailPreferences';
 import Billing from '../db/models/billing';
 import { captureClearingSnapshot } from '../services/clearingSnapshot';
+import { markEmailVerified } from '../services/emailVerification';
+import crypto from 'crypto';
+const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
 
 export const updateUser = async (req: Request, res: Response) => {
   const data = req.body;
@@ -493,7 +496,7 @@ export const bookkeeperList = async (req: Request, res: Response) => {
 };
 
 export const updateInvitationStatus = async (req: Request, res: Response) => {
-  const { email, bookkeeperId, invitationToken } = req.body;
+  const { email, invitationToken } = req.body;
 
   try {
     // This runs before the invitee has a session, so the invitation token IS the
@@ -503,19 +506,80 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
       return responseError({ res, code: 401, message: 'Invitation token required' });
     }
 
-    const updateData = { inviteAccepted: true };
-    if (bookkeeperId) {
-      updateData['userId'] = bookkeeperId;
+    const invite = await bookkeeper.findOne({ where: { email, invitationToken } });
+    if (!invite) {
+      return responseError({ res, code: 400, message: 'Error in invitation' });
+    }
+
+    // The token was mailed to this address, so accepting it proves the inbox is theirs -
+    // the same proof a verification link gives. Otherwise REQUIRED mode would stop the
+    // invitee at "check your inbox" for a mail that was never sent.
+    await markEmailVerified(email);
+
+    // Derive the user from the email rather than trusting an id from the body.
+    const user = await Users.findOne({ where: { email } });
+    const updateData: { inviteAccepted: boolean; userId?: number } = { inviteAccepted: true };
+    if (user) {
+      updateData.userId = user.id;
     }
 
     const bookkeeperData = await bookkeeper.update(updateData, { where: { email, invitationToken } });
-
-    if (bookkeeperData) {
-      return responseSuccess(res, bookkeeperData);
-    }
-    return responseError({ res, code: 400, message: 'Error in invitation' });
+    return responseSuccess(res, bookkeeperData);
   } catch (e) {
     return responseError({ res, code: 400, message: e });
+  }
+};
+
+/**
+ * A bookkeeper adding a church from the Clients page. Done here with the backend SDK
+ * rather than the browser sign-up API because that API would replace the bookkeeper's
+ * session with the new client's. The address is synthetic (nobody reads it) and the
+ * password random (nobody is meant to log in as it): the bookkeeper works on the
+ * church through their own login.
+ */
+export const createClientChurch = async (req: Request, res: Response) => {
+  const { churchName, bookkeeperId } = req.body;
+  try {
+    if (!churchName || typeof churchName !== 'string' || !churchName.trim()) {
+      return responseError({ res, code: 400, message: 'Church name is required' });
+    }
+    const bk = await Users.findOne({ where: { id: bookkeeperId } });
+    if (!bk) {
+      return responseError({ res, code: 400, message: 'Bookkeeper not found' });
+    }
+
+    const email = `${churchName.trim().toLowerCase().replace(/ /g, '-')}-${bk.email}`;
+    const password = crypto.randomBytes(24).toString('base64url');
+
+    const signUp = await ThirdPartyEmailPassword.emailPasswordSignUp(email, password);
+    if (signUp.status === 'EMAIL_ALREADY_EXISTS_ERROR') {
+      return responseError({ res, code: 409, message: 'A church with this name already exists' });
+    }
+
+    const client = await Users.create({
+      email,
+      churchName: churchName.trim(),
+      firstName: 'N/A',
+      lastName: 'N/A',
+      role: 'client',
+      isSubscribe: '0',
+      isActive: true,
+    } as any);
+
+    // Same row sendEmailInvitation writes on its createdByBk branch.
+    await bookkeeper.create({
+      email,
+      inviteSent: true,
+      invitationToken: crypto.randomBytes(16).toString('hex'),
+      inviteAccepted: true,
+      clientId: client.id,
+      userId: bk.id,
+      bookkeeperIntegrationAccessEnabled: false,
+    } as any);
+
+    return responseSuccess(res, { clientId: client.id, email });
+  } catch (e) {
+    return responseError({ res, code: 500, message: e?.message ?? e });
   }
 };
 

@@ -26,6 +26,7 @@ import {
   addUpdateBilling,
   bookkeeperList,
   checkValidInvitation,
+  createClientChurch,
   createSettings,
   createUser,
   crudUserEmailPreferences,
@@ -112,6 +113,7 @@ routers.post(qboRoutes.findCustomer, verifySession(), findCustomer);
 
 routers.post(userRoutes.updateUser, verifySession(), updateUser);
 routers.post(userRoutes.createUser, verifySession(), createUser);
+routers.post(userRoutes.createClientChurch, verifySession(), createClientChurch);
 routers.post(userRoutes.addTokenInUser, verifySession(), addTokenInUser);
 routers.post(userRoutes.createSettings, verifySession(), createSettings);
 routers.post(userRoutes.updateRegisterSettings, verifySession(), updateRegisterSettings);
