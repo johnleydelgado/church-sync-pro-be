@@ -247,6 +247,25 @@ export const wasStripeElectronic = (donation: any): boolean => stripeElectronic(
 export const filterStripeElectronic = (donations: any[]): any[] => (donations ?? []).filter(isStripeElectronic);
 
 /**
+ * Giving Stripe has accepted but not yet completed - an ACH gift inside its settlement window.
+ *
+ * Deliberately NOT posted (see `stripeElectronic`: the money has not arrived), but the church
+ * has to be able to see it. Without this, a day that reads "Posted" looks finished while
+ * hundreds of dollars are still on their way to it, and the only way to find out is to add
+ * the day up by hand in Planning Center. Refunded gifts are excluded: a refund of a pending
+ * gift is a cancellation, not money in transit.
+ */
+export const isStripeInTransit = (donation: any): boolean => {
+  const a = donation?.attributes ?? {};
+  const method = (a.payment_method ?? '').toLowerCase();
+  if (!STRIPE_ELECTRONIC_METHODS.includes(method)) return false;
+  if (a.refunded === true) return false;
+  return (a.payment_status ?? '').toLowerCase() === 'pending';
+};
+
+export const filterStripeInTransit = (donations: any[]): any[] => (donations ?? []).filter(isStripeInTransit);
+
+/**
  * The calendar day a donation belongs to, in the CHURCH's timezone.
  *
  * PCO stores `received_at` in UTC. Slicing the ISO string directly puts an
