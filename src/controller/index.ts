@@ -40,7 +40,8 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
   const rand = crypto.randomBytes(16).toString('hex');
 
   sgMail.setApiKey(SENDGRID_API_KEY);
-  const inviteLink = INVITATION_URL + `?bookkeeperEmail=${emailTo}&invitationToken=${rand}`;
+  // Encoded: a '+' in the address would otherwise be read back as a space by the page.
+  const inviteLink = INVITATION_URL + `?bookkeeperEmail=${encodeURIComponent(emailTo)}&invitationToken=${rand}`;
 
   try {
     // Create bookkeeper in the database
@@ -80,7 +81,7 @@ export const sendPasswordReset = async (req: Request, res: Response) => {
   const rand = crypto.randomBytes(16).toString('hex');
 
   sgMail.setApiKey(SENDGRID_API_KEY);
-  const gotoUrl = RESET_PASSWORD_URL + `?email=${email}&token=${rand}`;
+  const gotoUrl = RESET_PASSWORD_URL + `?email=${encodeURIComponent(email)}&token=${rand}`;
   // const htmlFile = await fs.promises.readFile('src/template/msg.html', 'utf-8');
 
   try {
