@@ -40,10 +40,10 @@ browser() {
   ego-browser nodejs < scripts/staging-e2e/browser.mjs
 }
 record() { # name, ok(true/false), detail
-  python3 - "$STATE" "$1" "$2" "$3" <<'PY'
+  python3 - "$STATE" "$STAGE" "$1" "$2" "$3" <<'PY'
 import json, sys
-p, name, ok, detail = sys.argv[1:]
-s = json.load(open(p)); s['results'].append({'phase': 'helper', 'name': name, 'ok': ok == 'true', 'detail': detail}); json.dump(s, open(p, 'w'), indent=2)
+p, stage, name, ok, detail = sys.argv[1:]
+s = json.load(open(p)); s['results'].append({'phase': stage, 'name': name, 'ok': ok == 'true', 'detail': detail}); json.dump(s, open(p, 'w'), indent=2)
 print(('PASS' if ok == 'true' else 'FAIL') + '  ' + name + ('  (' + detail + ')' if detail else ''))
 PY
 }
@@ -75,13 +75,22 @@ cat > "$STATE" <<EOF
 EOF
 elif [[ "$(state_get run)" != "$RUN" ]]; then
   echo "no state for run $RUN to resume from (found $(state_get run))"; exit 2
+else
+  # Re-running stages from $FROM: drop their earlier results so the table is not doubled.
+  python3 - "$STATE" "$FROM" <<'PY'
+import json, sys
+p, f = sys.argv[1:]
+s = json.load(open(p)); s['results'] = [r for r in s['results'] if r['phase'] < f]; s.pop('phase', None); json.dump(s, open(p, 'w'), indent=2)
+PY
 fi
 echo "Run $RUN — accounts: $(state_get client), $(state_get bk), $(state_get invitee)"
 echo "Watch it in Ego Lite: task space \"CSP staging E2E $RUN\""
 
+STAGE=A
 stage A && browser A
 
 if stage B; then
+STAGE=B
 CLIENT_MINT=$(helper mint "$(state_get client)")
 state_set clientLink "$(python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1])['link']))" "$CLIENT_MINT")"
 record "verification token minted for the client (same link the email carries)" "$(python3 -c "import json,sys; print(str(bool(json.loads(sys.argv[1]).get('link'))).lower())" "$CLIENT_MINT")" ""
@@ -90,6 +99,7 @@ browser B
 fi
 
 if stage C; then
+STAGE=C
 BK_MINT=$(helper mint "$(state_get bk)")
 state_set bkLink "$(python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1])['link']))" "$BK_MINT")"
 
@@ -102,6 +112,7 @@ record "Clients page wrote a client row linked to the bookkeeper" \
 fi
 
 if stage D; then
+STAGE=D
 browser D
 
 INVITE=$(helper invite-link "$(state_get invitee)")
@@ -112,6 +123,7 @@ record "invitation row exists with a token, not yet accepted" \
 fi
 
 if stage E; then
+STAGE=E
 browser E
 
 INVITEE=$(helper invitee-row "$(state_get invitee)")

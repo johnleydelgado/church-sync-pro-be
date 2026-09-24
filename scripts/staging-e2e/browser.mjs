@@ -109,8 +109,9 @@ try {
       break;
     }
     case "B": {
-      const v = await openVerifyLink(st.clientLink);
-      check("verification link confirms the client", /Email confirmed/.test(v));
+      // A resumed run re-mints for an already-verified account and gets no link back.
+      const v = st.clientLink ? await openVerifyLink(st.clientLink) : null;
+      check("verification link confirms the client", v === null || /Email confirmed/.test(v), v === null ? "already verified (resumed run)" : "");
       const l = await login(st.client);
       check("verified client lands in the app", l.path === "/quick-start-guide", l.path);
       check("app token is 'client'", l.token === "client", String(l.token));
@@ -120,8 +121,8 @@ try {
       break;
     }
     case "C": {
-      const v = await openVerifyLink(st.bkLink);
-      check("verification link confirms the bookkeeper", /Email confirmed/.test(v));
+      const v = st.bkLink ? await openVerifyLink(st.bkLink) : null;
+      check("verification link confirms the bookkeeper", v === null || /Email confirmed/.test(v), v === null ? "already verified (resumed run)" : "");
       const l = await login(st.bk);
       check("verified bookkeeper lands in the app", l.path === "/quick-start-guide", l.path);
       check("app token is 'bookkeeper'", l.token === "bookkeeper", String(l.token));
