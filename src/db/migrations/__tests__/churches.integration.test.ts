@@ -63,7 +63,7 @@ const churchesOf = () => q(`SELECT id, name, "ownerUserId", "isActive" FROM "Chu
 const membersOf = () =>
   q(`SELECT m."churchId", m."userId", m.role, m."integrationAccessEnabled", m."invitedEmail", m."invitationToken", m."inviteAccepted"
      FROM "ChurchMembers" m JOIN "Churches" c ON c.id = m."churchId"
-     WHERE c."ownerUserId" IN (${IDS}) ORDER BY c."ownerUserId", m.role, m."userId" NULLS LAST`);
+     WHERE c."ownerUserId" IN (${IDS}) ORDER BY c."ownerUserId", m.role::text, m."userId" NULLS LAST`);
 
 it('creates a church per client login with its owner, bookkeepers and pending invites, and stamps churchId', async () => {
   await backfill.up(qi);
