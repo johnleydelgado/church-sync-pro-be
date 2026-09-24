@@ -12,6 +12,7 @@ export interface UserSettingsAttributes {
   isAutomationEnable?: boolean;
   isAutomationRegistration?: boolean;
   userId?: number;
+  churchId?: number | null;
   startDateAutomationFund?: string;
   startDateAutomationRegistration?: string;
   clearingBalanceAtGoLiveCents?: number | null;
@@ -28,6 +29,7 @@ class UserSettings extends Model<UserSettingsAttributes> implements UserSettings
   public isAutomationEnable!: boolean;
   public isAutomationRegistration!: boolean;
   public userId!: number;
+  public churchId!: number | null;
   public startDateAutomationFund!: string;
   public startDateAutomationRegistration!: string;
   public clearingBalanceAtGoLiveCents!: number | null;
@@ -71,6 +73,8 @@ UserSettings.init(
       type: DataTypes.BOOLEAN,
       allowNull: false,
     },
+    // Which church this row belongs to. Backfilled 2026-09; userId stays until the code reads churches.
+    churchId: { type: DataTypes.INTEGER, allowNull: true },
     userId: {
       type: DataTypes.INTEGER,
     },

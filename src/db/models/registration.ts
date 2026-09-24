@@ -8,12 +8,14 @@ export interface registrationAttributes {
   id: number;
   name: string;
   userId: number;
+  churchId?: number | null;
 }
 
 class registration extends Model<registrationAttributes> implements registrationAttributes {
   public id!: number;
   public name!: string;
   public userId!: number;
+  public churchId!: number | null;
 
   public static associate(models: any) {
     registration.belongsTo(models.User, {
@@ -36,6 +38,8 @@ registration.init(
       type: DataTypes.STRING(256),
       allowNull: false,
     },
+    // Which church this row belongs to. Backfilled 2026-09; userId stays until the code reads churches.
+    churchId: { type: DataTypes.INTEGER, allowNull: true },
     userId: {
       type: DataTypes.INTEGER,
       allowNull: false,

@@ -7,6 +7,7 @@ export interface userEmailPrefAttributes {
   id: number;
   email: string;
   userId: number;
+  churchId?: number | null;
   type: 'new-fund' | 'new-registration';
 }
 
@@ -15,6 +16,7 @@ class userEmailPreferences extends Model<userEmailPrefAttributes> implements use
   public email!: string;
   public type!: 'new-fund' | 'new-registration';
   public userId!: number;
+  public churchId!: number | null;
 
   public readonly user?: User; // Define the association property
   public readonly token_entity?: tokenEntity; // Define the association property
@@ -44,6 +46,8 @@ userEmailPreferences.init(
     type: DataTypes.ENUM({
       values: ['stripe', 'qbo', 'pco'],
     }),
+    // Which church this row belongs to. Backfilled 2026-09; userId stays until the code reads churches.
+    churchId: { type: DataTypes.INTEGER, allowNull: true },
     userId: {
       type: DataTypes.INTEGER,
       allowNull: false,

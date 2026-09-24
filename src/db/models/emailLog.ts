@@ -5,6 +5,7 @@ import User from './user';
 export interface EmailLogAttributes {
   id?: number;
   userId?: number;
+  churchId?: number | null;
   emailType?: 'fund' | 'stripe' | string;
   createdAt?: Date;
   updatedAt?: Date;
@@ -13,6 +14,7 @@ export interface EmailLogAttributes {
 class EmailLog extends Model<EmailLogAttributes> implements EmailLogAttributes {
   public id!: number;
   public userId!: number;
+  public churchId!: number | null;
   public emailType!: 'fund' | 'stripe' | string;
   public createdAt!: Date;
   public updatedAt!: Date;
@@ -25,6 +27,8 @@ EmailLog.init(
       autoIncrement: true,
       primaryKey: true,
     },
+    // Which church this row belongs to. Backfilled 2026-09; userId stays until the code reads churches.
+    churchId: { type: DataTypes.INTEGER, allowNull: true },
     userId: {
       type: DataTypes.INTEGER,
     },

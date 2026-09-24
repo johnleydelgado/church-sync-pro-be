@@ -6,6 +6,7 @@ import tokenEntity from './tokenEntity';
 export interface tokenAttributes {
   id: number;
   userId: number;
+  churchId?: number | null;
   tokenEntityId: number;
   token_type: 'stripe' | 'qbo' | 'pco';
   access_token: string;
@@ -21,6 +22,7 @@ class tokens extends Model<tokenAttributes> implements tokenAttributes {
   public refresh_token!: string;
   public realm_id!: string;
   public userId!: number;
+  public churchId!: number | null;
   public tokenEntityId!: number;
   public organization_name!: string;
 
@@ -50,6 +52,8 @@ tokens.init(
       allowNull: false,
       primaryKey: true,
     },
+    // Which church this row belongs to. Backfilled 2026-09; userId stays until the code reads churches.
+    churchId: { type: DataTypes.INTEGER, allowNull: true },
     userId: {
       type: DataTypes.INTEGER,
       allowNull: false,

@@ -5,6 +5,7 @@ import User from './user';
 export interface DailyJeSyncAttributes {
   id?: number;
   userId?: number;
+  churchId?: number | null;
   day?: string;
   postedGrossCents?: number;
   postedFeeCents?: number;
@@ -31,6 +32,7 @@ export interface DailyJeSyncAttributes {
 class DailyJeSync extends Model<DailyJeSyncAttributes> implements DailyJeSyncAttributes {
   public id!: number;
   public userId!: number;
+  public churchId!: number | null;
   public day!: string;
   public postedGrossCents!: number;
   public postedFeeCents!: number;
@@ -54,6 +56,8 @@ DailyJeSync.init(
       autoIncrement: true,
       primaryKey: true,
     },
+    // Which church this row belongs to. Backfilled 2026-09; userId stays until the code reads churches.
+    churchId: { type: DataTypes.INTEGER, allowNull: true },
     userId: {
       type: DataTypes.INTEGER,
       allowNull: false,

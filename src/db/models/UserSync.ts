@@ -13,6 +13,7 @@ export interface UserSyncAttributes {
   batchId?: string;
   donationId?: string;
   userId?: number;
+  churchId?: number | null;
   status?: 'pending' | 'posted' | 'failed';
   createdAt?: Date;
   updatedAt?: Date;
@@ -27,6 +28,7 @@ class UserSync extends Model<UserSyncAttributes> implements UserSyncAttributes {
   public batchId!: string;
   public donationId!: string;
   public userId!: number;
+  public churchId!: number | null;
   public status!: 'pending' | 'posted' | 'failed';
   public createdAt!: Date;
   public updatedAt!: Date;
@@ -67,6 +69,8 @@ UserSync.init(
       type: DataTypes.TEXT,
       allowNull: false,
     },
+    // Which church this row belongs to. Backfilled 2026-09; userId stays until the code reads churches.
+    churchId: { type: DataTypes.INTEGER, allowNull: true },
     userId: {
       type: DataTypes.INTEGER,
     },
