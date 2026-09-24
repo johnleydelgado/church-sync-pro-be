@@ -18,6 +18,7 @@ import { captureClearingSnapshot } from '../services/clearingSnapshot';
 import { markEmailVerified } from '../services/emailVerification';
 import crypto from 'crypto';
 const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
+const supertokens = require('supertokens-node');
 
 export const updateUser = async (req: Request, res: Response) => {
   const data = req.body;
@@ -551,33 +552,44 @@ export const createClientChurch = async (req: Request, res: Response) => {
     const email = `${churchName.trim().toLowerCase().replace(/ /g, '-')}-${bk.email}`;
     const password = crypto.randomBytes(24).toString('base64url');
 
+    if (churchName.trim().length > 200) {
+      return responseError({ res, code: 400, message: 'Church name is too long (200 characters max)' });
+    }
+
     const signUp = await ThirdPartyEmailPassword.emailPasswordSignUp(email, password);
     if (signUp.status === 'EMAIL_ALREADY_EXISTS_ERROR') {
       return responseError({ res, code: 409, message: 'A church with this name already exists' });
     }
 
-    const client = await Users.create({
-      email,
-      churchName: churchName.trim(),
-      firstName: 'N/A',
-      lastName: 'N/A',
-      role: 'client',
-      isSubscribe: '0',
-      isActive: true,
-    } as any);
+    try {
+      const client = await Users.create({
+        email,
+        churchName: churchName.trim(),
+        firstName: 'N/A',
+        lastName: 'N/A',
+        role: 'client',
+        isSubscribe: '0',
+        isActive: true,
+      } as any);
 
-    // Same row sendEmailInvitation writes on its createdByBk branch.
-    await bookkeeper.create({
-      email,
-      inviteSent: true,
-      invitationToken: crypto.randomBytes(16).toString('hex'),
-      inviteAccepted: true,
-      clientId: client.id,
-      userId: bk.id,
-      bookkeeperIntegrationAccessEnabled: false,
-    } as any);
+      // Same row sendEmailInvitation writes on its createdByBk branch.
+      await bookkeeper.create({
+        email,
+        inviteSent: true,
+        invitationToken: crypto.randomBytes(16).toString('hex'),
+        inviteAccepted: true,
+        clientId: client.id,
+        userId: bk.id,
+        bookkeeperIntegrationAccessEnabled: false,
+      } as any);
 
-    return responseSuccess(res, { clientId: client.id, email });
+      return responseSuccess(res, { clientId: client.id, email });
+    } catch (dbError) {
+      // The login exists but the church does not: remove the login again, otherwise a
+      // retry is refused as "already exists" for a church nobody can see.
+      await supertokens.deleteUser(signUp.user.id).catch(() => undefined);
+      throw dbError;
+    }
   } catch (e) {
     return responseError({ res, code: 500, message: e?.message ?? e });
   }

@@ -49,13 +49,13 @@ User.init(
       allowNull: false,
     },
     firstName: {
-      type: DataTypes.STRING(32),
+      type: DataTypes.STRING(64),
     },
     lastName: {
-      type: DataTypes.STRING(32),
+      type: DataTypes.STRING(64),
     },
     churchName: {
-      type: DataTypes.STRING(32),
+      type: DataTypes.STRING(256),
     },
     isSubscribe: {
       type: DataTypes.STRING(1),

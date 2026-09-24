@@ -17,11 +17,13 @@ jest.mock('../../utils/storage', () => ({ uploadImage: jest.fn() }));
 jest.mock('../../services/clearingSnapshot', () => ({ captureClearingSnapshot: jest.fn() }));
 jest.mock('../../services/emailVerification', () => ({ markEmailVerified: jest.fn() }));
 jest.mock('supertokens-node/recipe/thirdpartyemailpassword', () => ({ emailPasswordSignUp: jest.fn() }));
+jest.mock('supertokens-node', () => ({ deleteUser: jest.fn().mockResolvedValue(undefined) }));
 
 import Users from '../../db/models/user';
 import bookkeeper from '../../db/models/bookkeeper';
 import { createClientChurch } from '../user';
 const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
+const supertokens = require('supertokens-node');
 
 const mockedUsers = Users as unknown as { findOne: jest.Mock; create: jest.Mock };
 const mockedBk = bookkeeper as unknown as { create: jest.Mock };
@@ -85,5 +87,22 @@ it('rejects a missing church name or unknown bookkeeper', async () => {
   const res2 = makeRes();
   await createClientChurch({ body: { churchName: 'X', bookkeeperId: 5 } } as any, res2);
   expect(res2.status).toHaveBeenCalledWith(400);
+  expect(mockedSignUp).not.toHaveBeenCalled();
+});
+
+it('removes the SuperTokens login again when the church rows cannot be written', async () => {
+  mockedSignUp.mockResolvedValue({ status: 'OK', user: { id: 'st-9' } });
+  mockedUsers.create.mockRejectedValue(new Error('value too long for type character varying(32)'));
+  const res = makeRes();
+  await createClientChurch({ body: { churchName: 'A Very Long Church Name Indeed', bookkeeperId: 5 } } as any, res);
+  expect(supertokens.deleteUser).toHaveBeenCalledWith('st-9');
+  expect(res.status).toHaveBeenCalledWith(500);
+  expect(mockedBk.create).not.toHaveBeenCalled();
+});
+
+it('refuses an absurdly long church name before creating anything', async () => {
+  const res = makeRes();
+  await createClientChurch({ body: { churchName: 'x'.repeat(201), bookkeeperId: 5 } } as any, res);
+  expect(res.status).toHaveBeenCalledWith(400);
   expect(mockedSignUp).not.toHaveBeenCalled();
 });
