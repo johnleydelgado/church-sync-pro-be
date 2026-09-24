@@ -282,3 +282,12 @@ doing: copy `yarn.lock` (the old `COPY package*.json` never matched it, so no bu
 was reproducible), and copy `src/db/config/config.json` into `dist/` by hand, since
 `tsc` does not emit `.json` and `src/db/index.ts` requires it at runtime.
 Project `church-sync-pro-385703`, region `us-central1`. **Staging and production are separate databases on the same DigitalOcean cluster** — staging is `csp_staging`, production is `supertokens`. They used to be the same database; do not merge them again. Note Cloud Run URLs are now `SERVICE-1000606180549.us-central1.run.app`. The backend connects to managed Postgres (DigitalOcean) and a self-hosted SuperTokens core; env vars are injected from `.env.production` at deploy time. The commented Makefile header preserves the gcloud commands used to provision the Cloud SQL instance and SuperTokens image.
+
+## Staging end-to-end run
+
+`scripts/staging-e2e/run.sh` signs up fresh plus-addresses on staging and walks sign-up
+verification, the Clients page and bookkeeper invitations through ego-browser, printing a
+PASS/FAIL table (25 checks, ~5 min). It is visible live in Ego Lite. `run.sh <tag> <stage>`
+resumes. Verification links are minted through the SDK (`helper.ts mint`) rather than read
+from an inbox. Run it after any change to auth, the Clients page or invitations, before
+telling the client something works.
