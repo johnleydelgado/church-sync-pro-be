@@ -5,6 +5,7 @@
 #
 #   scripts/staging-e2e/run.sh            # fresh run, addresses tagged with the time
 #   scripts/staging-e2e/run.sh 1430       # pick the tag yourself
+#   scripts/staging-e2e/run.sh 1430 D     # resume run 1430 from stage D (A-E), reusing its state
 #
 # Each run signs up three fresh plus-addresses on johnley00@gmail.com, so the real
 # SendGrid mails land in that inbox. Verification links are minted through the
@@ -14,6 +15,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 RUN="${1:-$(date +%H%M%S)}"
+FROM="${2:-A}"
+stage() { [[ "$1" < "$FROM" ]] && return 1 || return 0; }
 BASE="https://csp-fe-n32ggvrsvq-uc.a.run.app"
 BE="https://csp-be-n32ggvrsvq-uc.a.run.app"
 STATE_DIR=/tmp/csp-staging-e2e
@@ -21,7 +24,7 @@ STATE="$STATE_DIR/state.json"
 mkdir -p "$STATE_DIR"
 
 helper() {
-  NODE_ENV=staging DOTENV_CONFIG_PATH=.env.staging npx ts-node -r dotenv/config scripts/staging-e2e/helper.ts "$@" 2>/dev/null | grep '^{' | tail -1
+  NODE_ENV=staging DOTENV_CONFIG_PATH=.env.staging npx ts-node -r dotenv/config scripts/staging-e2e/helper.ts "$@" 2>/dev/null | grep '^[{[]' | tail -1
 }
 state_set() { # key, json-value
   python3 - "$STATE" "$1" "$2" <<'PY'
@@ -59,6 +62,7 @@ PY
 }
 trap summary EXIT
 
+if [[ "$FROM" == "A" ]]; then
 cat > "$STATE" <<EOF
 {
   "run": "$RUN", "base": "$BASE", "be": "$BE", "password": "StagingTest2026!",
@@ -69,17 +73,23 @@ cat > "$STATE" <<EOF
   "results": []
 }
 EOF
+elif [[ "$(state_get run)" != "$RUN" ]]; then
+  echo "no state for run $RUN to resume from (found $(state_get run))"; exit 2
+fi
 echo "Run $RUN — accounts: $(state_get client), $(state_get bk), $(state_get invitee)"
 echo "Watch it in Ego Lite: task space \"CSP staging E2E $RUN\""
 
-browser A
+stage A && browser A
 
+if stage B; then
 CLIENT_MINT=$(helper mint "$(state_get client)")
 state_set clientLink "$(python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1])['link']))" "$CLIENT_MINT")"
 record "verification token minted for the client (same link the email carries)" "$(python3 -c "import json,sys; print(str(bool(json.loads(sys.argv[1]).get('link'))).lower())" "$CLIENT_MINT")" ""
 
 browser B
+fi
 
+if stage C; then
 BK_MINT=$(helper mint "$(state_get bk)")
 state_set bkLink "$(python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1])['link']))" "$BK_MINT")"
 
@@ -89,7 +99,9 @@ CLIENT_ROW=$(helper client-row "$(state_get church) (via Clients page)")
 record "Clients page wrote a client row linked to the bookkeeper" \
   "$(python3 -c "import json,sys; r=json.loads(sys.argv[1]); print(str(len(r)==1 and r[0]['role']=='client' and r[0]['bookkeeperUserId'] is not None and r[0]['inviteAccepted'] is True).lower())" "$CLIENT_ROW")" \
   "$(python3 -c "import json,sys; r=json.loads(sys.argv[1]); print(r[0]['email'] if r else 'no row')" "$CLIENT_ROW")"
+fi
 
+if stage D; then
 browser D
 
 INVITE=$(helper invite-link "$(state_get invitee)")
@@ -97,10 +109,14 @@ state_set inviteLink "$(python3 -c "import json,sys; print(json.dumps(json.loads
 record "invitation row exists with a token, not yet accepted" \
   "$(python3 -c "import json,sys; r=json.loads(sys.argv[1]); print(str(bool(r.get('invitationToken')) and r.get('inviteAccepted') is False).lower())" "$INVITE")" ""
 
+fi
+
+if stage E; then
 browser E
 
 INVITEE=$(helper invitee-row "$(state_get invitee)")
 record "invitation row now accepted and linked to the new bookkeeper login" \
   "$(python3 -c "import json,sys; r=json.loads(sys.argv[1]); print(str(r.get('inviteAccepted') is True and r.get('userId') is not None and r.get('role')=='bookkeeper').lower())" "$INVITEE")" \
   "$(python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1])))" "$INVITEE")"
+fi
 
