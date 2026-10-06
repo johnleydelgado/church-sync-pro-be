@@ -48,7 +48,17 @@ deploy-stg-be:
 # 	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=production PROJECT_NAME=csp-be-prd ENV_VAR=.env.production \
 # 	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
 
-deploy-prd:
+# Production deploys and migrations run only from a clean `main` that matches GitHub.
+# `develop` (staging) carries work that is not released yet - including migrations -
+# and running either target from it would ship that to the live church.
+require-prod-branch:
+	@branch=$$(git rev-parse --abbrev-ref HEAD); \
+	if [ "$$branch" != "main" ]; then echo "Refusing: production ships from main, this checkout is on '$$branch'. Run this from ../quickplan-connect-prod."; exit 1; fi; \
+	if [ -n "$$(git status --porcelain --untracked-files=no)" ]; then echo "Refusing: main has uncommitted changes."; exit 1; fi; \
+	git fetch -q origin main; \
+	if [ "$$(git rev-parse HEAD)" != "$$(git rev-parse origin/main)" ]; then echo "Refusing: local main is not origin/main. Push or pull first."; exit 1; fi
+
+deploy-prd: require-prod-branch
 	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=production PROJECT_NAME=csp-be-prd ENV_VAR=.env.production \
 	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
 
@@ -91,7 +101,7 @@ deploy-backend:
 	gcloud run services update-traffic ${PROJECT_NAME} --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1
 
 # --- DB migrations (manual; deploy does NOT run these). See DEPLOY.md ---
-migrate-prd:
+migrate-prd: require-prod-branch
 	NODE_ENV=uat-prd npx sequelize-cli db:migrate
 
 migrate-uat:
