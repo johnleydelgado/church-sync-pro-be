@@ -7,7 +7,7 @@ import UserSettings from '../db/models/userSettings';
 import UserSync from '../db/models/UserSync';
 import SyncRun from '../db/models/SyncRun';
 import { responseSuccess } from '../utils/response';
-import { summarizeJournalEntry } from '../utils/summarizeJournalEntry';
+import { summarizeDailyClaim } from '../utils/summarizeJournalEntry';
 import DailyJeSync from '../db/models/DailyJeSync';
 import { fetchDonationsForDay, fetchDonationsForRange } from '../services/donationSweep';
 import { getOrgTimeZone, parseSyncStartDay, runDailyDonationSync } from '../services/dailyDonationSync';
@@ -90,9 +90,17 @@ export const getDailyJournalEntries = async (req: Request, res: Response) => {
       if (value && label) accountNames.set(String(value), String(label));
     }
 
+    // Each day's ledger row: how many entries it took and their QuickBooks ids, plus the
+    // running totals the clearing statement adds up.
+    const ledgers = await DailyJeSync.findAll({ where: { userId } });
+    const ledgerByDay = new Map<string, any>();
+    for (const l of ledgers as any[]) ledgerByDay.set(String(l.day), l);
+
     const entries: DailyJournalEntry[] = syncRows.map((row) => {
       const r = row.toJSON() as any;
-      const summary = summarizeJournalEntry(r.syncedData);
+      // The day's total, not just its latest entry: an adjusting entry for giving that settled
+      // later overwrites the claim's stored entry, so the stored entry alone undercounts.
+      const summary = summarizeDailyClaim(r, ledgerByDay.get(String(r.donationId)));
       return {
         date: r.donationId,
         status: r.status,
@@ -110,10 +118,10 @@ export const getDailyJournalEntries = async (req: Request, res: Response) => {
 
     // What CSP has posted to clearing, cumulatively. This is NOT the account balance:
     // it never decreases when deposits are reconciled. The live figure is read from
-    // QuickBooks below so the UI can show a number that stays true over time.
-    const clearingBalance = entries
-      .filter((e) => e.status === 'posted')
-      .reduce((sum, e) => sum + e.net, 0);
+    // QuickBooks below so the UI can show a number that stays true over time. Summed from the
+    // day ledger with the clearing statement's own arithmetic, so the two figures on the
+    // Daily Sync page always agree.
+    const clearingBalance = toDollars((ledgers as any[]).reduce((sum, l) => sum + netCentsOf(l), 0));
     const bankData = (settings?.settingBankData as unknown as any[]) || [];
     const clearingAccount = bankData.find((b) => b?.type === 'donation');
     const qboClearingBalance = await readQboClearingBalance(String(email), clearingAccount?.value);

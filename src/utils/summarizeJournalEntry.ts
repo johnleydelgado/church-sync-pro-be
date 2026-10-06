@@ -82,3 +82,65 @@ export const summarizeJournalEntry = (syncedData: any): JournalEntrySummary => {
     memo: String(syncedData.PrivateNote ?? ''),
   };
 };
+
+/** The day-keyed claim row (`UserSync`) the engine keeps for each posted day. */
+export interface DailyClaimLike {
+  syncedData?: any;
+  postedGrossCents?: number | string | null;
+  postedFeeCents?: number | string | null;
+  postedByAccount?: Record<string, number | string> | null;
+}
+
+/** The day's ledger row (`DailyJeSync`): how many entries were posted, and their QuickBooks ids. */
+export interface DayLedgerLike {
+  entryCount?: number | string | null;
+  qboEntryIds?: string[] | null;
+}
+
+/**
+ * Summarize a whole posted day for the Daily Sync page.
+ *
+ * A day can take more than one journal entry: giving that settles after the day was posted
+ * (ACH, mostly) goes in as an adjusting entry, and the engine then overwrites the claim's
+ * `syncedData` with that adjusting entry. Summarising `syncedData` alone therefore showed only
+ * the latest entry - Active Church's 2026-09-15 read $486.70 when $1,391.15 had been posted.
+ *
+ * The claim also carries the running totals the engine uses to post only the difference
+ * (`postedGrossCents`, `postedFeeCents`, `postedByAccount`), which are the day's cumulative
+ * figures, so those are used whenever they exist. A claim posted before they were recorded
+ * falls back to its single stored entry.
+ */
+export const summarizeDailyClaim = (claim: DailyClaimLike, ledger?: DayLedgerLike | null): JournalEntrySummary => {
+  const latest = summarizeJournalEntry(claim?.syncedData);
+  if (claim?.postedGrossCents == null) return latest;
+
+  const grossCents = Math.round(toAmount(claim.postedGrossCents));
+  const feeCents = Math.round(toAmount(claim.postedFeeCents));
+  const entryCount = Math.max(1, Math.round(toAmount(ledger?.entryCount ?? 1)));
+
+  // Per-account running totals. Without them, the latest entry's lines are the day's lines only
+  // when the day has a single entry; otherwise show none rather than a misleading partial list.
+  let credits: JournalEntryCreditSummary[];
+  if (claim.postedByAccount) {
+    credits = Object.entries(claim.postedByAccount).map(([accountRef, cents]) => ({
+      accountRef: String(accountRef),
+      amount: Math.round(toAmount(cents)) / 100,
+    }));
+  } else {
+    credits = entryCount === 1 ? latest.credits : [];
+  }
+
+  const ids = (ledger?.qboEntryIds ?? []).filter(Boolean);
+  const memo =
+    entryCount > 1
+      ? `Posted as ${entryCount} QuickBooks entries${ids.length ? `: #${ids.join(', #')}` : ''}`
+      : latest.memo;
+
+  return {
+    gross: grossCents / 100,
+    fees: feeCents / 100,
+    net: (grossCents - feeCents) / 100,
+    credits,
+    memo,
+  };
+};
