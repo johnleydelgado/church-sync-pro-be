@@ -263,6 +263,34 @@ them in agreement, or the app authorizes against one environment and calls the o
 earlier commits**, so it remains exposed until rotated. Never re-commit real
 credentials, never echo them, and don't add new ones to tracked files.
 
+## Branches: `main` is production, `develop` is staging
+
+The same rule holds in the frontend repo (`church-sync-pro`), set up 2026-10-06.
+
+- **`main` is what runs in production**, nothing more. `make deploy-prd` and
+  `make migrate-prd` refuse to run unless the checkout is on `main`, clean, and equal to
+  `origin/main`. That makes migrations safe too: a migration file that exists only on
+  `develop` (e.g. the `20260925*` churches tables) cannot reach the production database.
+- **`develop` is what runs on staging.** Everything lands there first. Work not ready
+  for the live church — sign-up email verification, churches-as-entities — stays on
+  `develop` only until it is released on purpose.
+- **Start new work from `main`, not `develop`:** `git switch -c feat/<thing> origin/main`.
+  Merge it into `develop` to try it on staging; merge it into `main` when it should
+  ship. A branch cut from `develop` drags all of develop's unreleased work with it and
+  can never ship alone. The exception is work that builds on develop-only code
+  (anything touching email verification or churches): it ships together with that work.
+- **Hotfix:** branch from `main`, merge into `main`, deploy, then merge `main` into
+  `develop`.
+- **Deploy and migrate production from `../quickplan-connect-prod`**: a permanent
+  worktree that stays on `main` and already holds the gitignored `.env.production` and
+  `src/db/config/config.json`, plus a `node_modules` symlink to the main checkout's
+  (ignored by git and `.dockerignore`) so `make migrate-prd` can run. `git pull
+  --ff-only` there, then `make deploy-prd`. Never switch it to another branch.
+
+Before this, production was deployed from hand-made cherry-pick worktrees that were
+never pushed, so GitHub had no record of what was live, and `main`/`develop` were
+years stale.
+
 ## Deploy (Google Cloud Run, via Makefile)
 
 ```bash
