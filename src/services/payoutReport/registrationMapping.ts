@@ -47,3 +47,10 @@ export const accountForSignup = (
   }
   return null;
 };
+
+/**
+ * The Stripe-era registration list the old sync code reads, or [] once the setting holds the v2
+ * mapping above. Without this, every `.find` / `.filter` on it throws for a church that has saved
+ * its event accounts on the new Registration tab.
+ */
+export const legacyRegistrationList = (raw: unknown): any[] => (Array.isArray(raw) ? raw : []);

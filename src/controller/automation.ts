@@ -27,6 +27,7 @@ import { id } from 'date-fns/locale';
 import EmailLog from '../db/models/emailLog';
 import SyncRun from '../db/models/SyncRun';
 import { getQboTokensForUser, refreshQboToken } from '../services/qboClient';
+import { legacyRegistrationList } from '../services/payoutReport/registrationMapping';
 
 const { SENDGRID_API_KEY, SETTING_FUND_URL } = process.env;
 
@@ -586,7 +587,7 @@ export const latestRegistrationAutomation = async (req: Request, res: Response) 
               const finalData = [];
               const payouts = await stripe.payouts.list({ limit: 100 });
 
-              const settingsJson = a.UserSetting.settingRegistrationData as any;
+              const settingsJson = legacyRegistrationList(a.UserSetting.settingRegistrationData);
               const settingsDataJson = a.UserSetting.settingsData as any;
 
               // For each payout, retrieve the associated charges
@@ -807,7 +808,7 @@ export const checkLatestRegistration = async (req: Request, res: Response) => {
       if (access_token) {
         let tokensFinalJson: { access_token: string; refresh_token: string } = { access_token: '', refresh_token: '' };
         const userSettingsExist = await UserSettings.findOne({ where: { userId: a.id } });
-        const settingsJson = userSettingsExist.dataValues.settingRegistrationData as any;
+        const settingsJson = legacyRegistrationList(userSettingsExist.dataValues.settingRegistrationData);
 
         if (access_token && !(await checkAccessTokenValidity(access_token))) {
           const result = await refreshAccessToken(a.email as string);
