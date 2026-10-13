@@ -176,6 +176,9 @@ describe('failures', () => {
     svc.import.mockRejectedValue(new Error('relation "PayoutTransactions" does not exist'));
     const res = await call(payoutReportImport, makeReq({ body: { email: CHURCH, csvText: CSV } }));
     expect(res).toEqual({ code: 500, body: { success: false, message: 'Could not read the payout report' } });
+    svc.status.mockRejectedValue(new Error('connection refused'));
+    const status = await call(payoutReportStatus, makeReq({ query: { email: CHURCH } }));
+    expect(status).toEqual({ code: 500, body: { success: false, message: 'Something went wrong with the payout reports. Try again in a minute.' } });
   });
 });
 

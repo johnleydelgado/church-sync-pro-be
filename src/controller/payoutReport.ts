@@ -56,21 +56,21 @@ export const canActFor = async (actor: string, church: string): Promise<boolean>
   return Boolean(link);
 };
 
-const fail = (res: Response, e: unknown) => {
+const fail = (res: Response, e: unknown, fallback: string) => {
   if (e instanceof PayoutReportFormatError) return res.status(400).json({ success: false, message: e.message });
   if (e instanceof PayoutImportSetupError || e instanceof PayoutImportBusyError) {
     return res.status(409).json({ success: false, message: e.message });
   }
   if (e instanceof PayoutReviewError) return res.status(e.status).json({ success: false, message: e.message });
   logger.error('payout report endpoint failed', { error: e instanceof Error ? e.message : String(e) });
-  return res.status(500).json({ success: false, message: 'Could not read the payout report' });
+  return res.status(500).json({ success: false, message: fallback });
 };
 
 type Handler = (req: SessionRequest, res: Response, actor: string, church: string) => Promise<unknown>;
 
 /** Resolves who is asking and for which church, refuses anyone else, and maps errors to answers. */
 const forChurch =
-  (where: 'body' | 'query', handler: Handler) =>
+  (where: 'body' | 'query', handler: Handler, fallback = 'Something went wrong with the payout reports. Try again in a minute.') =>
   async (req: SessionRequest, res: Response) => {
     const church = String((where === 'body' ? req.body?.email : req.query?.email) ?? '').trim();
     if (!church) return res.status(400).json({ success: false, message: 'email is required' });
@@ -81,7 +81,7 @@ const forChurch =
       }
       return await handler(req, res, actor, church);
     } catch (e) {
-      return fail(res, e);
+      return fail(res, e, fallback);
     }
   };
 
@@ -96,20 +96,27 @@ const csvFrom = (req: SessionRequest): string => {
   return csvText;
 };
 
-export const payoutReportPreview = forChurch('body', async (req, res, _actor, church) =>
-  responseSuccess(res, await previewPayoutReport({ email: church, csvText: csvFrom(req) })),
+const READ_FAILED = 'Could not read the payout report';
+
+export const payoutReportPreview = forChurch(
+  'body',
+  async (req, res, _actor, church) => responseSuccess(res, await previewPayoutReport({ email: church, csvText: csvFrom(req) })),
+  READ_FAILED,
 );
 
-export const payoutReportImport = forChurch('body', async (req, res, actor, church) =>
-  responseSuccess(
-    res,
-    await importPayoutReport({
-      email: church,
-      fileName: typeof req.body?.fileName === 'string' ? req.body.fileName : null,
-      csvText: csvFrom(req),
-      uploadedBy: actor, // who is signed in, never what the request says
-    }),
-  ),
+export const payoutReportImport = forChurch(
+  'body',
+  async (req, res, actor, church) =>
+    responseSuccess(
+      res,
+      await importPayoutReport({
+        email: church,
+        fileName: typeof req.body?.fileName === 'string' ? req.body.fileName : null,
+        csvText: csvFrom(req),
+        uploadedBy: actor, // who is signed in, never what the request says
+      }),
+    ),
+  READ_FAILED,
 );
 
 export const payoutReportStatus = forChurch('query', async (_req, res, _actor, church) =>
