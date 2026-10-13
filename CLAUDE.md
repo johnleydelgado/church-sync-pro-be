@@ -61,6 +61,43 @@ post one QuickBooks journal entry — credit revenue (gross), debit Stripe fees,
 a clearing account for the net Stripe will deposit later. PCO is the source of truth;
 the Stripe payout only matters when reconciling the clearing account afterwards.
 
+### Registrations from the payout report (`src/services/payoutReport/`)
+
+Planning Center pays giving and registrations out in the same Stripe deposits, but its
+Registrations API has no payments, so CSP records event money from the **payout report** the
+bookkeeper exports ("full transaction details") and uploads on the Clearing page. Design and API
+contract: `docs/plans/2026-10-08-registrations-import.md` in the frontend repo (section 6).
+
+- `parsePayoutReport` keys each row `registration|donation:<id>:<type>:<day>:<grossCents>`
+  (a repeat in the same file gets `#2`). `Date` is the charge or refund date; the file has **no
+  payout id**, so rows are recorded but not matched to a deposit.
+- `classifyRows` (pure): `to_post` / `already_recorded` / `before_start` / `giving` / `held`.
+  Anything not positively recognised is held for a person, never skipped.
+- `importPayoutReport` posts one entry per day and kind: `CSP-E-<day>-<n>` for charges (gross to
+  the event's account + class, fee to the fee account, net to clearing) and `CSP-ER-<day>-<n>` for
+  refunds. `n` comes from `DailyJeSync.registrationEntryCount`, kept apart from giving's
+  `entryCount`, under the same row lock the giving engine takes.
+- **Exactly once.** `PayoutTransactions` is unique on `(userId, rowKey)`, and one upload runs at a
+  time per church (`pg_try_advisory_xact_lock(74010, userId)`; a second gets 409 "busy").
+  `failed` (QuickBooks said no) is retried by the next upload. `pending` is **never** retried: a
+  row left pending means QuickBooks may already have the entry, so it waits in the review list as
+  `posting_interrupted` for a person to mark posted (with the entry number) or post now.
+- Giving lines in the file are checked against CSP's day ledger (`givingCoverage`): covered when
+  the gift is one of Planning Center's settled Stripe gifts that day (refunded since or not) and
+  `DailyJeSync.postedGrossCents` covers the day's settled gross; a refund line when
+  `refundedGrossCents` covers the file's refunds that day. Planning Center unreachable means
+  "couldn't check", never "covered"; a database error throws. Verified on Active's September file
+  against production: 348 giving lines, 0 flagged.
+- Setup, refused with 409 and a sentence otherwise: a registration start date
+  (`startDateAutomationRegistration`, by charge date), a v2 mapping in `settingRegistrationData`
+  (`{ version: 2, default: { account, class }, events: [{ signup, account, class }] }` - the old
+  Stripe-era array is ignored), a clearing account (the `registration` bank slot, else `donation`;
+  the two must be the same account because the Clearing page tracks one), and a fee account
+  whenever a row carries a fee.
+- `controller/payoutReport.ts` checks that the signed-in user **is the church or a bookkeeper it
+  invited who accepted** - unlike the older endpoints, which trust the `email` in the request -
+  and records the session user, not the request, as the uploader.
+
 ### Tests
 
 `npm test` is the unit suite (pure functions in `src/utils`). It cannot see the wiring, and
@@ -203,6 +240,9 @@ than swallow.
 - **`tokenEntity`** — groups tokens/bookkeepers under an `email` with an `isEnabled` flag (the integration "owner" a bookkeeper connects to).
 - **`bookkeeper`** — links a bookkeeper user to a client (`userId` ↔ `clientId`) plus invitation state (`invitationToken`, `inviteSent`, `inviteAccepted`, `bookkeeperIntegrationAccessEnabled`).
 - **`UserSync`** — record of synced data (`syncedData` JSON, `batchId`, `donationId`) for idempotency/audit.
+- **`PayoutReportUploads`** - one row per payout report uploaded (file name, uploader, charge-date range, summary JSON); the Clearing page's "last payout report loaded".
+- **`PayoutTransactions`** - every payout-report row a church has uploaded, unique on `(userId, rowKey)`, with `status` (`posted` / `pending` / `failed` / `before_start` / `giving_covered` / `giving_not_posted` / `held` / `resolved` / `dismissed`) and `reason`.
+- **`DailyJeSync.registration*`** - registration gross and fee, refund gross and fee, entry count and entry ids per day (migration `20261008000001`). `netCentsOf` adds them, so the Clearing statement, "posted to date" and the switch-over include registrations.
 - **`registration`**, **`billing`**, **`emailLog`**, **`userEmailPreferences`** — registration events, subscription billing info, sent-email log, and notification recipient prefs.
 
 The **client/bookkeeper** distinction is core: a bookkeeper operates on a client's data via the `bookkeeper`→`tokenEntity` linkage. Mirror this when adding any data access.
