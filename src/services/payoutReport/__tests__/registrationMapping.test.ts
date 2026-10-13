@@ -1,4 +1,4 @@
-import { readRegistrationMapping, accountForSignup } from '../registrationMapping';
+import { readRegistrationMapping, accountForSignup, legacyRegistrationList } from '../registrationMapping';
 
 const v2 = {
   version: 2,
@@ -30,4 +30,11 @@ test('anything else falls back to the default', () => {
 test('no default and no override means nothing to post to', () => {
   const m = readRegistrationMapping({ version: 2, default: { account: null }, events: [] })!;
   expect(accountForSignup(m, 'Any')).toBeNull();
+});
+
+test('the old Stripe-era code sees its list, or nothing once the v2 mapping is saved', () => {
+  const old = [{ registration: 'Camp', account: { value: '1' } }];
+  expect(legacyRegistrationList(old)).toBe(old);
+  expect(legacyRegistrationList(v2)).toEqual([]);
+  expect(legacyRegistrationList(null)).toEqual([]);
 });

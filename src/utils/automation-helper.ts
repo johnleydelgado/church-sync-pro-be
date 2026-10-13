@@ -6,6 +6,7 @@ import { SettingsJsonProps, newRequestPayload } from './mapping';
 import { format } from 'date-fns';
 import { checkEmpty } from './helper';
 import { syncBatchToJournalEntries } from '../services/syncEngine';
+import { legacyRegistrationList } from '../services/payoutReport/registrationMapping';
 
 const logger = createLogger('automation-helper');
 
@@ -158,7 +159,7 @@ export const dailySyncingRegistration = async (user: any, filterFundName: any, s
         const email = user.email;
         const regName = extractCategory(description);
         const fundName = filterFundName[index];
-        const registrationFund = user.UserSetting.settingRegistrationData.find(
+        const registrationFund = legacyRegistrationList(user.UserSetting.settingRegistrationData).find(
           (item: any) => item.registration === regName,
         );
         const fundNameRegistration = registrationFund
@@ -291,7 +292,7 @@ export const finalSyncStripe = async (data: any, user: any) => {
           }
 
           const settingsJson = user.UserSetting.settingsData as any;
-          const settingRegistrationJson = user.UserSetting.settingRegistrationData as any;
+          const settingRegistrationJson = legacyRegistrationList(user.UserSetting.settingRegistrationData);
           let settingRegistration: any;
 
           if (batchItem.batchData.type === 'batch') {
@@ -375,7 +376,7 @@ export const finalSyncStripe = async (data: any, user: any) => {
 
           const settingBankChargesJson = user.UserSetting?.settingBankCharges as any;
 
-          const settingRegistrationJson = user.UserSetting?.settingRegistrationData as any;
+          const settingRegistrationJson = legacyRegistrationList(user.UserSetting?.settingRegistrationData);
 
           if (checkEmpty(settingRegistrationJson)) {
             throw new Error(

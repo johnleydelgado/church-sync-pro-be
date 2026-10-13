@@ -14,6 +14,7 @@ import tokens from '../db/models/tokens';
 import tokenEntity from '../db/models/tokenEntity';
 import { checkEmpty } from '../utils/helper';
 import { withRetry } from '../utils/httpRetry';
+import { legacyRegistrationList } from '../services/payoutReport/registrationMapping';
 
 // Stripe's list endpoints return 10 items by default. A payout with more than ten
 // balance transactions was silently reporting the sum of only the first ten as the
@@ -85,7 +86,7 @@ export const getStripePayouts = async (req: Request, res: Response) => {
     });
 
     const userSettingsExist = user ? await UserSettings.findOne({ where: { userId: user.id } }) : null;
-    const settingsJson = userSettingsExist?.dataValues?.settingRegistrationData as any;
+    const settingsJson = legacyRegistrationList(userSettingsExist?.dataValues?.settingRegistrationData);
     const settingsDataJson = userSettingsExist?.dataValues?.settingsData as any;
 
     if (arr && !isEmpty(arr)) {
@@ -357,7 +358,7 @@ export const syncStripePayoutRegistration = async (req: Request, res: Response) 
 
     const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
 
-    const settingsJson = userSettingsExist.dataValues.settingRegistrationData as any;
+    const settingsJson = legacyRegistrationList(userSettingsExist.dataValues.settingRegistrationData);
     const settingRegistration = settingsJson.find(
       (item: { class: { label: string } }) => item.class.label.toLowerCase() === String(fundName).toLowerCase(),
     );
@@ -484,7 +485,7 @@ export const finalSyncStripe = async (req: Request, res: Response) => {
 
           if (key !== 'Charge') {
             const settingsJson = userSettingsExist.settingsData as any;
-            const settingRegistrationJson = userSettingsExist.settingRegistrationData as any;
+            const settingRegistrationJson = legacyRegistrationList(userSettingsExist.settingRegistrationData);
 
             let settingRegistration: any;
 
@@ -556,7 +557,7 @@ export const finalSyncStripe = async (req: Request, res: Response) => {
             synced.push(resolvedItem);
           } else {
             const settingBankChargesJson = userSettingsExist.settingBankCharges as any;
-            const settingRegistrationJson = userSettingsExist.settingRegistrationData as any;
+            const settingRegistrationJson = legacyRegistrationList(userSettingsExist.settingRegistrationData);
 
             if (checkEmpty(settingRegistrationJson)) {
               throw new Error(
@@ -764,7 +765,7 @@ export const getStripeList = async (req: Request, res: Response) => {
     if (access_token) {
       let tokensFinalJson: { access_token: string; refresh_token: string } = { access_token: '', refresh_token: '' };
       const userSettingsExist = await UserSettings.findOne({ where: { userId: user.id } });
-      const settingsJson = (userSettingsExist?.settingRegistrationData as any) || [];
+      const settingsJson = legacyRegistrationList(userSettingsExist?.settingRegistrationData);
 
       if (access_token && !(await checkAccessTokenValidity(access_token))) {
         const result = await refreshAccessToken(user.email as string);
