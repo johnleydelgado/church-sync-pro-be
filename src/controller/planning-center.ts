@@ -408,18 +408,23 @@ export const getBatches = async (req: Request, res: Response) => {
 // };
 
 /**
- * A fund Planning Center still considers live.
+ * A fund Planning Center still accepts gifts for.
  *
- * `visibility` is one of `everywhere`, `admin_only`, `nowhere` or `hidden`. The first two are
- * both in use - `admin_only` simply keeps a fund off Church Center while staff can still record
- * gifts against it - so both belong on the mapping page. `nowhere` and `hidden` are retired
- * funds; listing them makes a church map accounts for giving that can no longer happen, and the
- * Save button refuses to submit until EVERY fund on the page is mapped.
+ * Planning Center's labels and API values do not line up (checked against Active Church's funds,
+ * 2026-10-13):
+ *
+ *   everywhere  - shown on Church Center
+ *   admin_only  - "Hidden" in the app: staff still record gifts against it
+ *   hidden      - "Link Only" in the app: donors give through a direct link
+ *   nowhere     - "Closed": no new gifts
+ *
+ * Only `nowhere` is retired. `hidden` used to be excluded too, on the reading that it meant
+ * retired; that hid Active's "Legacy Offering" (Link Only) from the Mapping page, so its $51.41
+ * gift on 2026-10-10 could never post. Closed funds stay off the page: listing them makes a church
+ * map accounts for giving that can no longer happen, and Save requires every listed fund mapped.
  */
-const isLiveFund = (fund: any): boolean => {
-  const visibility = String(fund?.attributes?.visibility ?? '').toLowerCase();
-  return visibility !== 'nowhere' && visibility !== 'hidden';
-};
+export const isLiveFund = (fund: any): boolean =>
+  String(fund?.attributes?.visibility ?? '').toLowerCase() !== 'nowhere';
 
 export const getFunds = async (req: Request, res: Response) => {
   const { email } = req.query;

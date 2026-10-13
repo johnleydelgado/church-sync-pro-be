@@ -278,6 +278,61 @@ describe('one day of online giving', () => {
   });
 });
 
+// Found 2026-10-12 (Active Church, Loom "Daily Giving Sync Issue"): a $51.41 gift to a fund the
+// church could not map ("Link Only" Legacy Offering) was dropped from Oct 10's entry - but its
+// $1.41 fee was still posted, and the Post button said the day was "already up to date".
+describe('a gift to a fund with no mapping', () => {
+  const day = () =>
+    pcoPayload([
+      { id: 'tithes', cents: 76000, feeCents: -1784, receivedAt: '2026-10-10T16:00:00Z' },
+      {
+        id: 'legacy',
+        cents: 5141,
+        feeCents: -141,
+        receivedAt: '2026-10-10T17:20:00Z',
+        designations: [{ id: 'legacy-des', cents: 5141, fund: 'Youth Camp' }],
+      },
+    ]);
+
+  test('is left out entirely - its amount AND its fee - and reported back', async () => {
+    servePco([day()]);
+    const result = await run('b1');
+    expect(posted).toHaveLength(1);
+    expect(totalOf(posted[0], 'Credit')).toBeCloseTo(760, 2);
+    expect(amountFor(posted[0], ACCOUNTS.fees)).toBeCloseTo(17.84, 2);
+    expect(amountFor(posted[0], ACCOUNTS.clearing)).toBeCloseTo(742.16, 2);
+    expect(result.unmapped).toEqual([{ day: '2026-10-10', fundName: 'Youth Camp', amountCents: 5141, count: 1 }]);
+  });
+
+  test('once the fund is mapped, the next run posts the whole gift with its own fee', async () => {
+    servePco([day()]);
+    await run('b1');
+    await UserSettings.update(
+      { settingsData: [...SETTINGS, { fundName: 'Youth Camp', account: { value: '42', label: 'Youth Camp Income' }, class: { value: '', label: '' }, customer: { value: '', label: '' } }] } as any,
+      { where: { userId: USER_ID } },
+    );
+    servePco([day()]);
+    const result = await run('b1');
+    expect(posted).toHaveLength(2);
+    expect(amountFor(posted[1], '42')).toBeCloseTo(51.41, 2);
+    expect(amountFor(posted[1], ACCOUNTS.fees)).toBeCloseTo(1.41, 2);
+    expect(amountFor(posted[1], ACCOUNTS.clearing)).toBeCloseTo(50, 2);
+    expect(result.unmapped ?? []).toEqual([]);
+  });
+
+  test('a day whose only gift is unmapped posts nothing and says which fund', async () => {
+    servePco([
+      pcoPayload([
+        { id: 'only', cents: 5141, feeCents: -141, receivedAt: '2026-10-10T17:20:00Z', designations: [{ id: 'only-des', cents: 5141, fund: 'Youth Camp' }] },
+      ]),
+    ]);
+    const result = await run('b1');
+    expect(posted).toHaveLength(0);
+    expect(result.skippedDays).toEqual(['2026-10-10']);
+    expect(result.unmapped).toEqual([{ day: '2026-10-10', fundName: 'Youth Camp', amountCents: 5141, count: 1 }]);
+  });
+});
+
 describe('pagination', () => {
   // Regression: a single un-paginated GET truncated at Planning Center's default of 25,
   // so any larger batch posted short with no error.
