@@ -14,6 +14,12 @@ export interface DailyJeSyncAttributes {
   entryCount?: number;
   qboEntryIds?: string[] | null;
   batchIds?: string[] | null;
+  registrationGrossCents?: number;
+  registrationFeeCents?: number;
+  registrationRefundGrossCents?: number;
+  registrationRefundFeeCents?: number;
+  registrationEntryCount?: number;
+  registrationEntryIds?: string[] | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -41,6 +47,12 @@ class DailyJeSync extends Model<DailyJeSyncAttributes> implements DailyJeSyncAtt
   public entryCount!: number;
   public qboEntryIds!: string[] | null;
   public batchIds!: string[] | null;
+  public registrationGrossCents!: number;
+  public registrationFeeCents!: number;
+  public registrationRefundGrossCents!: number;
+  public registrationRefundFeeCents!: number;
+  public registrationEntryCount!: number;
+  public registrationEntryIds!: string[] | null;
   public createdAt!: Date;
   public updatedAt!: Date;
 
@@ -97,6 +109,38 @@ DailyJeSync.init(
       allowNull: true,
     },
     batchIds: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    // Registration (event) money from uploaded payout reports, posted as its own CSP-E / CSP-ER
+    // entries. Kept apart from the giving columns and entryCount so giving's adjusting-entry logic
+    // and CSP-<day>-<n> numbering never see it; netCentsOf adds both.
+    registrationGrossCents: {
+      type: DataTypes.BIGINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    registrationFeeCents: {
+      type: DataTypes.BIGINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    registrationRefundGrossCents: {
+      type: DataTypes.BIGINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    registrationRefundFeeCents: {
+      type: DataTypes.BIGINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    registrationEntryCount: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    registrationEntryIds: {
       type: DataTypes.JSON,
       allowNull: true,
     },

@@ -34,6 +34,21 @@ describe('netCentsOf', () => {
     expect(netCentsOf({ postedGrossCents: 92586, postedFeeCents: 2141 })).toBe(90445);
     expect(netCentsOf({ postedGrossCents: 100, postedFeeCents: 32, refundedGrossCents: 100, refundedFeeCents: 32 })).toBe(0);
   });
+
+  test('registration money on the day counts towards what CSP put into clearing', () => {
+    expect(
+      netCentsOf({
+        postedGrossCents: '10000',
+        postedFeeCents: '300',
+        refundedGrossCents: '0',
+        refundedFeeCents: '0',
+        registrationGrossCents: '6000',
+        registrationFeeCents: '159',
+        registrationRefundGrossCents: '5500',
+        registrationRefundFeeCents: '0',
+      }),
+    ).toBe(10000 - 300 + 6000 - 159 - 5500);
+  });
 });
 
 describe('captureClearingSnapshot', () => {
