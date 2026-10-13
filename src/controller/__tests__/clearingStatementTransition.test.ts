@@ -133,3 +133,63 @@ describe('markTransitionTruedUp', () => {
     expect(res.status).toHaveBeenCalledWith(404);
   });
 });
+
+describe('getClearingStatement: registrations', () => {
+  const regDay = (o: any) => ({
+    postedGrossCents: 0,
+    postedFeeCents: 0,
+    refundedGrossCents: 0,
+    refundedFeeCents: 0,
+    entryCount: 0,
+    qboEntryIds: [],
+    batchIds: [],
+    registrationGrossCents: 0,
+    registrationFeeCents: 0,
+    registrationRefundGrossCents: 0,
+    registrationRefundFeeCents: 0,
+    registrationEntryCount: 0,
+    registrationEntryIds: [],
+    ...o,
+  });
+
+  test('a registration-only day is a statement line, and its entries are listed', async () => {
+    const d = await statement({
+      settings: { startDateAutomationFund: null },
+      rows: [regDay({ day: '2026-09-20', registrationGrossCents: 6000, registrationFeeCents: 159, registrationEntryCount: 1, registrationEntryIds: ['30001'] })],
+      qbo: 0,
+    });
+    expect(d.lines[0]).toMatchObject({ date: '2026-09-20', gross: 0, registrations: 60, registrationFees: 1.59, net: 58.41, qboEntryIds: ['30001'], entries: 1 });
+    expect(d.totals).toMatchObject({ registrations: 60, registrationFees: 1.59, registrationRefunds: 0, net: 58.41 });
+  });
+
+  test('giving columns stay giving-only on a day that also has a registration refund', async () => {
+    const d = await statement({
+      settings: { startDateAutomationFund: null },
+      rows: [
+        regDay({
+          day: '2026-09-21',
+          postedGrossCents: 10000,
+          postedFeeCents: 300,
+          entryCount: 1,
+          qboEntryIds: ['20001'],
+          batchIds: ['b1'],
+          registrationRefundGrossCents: 5500,
+          registrationEntryCount: 1,
+          registrationEntryIds: ['30002'],
+        }),
+      ],
+      qbo: 0,
+    });
+    expect(d.lines[0]).toMatchObject({
+      gross: 100,
+      fees: 3,
+      refundsGross: 0,
+      registrations: 0,
+      registrationRefunds: 55,
+      net: 42,
+      qboEntryIds: ['20001', '30002'],
+      entries: 2,
+    });
+    expect(d.closing).toBe(42);
+  });
+});

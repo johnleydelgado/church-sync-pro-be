@@ -188,18 +188,27 @@ export const getClearingStatement = async (req: Request, res: Response) => {
         fees: toDollars(r.postedFeeCents),
         refundsGross: toDollars(r.refundedGrossCents),
         refundsFees: toDollars(r.refundedFeeCents),
+        // Registration (event) money from uploaded payout reports. gross/fees/refunds above stay
+        // giving-only; net and the entry ids cover both.
+        registrations: toDollars(r.registrationGrossCents ?? 0),
+        registrationFees: toDollars(r.registrationFeeCents ?? 0),
+        registrationRefunds: toDollars(r.registrationRefundGrossCents ?? 0),
         net: toDollars(net),
         runningBalance: toDollars(running),
-        entries: Number(r.entryCount ?? 0),
-        qboEntryIds: r.qboEntryIds ?? [],
+        entries: Number(r.entryCount ?? 0) + Number(r.registrationEntryCount ?? 0),
+        qboEntryIds: [...(r.qboEntryIds ?? []), ...(r.registrationEntryIds ?? [])],
         batchIds: r.batchIds ?? [],
       };
     });
+    const sumOf = (column: string) => toDollars(within.reduce((s: number, r: any) => s + Number(r[column] ?? 0), 0));
     const totals = {
-      gross: toDollars(within.reduce((s: number, r: any) => s + Number(r.postedGrossCents ?? 0), 0)),
-      fees: toDollars(within.reduce((s: number, r: any) => s + Number(r.postedFeeCents ?? 0), 0)),
-      refundsGross: toDollars(within.reduce((s: number, r: any) => s + Number(r.refundedGrossCents ?? 0), 0)),
-      refundsFees: toDollars(within.reduce((s: number, r: any) => s + Number(r.refundedFeeCents ?? 0), 0)),
+      gross: sumOf('postedGrossCents'),
+      fees: sumOf('postedFeeCents'),
+      refundsGross: sumOf('refundedGrossCents'),
+      refundsFees: sumOf('refundedFeeCents'),
+      registrations: sumOf('registrationGrossCents'),
+      registrationFees: sumOf('registrationFeeCents'),
+      registrationRefunds: sumOf('registrationRefundGrossCents'),
       net: toDollars(within.reduce((s: number, r: any) => s + netOf(r), 0)),
     };
     const closingCents = running;

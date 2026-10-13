@@ -5,11 +5,19 @@ import quickBookApi from '../utils/quickBookApi';
 import { parseSyncStartDay } from './dailyDonationSync';
 import { getQboTokensForUser } from './qboClient';
 
-/** Net cents one ledger day added to clearing: gross, less fees, less anything refunded back out. */
+/**
+ * Net cents one ledger day added to clearing: giving and registrations, less fees, less anything
+ * refunded back out. Registrations post to the same clearing account (the importer refuses a
+ * different one), so everything that sums this - the statement, "posted to date" and the
+ * switch-over - includes them without further change.
+ */
 export const netCentsOf = (r: any): number =>
   Number(r?.postedGrossCents ?? 0) -
   Number(r?.postedFeeCents ?? 0) -
-  (Number(r?.refundedGrossCents ?? 0) - Number(r?.refundedFeeCents ?? 0));
+  (Number(r?.refundedGrossCents ?? 0) - Number(r?.refundedFeeCents ?? 0)) +
+  Number(r?.registrationGrossCents ?? 0) -
+  Number(r?.registrationFeeCents ?? 0) -
+  (Number(r?.registrationRefundGrossCents ?? 0) - Number(r?.registrationRefundFeeCents ?? 0));
 
 /**
  * The clearing account's LIVE balance from QuickBooks, including whatever the accountant has
