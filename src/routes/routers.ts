@@ -70,6 +70,15 @@ import {
 } from '../controller/automation';
 import { requireAutomationKey } from '../utils/automationAuth';
 import {
+  payoutReportImport,
+  payoutReportPreview,
+  payoutReportRecheckGiving,
+  payoutReportResolve,
+  payoutReportReview,
+  payoutReportSignups,
+  payoutReportStatus,
+} from '../controller/payoutReport';
+import {
   getDailyJournalEntries,
   getClearingStatement,
   getStripeGivingByDay,
@@ -123,6 +132,14 @@ routers.get(userRoutes.getStripeGivingByDay, verifySession(), getStripeGivingByD
 routers.get(userRoutes.getStripeGivingDayDetail, verifySession(), getStripeGivingDayDetail);
 routers.post(userRoutes.postStripeGivingDay, verifySession(), postStripeGivingDay);
 routers.post(userRoutes.markTransitionTruedUp, verifySession(), markTransitionTruedUp);
+// Registrations from Planning Center's payout report (upload on the Clearing page).
+routers.post(userRoutes.payoutReportPreview, verifySession(), payoutReportPreview);
+routers.post(userRoutes.payoutReportImport, verifySession(), payoutReportImport);
+routers.get(userRoutes.payoutReportStatus, verifySession(), payoutReportStatus);
+routers.get(userRoutes.payoutReportReview, verifySession(), payoutReportReview);
+routers.post(userRoutes.payoutReportResolve, verifySession(), payoutReportResolve);
+routers.post(userRoutes.payoutReportRecheckGiving, verifySession(), payoutReportRecheckGiving);
+routers.get(userRoutes.payoutReportSignups, verifySession(), payoutReportSignups);
 routers.post(userRoutes.manualSync, verifySession(), manualSync);
 routers.post(userRoutes.isUserHaveTokens, verifySession(), isUserHaveTokens);
 routers.post(userRoutes.getTokenList, verifySession(), getTokenList);
