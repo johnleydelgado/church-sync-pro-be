@@ -47,7 +47,7 @@ export const parseCsv = (text: string): string[][] => {
   let row: string[] = [];
   let field = '';
   let quoted = false;
-  const src = text.replace(/^﻿/, '');
+  const src = text.replace(/^\uFEFF/, '');
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
     if (quoted) {
@@ -94,6 +94,9 @@ export const parsePayoutReport = (text: string): PayoutRow[] => {
       'This is not a Planning Center payout report. Export "full transaction details" from the payout report and upload that file.',
     );
   }
+  // A file can list the very same charge twice (same id, day and amount): number the repeats so
+  // each is recorded once instead of the second reading as "already recorded".
+  const seen = new Map<string, number>();
   return body.map((f, i) => {
     const line = i + 2;
     const [day, type, source, name, fundOrSignup, gross, fee, net, paymentMethod, campus, description] = f.map((x) =>
@@ -105,7 +108,7 @@ export const parsePayoutReport = (text: string): PayoutRow[] => {
     const netCents = toCents(net, 'Net', line);
     const m = (description ?? '').match(ID_PATTERN);
     const externalId = m ? `${m[1].toLowerCase()}:${m[2]}` : null;
-    const rowKey = externalId
+    const baseKey = externalId
       ? `${externalId}:${type.toLowerCase()}:${day}:${grossCents}`
       : // From the parsed fields, not the raw line: a quoted field may contain a line break, which
         // would shift raw-line positions and break re-upload safety for these rows.
@@ -113,6 +116,9 @@ export const parsePayoutReport = (text: string): PayoutRow[] => {
           .createHash('sha1')
           .update(f.map((x) => (x ?? '').trim()).join('\u0001'))
           .digest('hex')}`;
+    const occurrence = (seen.get(baseKey) ?? 0) + 1;
+    seen.set(baseKey, occurrence);
+    const rowKey = occurrence === 1 ? baseKey : `${baseKey}#${occurrence}`;
     return {
       line,
       day,

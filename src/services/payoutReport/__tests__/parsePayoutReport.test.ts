@@ -52,9 +52,15 @@ describe('parsePayoutReport', () => {
     expect(a.rowKey).toBe(b.rowKey);
   });
 
+  test('the same charge listed twice in one file gets two keys, so neither is skipped', () => {
+    const line = '2026-10-05,Charge,Registrations,M,SHE,60.00,1.59,58.41,card,,"Registration #5 - M - SHE"';
+    const rows = parsePayoutReport(csv(line, line));
+    expect(rows.map((r) => r.rowKey)).toEqual(['registration:5:charge:2026-10-05:6000', 'registration:5:charge:2026-10-05:6000#2']);
+  });
+
   test('tolerates a BOM, LF endings and blank lines', () => {
     const text =
-      '﻿' + HEADER + '\n\n2026-09-27,Charge,Registrations,M,SHE,60.00,1.59,58.41,card,,"Registration #1 - M - SHE"\n';
+      '\uFEFF' + HEADER + '\n\n2026-09-27,Charge,Registrations,M,SHE,60.00,1.59,58.41,card,,"Registration #1 - M - SHE"\n';
     expect(parsePayoutReport(text)).toHaveLength(1);
   });
 
