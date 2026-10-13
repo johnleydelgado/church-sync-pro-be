@@ -202,6 +202,20 @@ describe('ACH that settles after the entry is posted', () => {
   });
 });
 
+describe('a gift to a fund with no mapping', () => {
+  // The Post button used to receive "nothing posted" and tell the church the day was up to date.
+  test('is reported back to the caller, by day and fund', async () => {
+    await UserSettings.update(
+      { settingsData: [{ fundName: 'Missions', account: { value: '41', label: 'Missions' }, class: { value: '', label: '' }, customer: { value: '', label: '' } }] } as any,
+      { where: { userId: USER_ID } },
+    );
+    byDay['2026-09-08'] = [donation('a', 5141, -141, '2026-09-08T14:00:00Z')];
+    const result = await runDailyDonationSync(user(), { now: WED_8AM, days: ['2026-09-08'], manual: true });
+    expect(posted).toHaveLength(0);
+    expect(result.unmapped).toEqual([{ day: '2026-09-08', fundName: 'General', amountCents: 5141, count: 1 }]);
+  });
+});
+
 describe('churches the run passes over', () => {
   const reasonFor = async (patch: any) => {
     await UserSettings.update(patch, { where: { userId: USER_ID } });

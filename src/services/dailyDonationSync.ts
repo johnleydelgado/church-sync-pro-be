@@ -1,4 +1,4 @@
-import { syncBatchToJournalEntries } from './syncEngine';
+import { syncBatchToJournalEntries, UnmappedGift } from './syncEngine';
 import { fetchDonationsForDay, localToday, previousDay } from './donationSweep';
 import { generatePcToken } from '../controller/automation';
 import UserSettings from '../db/models/userSettings';
@@ -25,6 +25,8 @@ export interface DailySyncResult {
   daysExamined: string[];
   postedDays: string[];
   failedDays: string[];
+  /** Gifts left out because their fund has no QuickBooks account - see `UnmappedGift`. */
+  unmapped?: UnmappedGift[];
 }
 
 /**
@@ -139,6 +141,7 @@ export const runDailyDonationSync = async (
 
   const postedDays: string[] = [];
   const failedDays: string[] = [];
+  const unmapped: UnmappedGift[] = [];
 
   for (const d of days) {
     try {
@@ -158,6 +161,7 @@ export const runDailyDonationSync = async (
       });
       postedDays.push(...result.postedDays);
       failedDays.push(...result.failedDays);
+      unmapped.push(...(result.unmapped ?? []));
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       logger.error('runDailyDonationSync: day failed', { email, day: d, error });
@@ -171,6 +175,7 @@ export const runDailyDonationSync = async (
     daysExamined: days,
     postedDays,
     failedDays,
+    unmapped,
   };
 };
 

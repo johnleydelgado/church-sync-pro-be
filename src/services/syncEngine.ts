@@ -61,6 +61,19 @@ export interface SyncBatchResult {
    * entries in QuickBooks that were never meant to exist.
    */
   eligibleDonations: number;
+  /**
+   * Gifts left out because none of their funds is mapped to a QuickBooks account, per day and
+   * fund. Without this the caller only sees "nothing posted" and tells the church the day is up
+   * to date, while the gift sits unrecorded (Active Church, Legacy Offering, 2026-10-10).
+   */
+  unmapped?: UnmappedGift[];
+}
+
+export interface UnmappedGift {
+  day: string;
+  fundName: string;
+  amountCents: number;
+  count: number;
 }
 
 /**
@@ -317,6 +330,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
   const postedDays: string[] = [];
   const skippedDays: string[] = [];
   let eligibleDonations = 0;
+  const unmapped: UnmappedGift[] = [];
 
   // Per-day JE failures within this batch. Collected so the batch can surface a failure to the
   // caller instead of silently swallowing it.
@@ -339,7 +353,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
     // A caller supplying its own donations has already decided what to post; `batchId === '0'`
     // is a batch-path sentinel that does not apply to it.
     if (batchId === '0' && !params.donations) {
-      return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [], eligibleDonations };
+      return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [], eligibleDonations, unmapped };
     }
 
     const synchedBatchesData = await UserSync.findAll({
@@ -366,7 +380,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
         email,
         batchId: String(realBatchId),
       });
-      return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [], eligibleDonations };
+      return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [], eligibleDonations, unmapped };
     }
 
     const settingsJson = await UserSettings.findOne({ where: { userId } });
@@ -593,7 +607,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
       }
 
       for (const [day, donations] of Object.entries(byDay)) {
-        const mappedLines: MappedDonationLine[] = (donations as any[]).flatMap((donation) =>
+        const linesOf = (donation: any): MappedDonationLine[] =>
           donation.lines?.length
             ? (donation.lines as MappedDonationLine[])
             : [
@@ -603,19 +617,39 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
                   amount_cents: Number(donation.attributes.amount_cents),
                   fundName: donation.fund?.attributes?.name ?? '',
                 },
-              ],
-        );
+              ];
 
-        // Drop unmapped-fund lines (blank AccountRef) - QBO rejects JE lines with no AccountRef.
-        const validLines = mappedLines.filter((l) => l.AccountRef);
-        if (validLines.length < mappedLines.length) {
+        // A gift none of whose funds is mapped cannot be posted (QBO rejects a line with no
+        // account). Leave it out WHOLE - its amount and its fee - so the entry stays reconcilable;
+        // it posts in full, fee included, once the fund is mapped and the day is run again.
+        // Dropping only the amount used to post the gift's fee without it, which left the
+        // clearing account short (Oct 10: $51.41 dropped, its $1.41 fee posted).
+        const postable = (donations as any[]).filter((d) => linesOf(d).some((l) => l.AccountRef));
+        const unpostable = (donations as any[]).filter((d) => !linesOf(d).some((l) => l.AccountRef));
+        for (const d of unpostable) {
+          const fundName = linesOf(d)[0]?.fundName || d.fund?.attributes?.name || 'Unknown fund';
+          const hit = unmapped.find((u) => u.day === day && u.fundName === fundName);
+          const cents = Number(d.attributes?.amount_cents) || 0;
+          if (hit) {
+            hit.amountCents += cents;
+            hit.count += 1;
+          } else {
+            unmapped.push({ day, fundName, amountCents: cents, count: 1 });
+          }
+        }
+        if (unpostable.length) {
           logger.warn('syncBatchToJournalEntries: skipped unmapped-fund donation(s)', {
             email,
             batchId: String(realBatchId),
             day,
-            skipped: mappedLines.length - validLines.length,
+            skipped: unpostable.length,
+            funds: [...new Set(unmapped.filter((u) => u.day === day).map((u) => u.fundName))],
           });
         }
+
+        const mappedLines: MappedDonationLine[] = postable.flatMap(linesOf);
+        // Belt and braces: never hand QuickBooks a line without an account.
+        const validLines = mappedLines.filter((l) => l.AccountRef);
         if (validLines.length === 0) {
           skippedDays.push(day);
           continue;
@@ -624,7 +658,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
         // The day's Stripe fee - every gift's, including those the donor covered. A covered
         // gift is a larger gift, not the donor paying Stripe for the church, so its fee is
         // still the church's expense. See the docblock on `chargeableFeeCents`.
-        const totalFeeCents = chargeableFeeCents(donations as any[]);
+        const totalFeeCents = chargeableFeeCents(postable);
 
         // Resolve the fees account from settingBankCharges (same shape used in automation-helper.ts).
         const feesAccountValue = settingBankCharges?.account?.value ?? '';
@@ -844,7 +878,7 @@ export const syncBatchToJournalEntries = async (params: SyncBatchParams): Promis
       );
     }
 
-    return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [], eligibleDonations };
+    return { batchId: String(realBatchId), postedDays, skippedDays, failedDays: [], eligibleDonations, unmapped };
   } catch (e) {
     // RE-THROW: do not swallow. The caller's per-user/per-batch try/catch records the failure.
     const error = e instanceof Error ? e.message : String(e);
