@@ -19,9 +19,19 @@ import { markEmailVerified } from '../services/emailVerification';
 import ChurchMember from '../db/models/churchMember';
 import sequelize from '../db';
 import { Op } from 'sequelize';
+import { isChurchAccountEmail } from '../services/churchAccountEmail';
+import { createLogger } from '../utils/logger';
 import crypto from 'crypto';
 const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
 const supertokens = require('supertokens-node');
+
+const logger = createLogger('user');
+
+const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '';
+
+/** `lower(col) = value`, with the value trimmed and lowercased. */
+const lowerEq = (col: string, value: string) =>
+  sequelize.where(sequelize.fn('lower', sequelize.col(col)), value.trim().toLowerCase());
 
 export const updateUser = async (req: Request, res: Response) => {
   const data = req.body;
@@ -423,17 +433,44 @@ export const updateUserTokens = async (req: Request, res: Response) => {
 };
 
 export const updateUserToken = async (req: Request, res: Response) => {
-  // Behind requireAccountAccess(fromBody, 'integrations'): the church's account, not whoever clicked Connect.
-  const account = res.locals.churchAccess.account;
   const { token_type, access_token, refresh_token, realm_id } = req.body;
-  if (!['qbo', 'pco', 'stripe'].includes(token_type)) {
-    return responseError({ res, code: 400, message: 'Unknown connection type' });
-  }
   try {
+    // Behind requireAccountAccess(fromBody, 'integrations'): the church's account, not whoever clicked Connect.
+    const account = res.locals?.churchAccess?.account;
+    if (!account) {
+      // Only reachable if the route is wired without its guard; refuse rather than guess a church.
+      logger.error('updateUserToken reached without a church access check', { path: req.path });
+      return responseError({ res, code: 403, message: "You don't have access to this church." });
+    }
+    if (!['qbo', 'pco', 'stripe'].includes(token_type)) {
+      return responseError({ res, code: 400, message: 'Unknown connection type' });
+    }
+    // A reconnect overwrites the saved connection, so a call without a usable token must not wipe one that works.
+    if (!isNonEmptyString(access_token)) {
+      return responseError({
+        res,
+        code: 400,
+        message: 'The connection did not return an access token. Try connecting again.',
+      });
+    }
+    if (token_type === 'qbo' && !isNonEmptyString(realm_id)) {
+      return responseError({
+        res,
+        code: 400,
+        message: 'QuickBooks did not say which company was connected. Try connecting again.',
+      });
+    }
     const fields = { access_token, refresh_token, realm_id: realm_id ?? null, userId: account.id };
-    const entity: any =
-      (await tokenEntity.findOne({ where: { email: account.email } })) ??
-      (await tokenEntity.create({ email: account.email, isEnabled: true }));
+    // A church can have several entities (organisations); the enabled one is the live one, else the oldest.
+    let entity: any = await tokenEntity.findOne({
+      where: { email: account.email },
+      order: [
+        ['isEnabled', 'DESC'],
+        ['id', 'ASC'],
+      ],
+    });
+    if (!entity) entity = await tokenEntity.create({ email: account.email, isEnabled: true });
+    else if (!entity.isEnabled) await entity.update({ isEnabled: true });
     const existing: any = await tokens.findOne({ where: { tokenEntityId: entity.id, token_type } });
     // Connecting again replaces the old connection (it used to be ignored, keeping a dead token).
     if (existing) await existing.update(fields);
@@ -451,18 +488,36 @@ export const updateUserToken = async (req: Request, res: Response) => {
  */
 const findInvite = (email: string, token: string) =>
   ChurchMember.findOne({
-    where: {
-      [Op.and]: [
-        { invitationToken: token },
-        sequelize.where(sequelize.fn('lower', sequelize.col('invitedEmail')), String(email).trim().toLowerCase()),
-      ],
-    } as any,
+    where: { [Op.and]: [{ invitationToken: token }, lowerEq('invitedEmail', email)] } as any,
   });
 
+/**
+ * An invitation link's email and token, if they are usable: two non-empty strings (an array would
+ * become `IN (...)`), and never a church account's address, which no person can be invited as.
+ */
+const inviteParams = (body: any): { email: string; token: string } | null => {
+  const { email, invitationToken } = body ?? {};
+  if (!isNonEmptyString(email) || !isNonEmptyString(invitationToken)) return null;
+  if (isChurchAccountEmail(email)) return null;
+  return { email, token: invitationToken };
+};
+
+/**
+ * The one login with this address, in any case. Users.email is not unique; when two rows share an
+ * address nobody can say which one the invite meant, so neither is used. Logs ids, never the address.
+ */
+const onlyLoginWithEmail = async (email: string): Promise<Users | null> => {
+  const rows = await Users.findAll({ where: lowerEq('email', email) as any, limit: 2 });
+  if (rows.length > 1) {
+    logger.error('invite: more than one login for the invited address; linking none', { ids: rows.map((r) => r.id) });
+  }
+  return rows.length === 1 ? rows[0] : null;
+};
+
 export const checkValidInvitation = async (req: Request, res: Response) => {
-  const { email, invitationToken } = req.body;
   try {
-    const invitation = await findInvite(email, invitationToken);
+    const params = inviteParams(req.body);
+    const invitation = params ? await findInvite(params.email, params.token) : null;
 
     if (invitation) {
       return responseSuccess(res, 'exist');
@@ -510,7 +565,7 @@ export const bookkeeperList = async (req: Request, res: Response) => {
 };
 
 export const updateInvitationStatus = async (req: Request, res: Response) => {
-  const { email, invitationToken } = req.body;
+  const { invitationToken } = req.body ?? {};
 
   try {
     // This runs before the invitee has a session, so the invitation token IS the
@@ -519,8 +574,12 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
     if (!invitationToken) {
       return responseError({ res, code: 401, message: 'Invitation token required' });
     }
+    const params = inviteParams(req.body);
+    if (!params) {
+      return responseError({ res, code: 400, message: 'Error in invitation' });
+    }
 
-    const invite: any = await findInvite(email, invitationToken);
+    const invite: any = await findInvite(params.email, params.token);
     if (!invite) {
       return responseError({ res, code: 400, message: 'Error in invitation' });
     }
@@ -528,17 +587,21 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
     // The token was mailed to this address, so accepting it proves the inbox is theirs -
     // the same proof a verification link gives. Otherwise REQUIRED mode would stop the
     // invitee at "check your inbox" for a mail that was never sent.
-    await markEmailVerified(email);
+    await markEmailVerified(params.email);
 
-    // Derive the user from the email rather than trusting an id from the body.
-    const user = await Users.findOne({ where: { email } });
+    // Derive the user from the address the invite was sent to, never from an id or email in the body.
+    const user = await onlyLoginWithEmail(invite.invitedEmail ?? params.email);
 
     // No login yet: the row stays pending, and the invite page calls this again once the
-    // sign-up has made one. Already accepted: nothing to do (the page calls this twice).
-    if (user && !invite.inviteAccepted) {
-      // One row per person per church: a login already on this church keeps its row (and its
-      // role), and the invite is spent.
-      const already = await ChurchMember.findOne({ where: { churchId: invite.churchId, userId: user.id } });
+    // sign-up has made one. Accepted means accepted BY a login: the first backfill wrote some
+    // rows as accepted with no userId, and those still need linking. Already linked: nothing
+    // to do (the page calls this twice).
+    if (user && !(invite.inviteAccepted && invite.userId)) {
+      // One row per person per church: a login already on this church (on another row) keeps
+      // that row and its role, and the invite is spent.
+      const already = await ChurchMember.findOne({
+        where: { churchId: invite.churchId, userId: user.id, id: { [Op.ne]: invite.id } },
+      });
       if (already) {
         await invite.destroy();
       } else {
@@ -546,11 +609,22 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
       }
     }
 
-    // Mirror to the legacy bookkeeper table while the old screens still read it.
-    await bookkeeper.update(
-      { inviteAccepted: true, ...(user ? { userId: user.id } : {}) },
-      { where: { email, invitationToken } },
-    );
+    // Mirror to the legacy bookkeeper table while the old screens still read it. Access reads
+    // ChurchMembers only, so a failure here must not undo or hide the acceptance above.
+    try {
+      await bookkeeper.update(
+        { inviteAccepted: true, ...(user ? { userId: user.id } : {}) },
+        { where: { [Op.and]: [{ invitationToken: params.token }, lowerEq('email', params.email)] } as any },
+      );
+    } catch (mirrorError) {
+      logger.warn('invite accepted, but the legacy bookkeeper row was not updated', {
+        memberId: invite.id,
+        churchId: invite.churchId,
+        userId: user?.id ?? null,
+        // The error's kind only: a database message can quote the values, and those include the address.
+        error: mirrorError instanceof Error ? mirrorError.name : 'unknown',
+      });
+    }
     return responseSuccess(res, 'accepted');
   } catch (e) {
     return responseError({ res, code: 400, message: e });

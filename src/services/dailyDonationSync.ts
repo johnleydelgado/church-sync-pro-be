@@ -15,7 +15,9 @@ export type SkipReason =
   | 'no_fund_mapping'
   | 'no_clearing_account'
   | 'no_pco_token'
-  | 'no_org_timezone';
+  | 'no_org_timezone'
+  // Set by the nightly run (dailyJournalSync) before this is called: the church is deactivated.
+  | 'church_inactive';
 
 export interface DailySyncResult {
   email: string;

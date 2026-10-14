@@ -6,10 +6,15 @@
  * under the body's userId, which is whoever clicked Connect (a bookkeeper's own id).
  *
  * Connecting again replaces the old connection. It used to be ignored when a token of that type
- * already existed, so a reconnect kept the dead token and the church stayed disconnected.
+ * already existed, so a reconnect kept the dead token and the church stayed disconnected. Because
+ * a reconnect now overwrites, a call without a usable token is refused rather than allowed to
+ * wipe a working connection.
  */
 function mockModel() {
-  return { __esModule: true, default: { findOne: jest.fn(), findAll: jest.fn(), update: jest.fn(), create: jest.fn() } };
+  return {
+    __esModule: true,
+    default: { findOne: jest.fn(), findAll: jest.fn(), update: jest.fn(), create: jest.fn() },
+  };
 }
 jest.mock('../../db/models/user', mockModel);
 jest.mock('../../db/models/userSettings', mockModel);
@@ -32,8 +37,14 @@ import { updateUserToken } from '../user';
 const mockedTokens = tokens as unknown as { findOne: jest.Mock; findAll: jest.Mock; create: jest.Mock };
 const mockedEntity = tokenEntity as unknown as { findOne: jest.Mock; create: jest.Mock };
 
-const makeRes = () => {
-  const res: any = { locals: { churchAccess: { account: { id: 10, email: 'acct@x' } } } };
+const ACCOUNT = { id: 10, email: 'acct@x' };
+const ENTITY_ORDER = [
+  ['isEnabled', 'DESC'],
+  ['id', 'ASC'],
+];
+
+const makeRes = (locals: Record<string, unknown> = { churchAccess: { account: ACCOUNT } }) => {
+  const res: any = { locals };
   res.status = jest.fn().mockReturnValue(res);
   res.json = jest.fn().mockReturnValue(res);
   return res;
@@ -49,6 +60,16 @@ const body = {
   realm_id: 'realm-1',
 };
 
+const save = async (sent: Record<string, unknown>, res = makeRes()) => {
+  await updateUserToken({ body: sent } as any, res);
+  return res;
+};
+
+const expectNothingWritten = () => {
+  expect(mockedEntity.create).not.toHaveBeenCalled();
+  expect(mockedTokens.create).not.toHaveBeenCalled();
+};
+
 beforeEach(() => jest.clearAllMocks());
 
 it("creates the church's token entity and files the token under the account, not the body's userId", async () => {
@@ -56,11 +77,10 @@ it("creates the church's token entity and files the token under the account, not
   mockedEntity.create.mockResolvedValue({ id: 77 });
   mockedTokens.findOne.mockResolvedValue(null);
   mockedTokens.create.mockResolvedValue({ id: 1 });
-  const res = makeRes();
 
-  await updateUserToken({ body } as any, res);
+  const res = await save(body);
 
-  expect(mockedEntity.findOne).toHaveBeenCalledWith({ where: { email: 'acct@x' } });
+  expect(mockedEntity.findOne).toHaveBeenCalledWith({ where: { email: 'acct@x' }, order: ENTITY_ORDER });
   expect(mockedEntity.create).toHaveBeenCalledWith({ email: 'acct@x', isEnabled: true });
   expect(mockedTokens.findOne).toHaveBeenCalledWith({ where: { tokenEntityId: 77, token_type: 'qbo' } });
   expect(mockedTokens.create).toHaveBeenCalledWith({
@@ -75,14 +95,15 @@ it("creates the church's token entity and files the token under the account, not
 });
 
 it('replaces an existing token of that type instead of ignoring the reconnect', async () => {
-  mockedEntity.findOne.mockResolvedValue({ id: 77 });
+  const entity = { id: 77, isEnabled: true, update: jest.fn() };
+  mockedEntity.findOne.mockResolvedValue(entity);
   const existing = { id: 5, token_type: 'qbo', update: jest.fn().mockResolvedValue(undefined) };
   mockedTokens.findOne.mockResolvedValue(existing);
-  const res = makeRes();
 
-  await updateUserToken({ body } as any, res);
+  const res = await save(body);
 
   expect(mockedEntity.create).not.toHaveBeenCalled();
+  expect(entity.update).not.toHaveBeenCalled();
   expect(existing.update).toHaveBeenCalledWith({
     access_token: 'new-access',
     refresh_token: 'new-refresh',
@@ -93,12 +114,61 @@ it('replaces an existing token of that type instead of ignoring the reconnect', 
   expect(res.status).toHaveBeenCalledWith(200);
 });
 
-it('refuses an unknown connection type', async () => {
-  const res = makeRes();
+it('switches the chosen entity on when the only one the church has is disabled', async () => {
+  // The lookup prefers an enabled entity, then the oldest; landing on a disabled one means none is on.
+  const entity = { id: 77, isEnabled: false, update: jest.fn().mockResolvedValue(undefined) };
+  mockedEntity.findOne.mockResolvedValue(entity);
+  mockedTokens.findOne.mockResolvedValue(null);
 
-  await updateUserToken({ body: { ...body, token_type: 'xero' } } as any, res);
+  const res = await save(body);
+
+  expect(entity.update).toHaveBeenCalledWith({ isEnabled: true });
+  expect(mockedTokens.create).toHaveBeenCalledWith(expect.objectContaining({ tokenEntityId: 77, userId: 10 }));
+  expect(res.status).toHaveBeenCalledWith(200);
+});
+
+it('saves a Planning Center connection without a realm id', async () => {
+  mockedEntity.findOne.mockResolvedValue({ id: 77, isEnabled: true, update: jest.fn() });
+  mockedTokens.findOne.mockResolvedValue(null);
+
+  const res = await save({ ...body, token_type: 'pco', realm_id: undefined });
+
+  expect(mockedTokens.create).toHaveBeenCalledWith(
+    expect.objectContaining({ token_type: 'pco', realm_id: null, access_token: 'new-access' }),
+  );
+  expect(res.status).toHaveBeenCalledWith(200);
+});
+
+it('refuses an unknown connection type', async () => {
+  const res = await save({ ...body, token_type: 'xero' });
 
   expect(res.status).toHaveBeenCalledWith(400);
   expect(mockedEntity.findOne).not.toHaveBeenCalled();
-  expect(mockedTokens.create).not.toHaveBeenCalled();
+  expectNothingWritten();
+});
+
+it.each([
+  ['no access token', { access_token: undefined }],
+  ['an empty access token', { access_token: '' }],
+  ['an access token that is not a string', { access_token: { a: 1 } }],
+  ['a QuickBooks token without its realm id', { realm_id: undefined }],
+  ['a QuickBooks token with a blank realm id', { realm_id: ' ' }],
+])('refuses %s, leaving any working connection alone', async (_label, change) => {
+  const existing = { id: 5, update: jest.fn() };
+  mockedEntity.findOne.mockResolvedValue({ id: 77, isEnabled: true, update: jest.fn() });
+  mockedTokens.findOne.mockResolvedValue(existing);
+
+  const res = await save({ ...body, ...change });
+
+  expect(res.status).toHaveBeenCalledWith(400);
+  expect(existing.update).not.toHaveBeenCalled();
+  expectNothingWritten();
+});
+
+it('refuses with 403 when the route was wired without its church guard', async () => {
+  const res = await save(body, makeRes({}));
+
+  expect(res.status).toHaveBeenCalledWith(403);
+  expect(mockedEntity.findOne).not.toHaveBeenCalled();
+  expectNothingWritten();
 });
