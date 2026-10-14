@@ -26,6 +26,7 @@ import { withRetry } from '../utils/httpRetry';
 import { id } from 'date-fns/locale';
 import EmailLog from '../db/models/emailLog';
 import SyncRun from '../db/models/SyncRun';
+import Church from '../db/models/church';
 import { getQboTokensForUser, refreshQboToken } from '../services/qboClient';
 import { legacyRegistrationList } from '../services/payoutReport/registrationMapping';
 
@@ -968,6 +969,12 @@ export const dailyJournalSync = async (req: Request, res: Response) => {
     const users = await User.findAll({
       where: onlyEmail ? { role: 'client', email: onlyEmail } : { role: 'client' },
     });
+    // A church its owner has deactivated stops posting; its members can still read it.
+    const inactive = new Set(
+      (await Church.findAll({ where: { isActive: false }, attributes: ['ownerUserId'] })).map(
+        (c: any) => c.ownerUserId,
+      ),
+    );
 
     const failures: { email: string; error: string }[] = [];
     const skips: { email: string; reason: string }[] = [];
@@ -975,6 +982,10 @@ export const dailyJournalSync = async (req: Request, res: Response) => {
     let succeeded = 0;
 
     for (const user of users) {
+      if (inactive.has(user.id)) {
+        skips.push({ email: String(user.email), reason: 'church_inactive' });
+        continue;
+      }
       try {
         const result = await runDailyDonationSync(user, { now, days });
         if (result.status === 'skipped') {
