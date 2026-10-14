@@ -1,11 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Response } from 'express';
-import { Op } from 'sequelize';
 import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
 import ThirdPartyEmailPassword from 'supertokens-node/recipe/thirdpartyemailpassword';
 import EmailPassword from 'supertokens-node/recipe/emailpassword';
-import Users from '../db/models/user';
-import bookkeeper from '../db/models/bookkeeper';
 import { responseSuccess } from '../utils/response';
 import { createLogger } from '../utils/logger';
 import { PayoutReportFormatError } from '../services/payoutReport/parsePayoutReport';
@@ -36,26 +33,6 @@ const sessionEmail = async (req: SessionRequest): Promise<string | null> => {
   return user?.email ? String(user.email) : null;
 };
 
-/**
- * May `actor` act for the church whose account is `church`? The church itself, or a bookkeeper it
- * invited who accepted. These endpoints post to the church's QuickBooks, so - unlike the older
- * endpoints, which trust the email in the request - they check.
- */
-export const canActFor = async (actor: string, church: string): Promise<boolean> => {
-  if (actor.trim().toLowerCase() === church.trim().toLowerCase()) return true;
-  const client: any = await Users.findOne({ where: { email: church } });
-  if (!client) return false;
-  const actorUser: any = await Users.findOne({ where: { email: actor } });
-  const link = await bookkeeper.findOne({
-    where: {
-      clientId: client.id,
-      inviteAccepted: true,
-      [Op.or]: [{ email: actor }, ...(actorUser ? [{ userId: actorUser.id }] : [])],
-    },
-  });
-  return Boolean(link);
-};
-
 const fail = (res: Response, e: unknown, fallback: string) => {
   if (e instanceof PayoutReportFormatError) return res.status(400).json({ success: false, message: e.message });
   if (e instanceof PayoutImportSetupError || e instanceof PayoutImportBusyError) {
@@ -68,17 +45,19 @@ const fail = (res: Response, e: unknown, fallback: string) => {
 
 type Handler = (req: SessionRequest, res: Response, actor: string, church: string) => Promise<unknown>;
 
-/** Resolves who is asking and for which church, refuses anyone else, and maps errors to answers. */
+/**
+ * Resolves who is asking and for which church, and maps errors to answers. Whether the caller may work
+ * on that church is the route guard's job (requireAccountAccess in routes/routers.ts), which has run first.
+ */
 const forChurch =
   (where: 'body' | 'query', handler: Handler, fallback = 'Something went wrong with the payout reports. Try again in a minute.') =>
   async (req: SessionRequest, res: Response) => {
     const church = String((where === 'body' ? req.body?.email : req.query?.email) ?? '').trim();
     if (!church) return res.status(400).json({ success: false, message: 'email is required' });
     try {
+      // Who is signed in, for uploadedBy / resolvedBy. Missing only if SuperTokens lost the user after the guard ran.
       const actor = await sessionEmail(req);
-      if (!actor || !(await canActFor(actor, church))) {
-        return res.status(403).json({ success: false, message: "You don't have access to this church." });
-      }
+      if (!actor) return res.status(403).json({ success: false, message: "You don't have access to this church." });
       return await handler(req, res, actor, church);
     } catch (e) {
       return fail(res, e, fallback);
