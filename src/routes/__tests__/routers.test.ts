@@ -57,7 +57,7 @@ const UNGUARDED: Record<string, string> = {
   callBackPC: 'OAuth callback: as callBackQBO',
   healthCheck: 'answers whether the session exists, nothing else',
   createPaymentIntent: "the email is the subscription form's, not a church's",
-  createUser: 'Google sign-up: no Users row exists yet to check against',
+  createUser: "Google sign-up: no Users row exists yet to check against; it creates only the session login's own",
   myChurches: "lists the signed-in person's own churches, found from the session; names no church",
   addChurch: 'creates a church the signed-in person will own, found from the session; names no church',
 };

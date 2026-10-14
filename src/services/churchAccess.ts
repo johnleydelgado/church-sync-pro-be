@@ -1,8 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextFunction, Request, Response } from 'express';
 import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
-import ThirdPartyEmailPassword from 'supertokens-node/recipe/thirdpartyemailpassword';
-import EmailPassword from 'supertokens-node/recipe/emailpassword';
+import { col, fn, where as sqlWhere } from 'sequelize';
 import Church from '../db/models/church';
 import ChurchMember from '../db/models/churchMember';
 import Users from '../db/models/user';
@@ -11,9 +10,10 @@ import tokenEntity from '../db/models/tokenEntity';
 import bookkeeper from '../db/models/bookkeeper';
 import { canConnectIntegrations } from './churchContext';
 import { ACCOUNT_EMAIL_DOMAIN, isChurchAccountEmail } from './churchAccountEmail';
+import { clearSessionEmailCache, sessionEmail, sessionEmailCacheSize } from './sessionEmail';
 import { createLogger } from '../utils/logger';
 
-export { ACCOUNT_EMAIL_DOMAIN, isChurchAccountEmail };
+export { ACCOUNT_EMAIL_DOMAIN, isChurchAccountEmail, clearSessionEmailCache, sessionEmailCacheSize };
 
 const logger = createLogger('church-access');
 
@@ -61,46 +61,42 @@ const positiveId = (value: unknown): number | null => {
 };
 
 /**
- * The one Users row with this email. Users.email is not unique, and when two rows share an address
- * nobody can say which one is meant, so neither is used. Never logs the address itself.
+ * The Users rows with this email, at most two: Users.email is not unique, and when two rows share
+ * an address nobody can say which one is meant, so neither is used. `anyCase` compares without
+ * case. Logs ids, never the address itself.
  */
-const userByEmail = async (email: string): Promise<Users | null> => {
-  const rows = await Users.findAll({ where: { email }, limit: 2 });
+const lookUpEmail = async (email: string, anyCase = false): Promise<{ user: Users | null; ambiguous: boolean }> => {
+  const where = anyCase ? sqlWhere(fn('lower', col('email')), email.trim().toLowerCase()) : { email };
+  const rows = await Users.findAll({ where: where as any, limit: 2 });
   if (rows.length > 1) {
     // `count` is at least this many: the lookup stops at two.
-    logger.error('more than one Users row for an email', { count: rows.length, ids: rows.map((r) => r.id) });
+    logger.error(
+      anyCase ? 'more than one Users row for an email in any case' : 'more than one Users row for an email',
+      {
+        count: rows.length,
+        ids: rows.map((r) => r.id),
+      },
+    );
+    return { user: null, ambiguous: true };
   }
-  return rows.length === 1 ? rows[0] : null;
+  return { user: rows[0] ?? null, ambiguous: false };
 };
 
-// One SuperTokens lookup per person per five minutes rather than per request.
-const SESSION_EMAIL_TTL_MS = 5 * 60 * 1000;
-const sessionEmails = new Map<string, { email: string; at: number }>();
-export const clearSessionEmailCache = () => sessionEmails.clear();
-/** For tests: how many session emails are held. */
-export const sessionEmailCacheSize = () => sessionEmails.size;
+/** The one Users row spelled exactly so - how every handler looks a church's account up. */
+const userByEmail = async (email: string): Promise<Users | null> => (await lookUpEmail(email)).user;
 
 /**
  * The signed-in person's Users row. A session only carries the SuperTokens id, so go through the
- * email. A church's account row is never a person, so its address never resolves to an actor.
+ * email: the row spelled exactly as the login, else the one row that differs from it only in case
+ * (a row written in another case than SuperTokens holds the login). A church's account row is
+ * never a person, so its address never resolves to an actor.
  */
 export const actorFromSession = async (sessionUserId: string | undefined): Promise<Users | null> => {
-  if (!sessionUserId) return null;
-  const now = Date.now();
-  let hit = sessionEmails.get(sessionUserId);
-  if (!hit || now - hit.at > SESSION_EMAIL_TTL_MS) {
-    const st: any =
-      (await ThirdPartyEmailPassword.getUserById(sessionUserId)) ?? (await EmailPassword.getUserById(sessionUserId));
-    if (!st?.email) return null;
-    hit = { email: String(st.email), at: now };
-    // Sweep on insert so people who signed in once and left don't stay in memory forever.
-    sessionEmails.forEach((entry, key) => {
-      if (now - entry.at > SESSION_EMAIL_TTL_MS) sessionEmails.delete(key);
-    });
-    sessionEmails.set(sessionUserId, hit);
-  }
-  if (isChurchAccountEmail(hit.email)) return null;
-  return userByEmail(hit.email);
+  const email = await sessionEmail(sessionUserId);
+  if (!email || isChurchAccountEmail(email)) return null;
+  const exact = await lookUpEmail(email);
+  if (exact.user || exact.ambiguous) return exact.user;
+  return (await lookUpEmail(email, true)).user;
 };
 
 /**

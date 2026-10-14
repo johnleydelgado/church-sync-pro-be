@@ -22,6 +22,8 @@ import sequelize from '../db';
 import { Op } from 'sequelize';
 import { isChurchAccountEmail } from '../services/churchAccountEmail';
 import { createLogger } from '../utils/logger';
+import { sessionEmail } from '../services/sessionEmail';
+import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
 import crypto from 'crypto';
 const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
 const supertokens = require('supertokens-node');
@@ -51,31 +53,60 @@ const withoutTokenSecrets = (holder: any) => {
 const lowerEq = (col: string, value: string) =>
   sequelize.where(sequelize.fn('lower', sequelize.col(col)), value.trim().toLowerCase());
 
-export const updateUser = async (req: Request, res: Response) => {
-  const data = req.body;
-  try {
-    await Users.update({ ...data }, { where: { email: data.email } });
+const NEW_USER_ROLES = ['client', 'bookkeeper'];
+const NEW_USER_TEXT = ['firstName', 'lastName', 'churchName', 'img_url'] as const;
 
+/**
+ * Google sign-up: once SuperTokens has made the login, the browser (GoogleCallBack.tsx) asks for
+ * the person's Users row, sending `{ email }`. No row exists yet, so no church guard can run: the
+ * only row this creates is the signed-in login's own, under the address SuperTokens holds (which
+ * every guarded route looks the person up by), and only the profile fields below are taken from
+ * the body - never `token` (the password-reset secret), `isActive` or any other column.
+ */
+export const createUser = async (req: SessionRequest, res: Response) => {
+  const body = req.body ?? {};
+  try {
+    const email = await sessionEmail(req.session?.getUserId());
+    if (!email || isChurchAccountEmail(email)) {
+      return responseError({ res, code: 403, message: 'Your account was not found. Sign out and sign in again.' });
+    }
+    if (
+      body.email !== undefined &&
+      (typeof body.email !== 'string' || body.email.trim().toLowerCase() !== email.toLowerCase())
+    ) {
+      return responseError({ res, code: 403, message: 'You can only create your own account.' });
+    }
+
+    const fields: Record<string, unknown> = { email, isActive: true };
+    for (const key of NEW_USER_TEXT) {
+      const value = body[key];
+      if (value === undefined || value === null) continue;
+      if (typeof value !== 'string') return responseError({ res, code: 400, message: `${key} must be text.` });
+      fields[key] = value.trim();
+    }
+    if (body.role !== undefined && body.role !== null) {
+      if (!NEW_USER_ROLES.includes(body.role)) {
+        return responseError({ res, code: 400, message: 'role must be client or bookkeeper.' });
+      }
+      fields.role = body.role;
+    }
+    if (body.isSubscribe !== undefined && body.isSubscribe !== null) {
+      if (body.isSubscribe !== '0' && body.isSubscribe !== '1') {
+        return responseError({ res, code: 400, message: 'isSubscribe must be 0 or 1.' });
+      }
+      fields.isSubscribe = body.isSubscribe;
+    }
+
+    // Any case: a second row differing only in case would leave the person with no actor at all.
+    if (await Users.findOne({ where: lowerEq('email', email) as any })) {
+      return responseError({ res, code: 409, message: 'An account with this email already exists.' });
+    }
+    await Users.create(fields as any);
     return responseSuccess(res, 'success');
   } catch (e) {
-    console.log('ERROR: ', e);
-    res.status(500).json({ error: e.message });
-  }
-};
-
-export const createUser = async (req: Request, res: Response) => {
-  const { email, ...rest } = req.body;
-  try {
-    console.log('createUser', { email, ...rest });
-    const isEmailExist = await Users.findOne({ where: { email } });
-    if (!isEmailExist) {
-      await Users.create({ email, isActive: true, ...rest });
-      return responseSuccess(res, 'success');
-    }
-    res.status(500).json({ error: 'Email exist' });
-  } catch (e) {
-    console.log('ERROR: ', e);
-    res.status(500).json({ error: e.message });
+    // The error's kind only: a database message can quote the values, and those include the address.
+    logger.error('createUser failed', { error: e instanceof Error ? e.name : 'unknown' });
+    return responseError({ res, code: 500, message: 'Could not create your account. Try again.' });
   }
 };
 
@@ -394,59 +425,6 @@ export const getTokenList = async (req: Request, res: Response) => {
   } catch (e) {
     console.log('ERROR: ', e);
     return responseError({ res, code: 204, data: e });
-  }
-};
-
-export const updateUserTokens = async (req: Request, res: Response) => {
-  const data = req.body;
-  const { email, enableEntity, tokenEntityId } = req.body;
-  try {
-    let tokenId = 0;
-    if (Array.isArray(data.tokens) && data.tokens.length > 0) {
-      tokenId = data.tokens[0].id;
-    }
-
-    const isTokenExist = await tokens.findOne({ where: { id: tokenId } });
-
-    // enable tokenEntity
-    if (enableEntity) {
-      // req body should be email, enableEntity, id
-      await tokenEntity.update({ isEnabled: false }, { where: { email } });
-      await tokenEntity.update({ isEnabled: true }, { where: { id: tokenEntityId } });
-      return responseSuccess(res, 'success');
-    }
-
-    if (isTokenExist) {
-      // rename orgization name
-      if (data.organization_name) {
-        await Promise.all(
-          data.tokens.map(
-            async (a) => await tokens.update({ organization_name: data.organization_name }, { where: { id: a.id } }),
-          ),
-        );
-      } else {
-        // update tokens
-        await Promise.all(data.tokens.map(async (a) => await tokens.update({ ...a }, { where: { id: a.id } })));
-      }
-    } else {
-      // delete
-      if (data.isDeleted) {
-        await tokenEntity.destroy({ where: { id: tokenEntityId } });
-        return responseSuccess(res, 'success');
-      }
-      // create
-      const userCreated = await tokenEntity.create({ email: data.email });
-      await Promise.all(
-        ['pco', 'qbo', 'stripe'].map(
-          async (a) => await tokens.create({ ...data, tokenEntityId: userCreated.id, token_type: a }),
-        ),
-      );
-    }
-
-    return responseSuccess(res, 'success');
-  } catch (e) {
-    console.log('ERROR: ', e);
-    return responseError({ res, code: 400, message: e });
   }
 };
 

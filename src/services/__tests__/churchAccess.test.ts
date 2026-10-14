@@ -151,6 +151,43 @@ describe('actorFromSession', () => {
     );
     expect(JSON.stringify(log.error.mock.calls)).not.toContain(BK.email);
   });
+  it('does not look further when the exact address finds two rows', async () => {
+    tpep.mockResolvedValue({ email: BK.email });
+    usersByEmail.mockResolvedValue([BK, { id: 7, email: BK.email }]);
+    await expect(actorFromSession('st-2')).resolves.toBeNull();
+    expect(usersByEmail).toHaveBeenCalledTimes(1);
+  });
+  it('falls back to the one Users row whose address differs from the login only in case', async () => {
+    // SuperTokens has the address as typed at sign-up; the Users row was written another way.
+    tpep.mockResolvedValue({ email: 'BK@Example.test' });
+    usersByEmail.mockImplementation(async ({ where }: any) => (where.email !== undefined ? [] : [BK]));
+    await expect(actorFromSession('st-2')).resolves.toBe(BK);
+    expect(usersByEmail).toHaveBeenCalledTimes(2);
+    const fallback = usersByEmail.mock.calls[1][0];
+    expect(fallback.limit).toBe(2);
+    expect(fallback.where).toMatchObject({
+      attribute: { fn: 'lower', args: [{ col: 'email' }] },
+      logic: 'bk@example.test',
+    });
+  });
+  it('finds no one when the address matches more than one row in other cases, and logs ids only', async () => {
+    tpep.mockResolvedValue({ email: 'BK@Example.test' });
+    usersByEmail.mockImplementation(async ({ where }: any) =>
+      where.email !== undefined ? [] : [BK, { id: 7, email: 'bk@EXAMPLE.test' }],
+    );
+    await expect(actorFromSession('st-2')).resolves.toBeNull();
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining('more than one Users row'),
+      expect.objectContaining({ ids: [2, 7] }),
+    );
+    expect(JSON.stringify(log.error.mock.calls).toLowerCase()).not.toContain(BK.email);
+  });
+  it('finds no one when no row has the address in any case', async () => {
+    tpep.mockResolvedValue({ email: 'ghost@example.test' });
+    usersByEmail.mockResolvedValue([]);
+    await expect(actorFromSession('st-9')).resolves.toBeNull();
+    expect(usersByEmail).toHaveBeenCalledTimes(2);
+  });
   it('never lets a church account row act, whatever the case of its address', async () => {
     tpep.mockResolvedValue({ email: 'Church-ABC@Accounts.ChurchSyncPro.INVALID' });
     usersByEmail.mockResolvedValue([ACCOUNT]);
@@ -339,6 +376,21 @@ describe('middleware', () => {
     });
     expect(next).not.toHaveBeenCalled();
     expect(code).toBe(404);
+  });
+  it('names an account by its exact address only: no case-insensitive fallback for the church', async () => {
+    signedInAs(BK);
+    // A lookup without case would find the account; the handlers query by the exact address.
+    usersByEmail.mockImplementation(async ({ where }: any) => {
+      if (where.email === BK.email) return [BK];
+      return where.email === undefined ? [ACCOUNT] : [];
+    });
+    const { next, code } = await run(requireAccountAccess(fromBody), {
+      body: { email: ACCOUNT.email.toUpperCase() },
+      session,
+    });
+    expect(next).not.toHaveBeenCalled();
+    expect(code).toBe(404);
+    expect(usersByEmail).toHaveBeenCalledTimes(2); // the actor, then the account - nothing more
   });
   it('answers 404 when more than one Users row has the email', async () => {
     signedInAs(BK);

@@ -5,6 +5,8 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 jest.mock('../inviteEmail', () => ({ ...jest.requireActual('../inviteEmail'), sendInviteEmail: jest.fn() }));
+// The SuperTokens login's address, without a SuperTokens core.
+jest.mock('../sessionEmail', () => ({ ...jest.requireActual('../sessionEmail'), sessionEmail: jest.fn() }));
 jest.mock('../../utils/logger', () => {
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
   return { __esModule: true, createLogger: () => log, default: () => log };
@@ -18,7 +20,8 @@ import ChurchMember from '../../db/models/churchMember';
 import bookkeeper from '../../db/models/bookkeeper';
 import tokens from '../../db/models/tokens';
 import tokenEntity from '../../db/models/tokenEntity';
-import { checkAccountAccess, ChurchNeed } from '../churchAccess';
+import { actorFromSession, checkAccountAccess, ChurchNeed } from '../churchAccess';
+import { sessionEmail } from '../sessionEmail';
 import { sendInviteEmail, inviteLinkFor } from '../inviteEmail';
 import { createLogger } from '../../utils/logger';
 import {
@@ -803,6 +806,28 @@ describe('sendEmailInvitation (the old Bookkeepers tab)', () => {
     expect(body.message).toBe('Existing-CH-it@example.test is already on this church.');
     expect(await legacyRows()).toEqual([]);
     expect(mailer).not.toHaveBeenCalled();
+  });
+});
+
+describe('actorFromSession', () => {
+  const signedInAs = async (email: string) => {
+    (sessionEmail as jest.Mock).mockResolvedValue(email);
+    const actor: any = await actorFromSession('st-x');
+    return actor?.id ?? null;
+  };
+
+  it('finds the row spelled exactly as the login, else the one row that differs only in case', async () => {
+    await expect(signedInAs('dup-ch-it@example.test')).resolves.toBe(DUP_LOWER);
+    await expect(signedInAs('Dup-CH-it@example.test')).resolves.toBe(DUP_EXACT);
+    await expect(signedInAs('existing-ch-it@example.test')).resolves.toBe(EXISTING);
+  });
+
+  it('finds no one when two rows differ from the login only in case', async () => {
+    await expect(signedInAs('DUP-ch-it@example.test')).resolves.toBeNull();
+    expect(log.error).toHaveBeenCalledWith(
+      'more than one Users row for an email in any case',
+      expect.objectContaining({ ids: expect.arrayContaining([DUP_LOWER, DUP_EXACT]) }),
+    );
   });
 });
 
