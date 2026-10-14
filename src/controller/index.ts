@@ -111,13 +111,29 @@ export const sendPasswordReset = async (req: Request, res: Response) => {
   }
 };
 
+/** What sendPasswordReset issues: crypto.randomBytes(16).toString('hex'). */
+const RESET_TOKEN_PATTERN = /^[0-9a-f]{32}$/;
+
 export const resetPassword = async (req: Request, res: Response) => {
   const { email, token, password } = req.body;
-  const rand = crypto.randomBytes(16).toString('hex');
+
+  // This route is public, so the token is the only credential. Check its shape before it goes
+  // anywhere near a query: Sequelize turns `token: null` into `"token" IS NULL` - which matches
+  // every user who never asked for a reset - and an array into `IN (...)`. Either let anyone set
+  // any email/password user's password.
+  if (
+    typeof email !== 'string' ||
+    email.trim() === '' ||
+    typeof token !== 'string' ||
+    !RESET_TOKEN_PATTERN.test(token) ||
+    typeof password !== 'string' ||
+    password === ''
+  ) {
+    return responseError({ res, code: 400, data: 'Invalid or expired reset link' });
+  }
 
   try {
     const userDetails = await User.findOne({ where: { email, token } });
-    console.log('userDetails', userDetails);
     if (userDetails === null) {
       return responseError({ res, code: 500, data: 'User not found ! or invalid token' });
     }
@@ -133,7 +149,9 @@ export const resetPassword = async (req: Request, res: Response) => {
       password: password,
     });
 
-    await User.update({ token: rand }, { where: { email, token } });
+    // Single use: clear the token rather than rotate it. A null token can no longer be matched,
+    // because the shape check above refuses anything that is not 32 hex characters.
+    await User.update({ token: null }, { where: { id: userDetails.id } });
 
     return responseSuccess(res, 'sucess');
   } catch (e) {

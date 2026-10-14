@@ -8,7 +8,7 @@ import { responseError, responseSuccess } from '../utils/response';
 import UserSettings from '../db/models/userSettings';
 import tokens from '../db/models/tokens';
 import tokenEntity from '../db/models/tokenEntity';
-import { isEmpty } from 'lodash';
+import { isEmpty, omit } from 'lodash';
 import bookkeeper from '../db/models/bookkeeper';
 import User from '../db/models/user';
 import { uploadImage } from '../utils/storage';
@@ -17,7 +17,10 @@ import Billing from '../db/models/billing';
 import { captureClearingSnapshot } from '../services/clearingSnapshot';
 
 export const updateUser = async (req: Request, res: Response) => {
-  const data = req.body;
+  // `token` is the password-reset credential; only sendPasswordReset may write it. Taking it from
+  // the body let any signed-in account plant a known token on someone else's row, then reset
+  // their password.
+  const data = omit(req.body, 'token');
   try {
     await Users.update({ ...data }, { where: { email: data.email } });
 
@@ -34,7 +37,8 @@ export const createUser = async (req: Request, res: Response) => {
     console.log('createUser', { email, ...rest });
     const isEmailExist = await Users.findOne({ where: { email } });
     if (!isEmailExist) {
-      await Users.create({ email, isActive: true, ...rest });
+      // Never the password-reset token from a request body (see updateUser).
+      await Users.create({ email, isActive: true, ...omit(rest, 'token') });
       return responseSuccess(res, 'success');
     }
     res.status(500).json({ error: 'Email exist' });
@@ -283,11 +287,14 @@ export const getUserRelated = async (req: Request, res: Response) => {
   try {
     const userData = await Users.findOne({
       where: { email: email as string },
+      // `token` is the password-reset token: never send it to a browser.
+      attributes: { exclude: ['token'] },
       include: [{ model: bookkeeper, as: 'UserBookkeepers' }, { model: UserSettings }],
     });
     console.log('userData', userData);
     if (userData !== null) {
       const user = userData.toJSON();
+      delete user.token;
       return responseSuccess(res, user);
     }
     res.status(500).json({ error: 'Email not exist' });
@@ -472,12 +479,15 @@ export const bookkeeperList = async (req: Request, res: Response) => {
         {
           model: User,
           as: 'User',
+          // The password-reset token: a bookkeeper must not read the church's (or vice versa).
+          attributes: { exclude: ['token'] },
           // Then include tokens that belong to this user
           include: [{ model: tokens, as: 'tokens' }],
         },
         {
           model: User,
           as: 'Client',
+          attributes: { exclude: ['token'] },
           include: [{ model: tokens, as: 'tokens' }],
         },
       ],
