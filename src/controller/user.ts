@@ -423,25 +423,21 @@ export const updateUserTokens = async (req: Request, res: Response) => {
 };
 
 export const updateUserToken = async (req: Request, res: Response) => {
-  const data = req.body;
-  const { email, token_type } = req.body;
-
+  // Behind requireAccountAccess(fromBody, 'integrations'): the church's account, not whoever clicked Connect.
+  const account = res.locals.churchAccess.account;
+  const { token_type, access_token, refresh_token, realm_id } = req.body;
+  if (!['qbo', 'pco', 'stripe'].includes(token_type)) {
+    return responseError({ res, code: 400, message: 'Unknown connection type' });
+  }
   try {
-    const tokenEntityData = await tokenEntity.findOne({ where: { email } });
-
-    if (!isEmpty(tokenEntityData)) {
-      // update tokens
-      const token = await tokens.findAll({ where: { tokenEntityId: tokenEntityData.id } });
-      const isExist = token.find((a) => a.token_type === token_type);
-      if (!isExist) {
-        await tokens.create({ ...data, tokenEntityId: tokenEntityData.id, token_type });
-      }
-    } else {
-      // create
-      const userCreated = await tokenEntity.create({ email: data.email, isEnabled: true });
-      await tokens.create({ ...data, tokenEntityId: userCreated.id, token_type });
-    }
-
+    const fields = { access_token, refresh_token, realm_id: realm_id ?? null, userId: account.id };
+    const entity: any =
+      (await tokenEntity.findOne({ where: { email: account.email } })) ??
+      (await tokenEntity.create({ email: account.email, isEnabled: true }));
+    const existing: any = await tokens.findOne({ where: { tokenEntityId: entity.id, token_type } });
+    // Connecting again replaces the old connection (it used to be ignored, keeping a dead token).
+    if (existing) await existing.update(fields);
+    else await tokens.create({ ...fields, tokenEntityId: entity.id, token_type } as any);
     return responseSuccess(res, 'success');
   } catch (e) {
     console.log('ERROR: ', e);
