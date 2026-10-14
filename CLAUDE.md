@@ -62,6 +62,17 @@ The `development` DB config in `src/db/config/config.json` matches these (`127.0
 
 - **`src/app.ts`** does all wiring: SuperTokens `init()` (with custom `signUpPOST`/`emailPasswordSignUpPOST` overrides that upsert a row into the `Users` table on signup), security headers, CORS (locked to `websiteDomain`, credentials on), the SuperTokens `middleware()`, then mounts the app router at **`/csp`**. A `node-cron` block exists but is currently commented out.
 - **`src/routes/routers.ts`** is the single flat route table — every endpoint is registered here, mapping a path (from `src/constant/routes.ts`) to a controller function. **Most routes are wrapped in `verifySession()`** (SuperTokens) for auth; a handful are intentionally public (e.g. `authStripe`, `callBackStripe`, `createPaymentIntent`, `getUserRelated`, invitation/password-reset endpoints, and the `automation*`/`checkLatest*` cron-style endpoints). Check the wrapping before assuming an endpoint is authed.
+- **Every church endpoint also has a church guard** (2026-10-15) between `verifySession()` and the
+  handler: `requireAccountAccess(locate, need)` for the older endpoints (they name the church by
+  its account's `email` / `userId` in the request) and `requireChurch(need)` for `/church/*` (by
+  `churchId`). Both live in `src/services/churchAccess.ts`, the one place access is decided:
+  a person's own Users row always; otherwise an accepted `ChurchMembers` row on the church filed
+  under that account; `'integrations'` needs owner or `integrationAccessEnabled`; `'owner'` needs
+  role owner. Refusals are 403 (never 401 - SuperTokens' frontend would try a refresh), unknown
+  church 404. The guard leaves `res.locals.actor` / `res.locals.churchAccess`; handlers that write
+  must act on `res.locals.churchAccess.account`, never re-read the church from the request.
+  `src/routes/__tests__/routers.test.ts` fails if a session route is added without a guard (or with
+  the wrong need/kind) and isn't on its allow-list.
 
 ### Controllers (`src/controller/`) — where the business logic lives
 
@@ -114,9 +125,9 @@ contract: `docs/plans/2026-10-08-registrations-import.md` in the frontend repo (
   Stripe-era array is ignored), a clearing account (the `registration` bank slot, else `donation`;
   the two must be the same account because the Clearing page tracks one), and a fee account
   whenever a row carries a fee.
-- `controller/payoutReport.ts` checks that the signed-in user **is the church or a bookkeeper it
-  invited who accepted** - unlike the older endpoints, which trust the `email` in the request -
-  and records the session user, not the request, as the uploader.
+- The payout-report routes sit behind the church guard like every church endpoint, and
+  `controller/payoutReport.ts` records the session user (`res.locals.actor`), not the request, as
+  the uploader.
 - `settingRegistrationData` now holds the v2 object. The Stripe-era code (`stripe.ts`,
   `automation.ts`, `utils/automation-helper.ts`) reads it only through `legacyRegistrationList()`,
   which returns [] for v2 - never call `.find`/`.filter` on the raw setting.
@@ -275,7 +286,33 @@ than swallow.
 - **`DailyJeSync.registration*`** - registration gross and fee, refund gross and fee, entry count and entry ids per day (migration `20261008000001`). `netCentsOf` adds them, so the Clearing statement, "posted to date" and the switch-over include registrations.
 - **`registration`**, **`billing`**, **`emailLog`**, **`userEmailPreferences`** — registration events, subscription billing info, sent-email log, and notification recipient prefs.
 
-The **client/bookkeeper** distinction is core: a bookkeeper operates on a client's data via the `bookkeeper`→`tokenEntity` linkage. Mirror this when adding any data access.
+**Churches** (2026-10-15; plan `church-sync-pro/docs/plans/2026-10-14-church-access-and-bookkeeper-screens.md`):
+
+- **`Churches`** - `ownerUserId` is the church's **account**: the Users row its settings, tokens and
+  postings are filed under (unique: one church per account row, `churches_owner_user_unique`). For
+  Active Church that is Matt's own login; a church added with `POST /church/create` gets an account
+  row with an `@accounts.churchsyncpro.invalid` address and no SuperTokens user, so nobody can sign
+  in as it (`churchAccountEmail.ts`; sign-up refuses that domain, the guard never treats it as a
+  person). The money tables were deliberately NOT re-keyed to `churchId`: `(userId, day)` etc. are
+  already per church because the account row is 1:1 with it. The Phase 1 `churchId` columns on
+  data tables are unused and unmaintained.
+- **`ChurchMembers`** - who may work on a church: `role` owner|bookkeeper, `integrationAccessEnabled`,
+  `inviteAccepted`; pending invites carry `invitedEmail` + `invitationToken` (unique per church per
+  pending address). Access reads this table only. The legacy **`bookkeeper`** table is kept in step
+  (invites, acceptance and the legacy delete write both) until its routes are retired.
+- `src/services/churches.ts` runs the Churches page and People tab (`/church/*`, controller
+  `church.ts`): `listMyChurches` (creates a client login's own church on first call),
+  `createChurch` (creator becomes owner), `updateChurch`, `listPeople`, `invitePerson` (an existing
+  login is added straight away; otherwise a pending member and a copyable link - SendGrid failures
+  return `emailSent: false`), `setIntegrationAccess`, `removePerson` (never the last owner or the
+  church's own login). Advisory locks 74020/74021 guard create/remove; 74010 is the payout import.
+- Migration `20261015000001-resync-church-members` caught memberships up with the legacy table and
+  made the bookkeeper who added a Clients-page church its owner (only for the synthetic
+  `<slug>-<their email>` address; it logs what it promotes/drops/can't match). Before running it on
+  production read `bookkeeper` rows and duplicate emails (see the plan's section 9).
+- The nightly `dailyJournalSync` skips churches whose `Churches.isActive` is false
+  (`church_inactive`); a body `email`/`days` override must be valid or it's a 400 (an empty email
+  used to mean "every church").
 
 ### External integrations & helpers (`src/utils/`)
 
