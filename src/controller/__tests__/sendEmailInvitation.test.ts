@@ -40,6 +40,15 @@ const send = async (body: Record<string, unknown>) => {
   return { code: res.status.mock.calls[0]?.[0], body: res.json.mock.calls[0]?.[0] };
 };
 
+// inviteLinkFor refuses to build a link without it (it would mail `undefined?...`).
+const ORIGINAL_INVITATION_URL = process.env.INVITATION_URL;
+beforeAll(() => {
+  process.env.INVITATION_URL = 'https://app.example.test/invite-bookkeeper';
+});
+afterAll(() => {
+  process.env.INVITATION_URL = ORIGINAL_INVITATION_URL;
+});
+
 beforeEach(() => {
   jest.resetAllMocks();
   bkCreate.mockResolvedValue({ id: 1 });

@@ -18,24 +18,10 @@ import EmailPassword from 'supertokens-node/recipe/emailpassword';
 import { syncBatchToJournalEntries } from '../services/syncEngine';
 import { recordPendingChurchInvite } from '../services/pendingInvite';
 import { removeLegacyBookkeeper } from '../services/legacyBookkeeper';
+import { NO_CLICK_TRACKING, inviteLinkFor, sendInviteEmail } from '../services/inviteEmail';
 
 const sgMail = require('@sendgrid/mail');
-const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
-
-/**
- * Send transactional links exactly as written.
- *
- * SendGrid's account-wide click tracking rewrites every URL in an email to
- * `https://url3979.churchsyncpro.com/ls/click?upn=<300 opaque characters>` so it can count
- * clicks. For a newsletter that is harmless; for an invitation or a password reset it is not.
- * The recipient is being asked to trust a link that no longer shows where it goes, which is the
- * exact shape of a phishing email - and spam filters score it that way too. The invite also
- * carries a one-time token, so a rewritten URL is an extra hop that can break it.
- *
- * Disabled per message rather than on the account, so anything else the account sends keeps its
- * tracking.
- */
-const NO_CLICK_TRACKING = { trackingSettings: { clickTracking: { enable: false, enableText: false } } };
+const { SENDGRID_API_KEY, RESET_PASSWORD_URL } = process.env;
 
 export const sendEmailInvitation = async (req: Request, res: Response) => {
   // Always a pending invite with a mail. `createdByBk` / `bookkeeperId` in the body are ignored: they
@@ -47,11 +33,10 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
   }
   const rand = crypto.randomBytes(16).toString('hex');
 
-  sgMail.setApiKey(SENDGRID_API_KEY);
-  // Encoded: a '+' in the address would otherwise be read back as a space by the page.
-  const inviteLink = INVITATION_URL + `?bookkeeperEmail=${encodeURIComponent(emailTo)}&invitationToken=${rand}`;
-
   try {
+    // Built before anything is written: with no INVITATION_URL this refuses rather than mail a broken link.
+    const inviteLink = inviteLinkFor(emailTo, rand);
+
     // Create bookkeeper in the database
     await bookkeeper.create({
       email: emailTo,
@@ -64,17 +49,7 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
     // Accepting reads ChurchMembers only, so the pending row there carries the same token.
     await recordPendingChurchInvite({ clientId: Number(clientId), email: emailTo, token: rand });
 
-    const msg = {
-      to: emailTo,
-      from: 'support@churchsyncpro.com',
-      subject: 'You have been invited to take on the role of a bookkeeper.',
-      templateId: 'd-4529481214ab4c4e85018b4dfb3b6f20',
-      dynamicTemplateData: {
-        inviteLink,
-      },
-      ...NO_CLICK_TRACKING,
-    };
-    await sgMail.send(msg);
+    await sendInviteEmail(emailTo, inviteLink);
 
     return responseSuccess(res, 'Email sent');
   } catch (e) {
