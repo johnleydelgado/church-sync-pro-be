@@ -43,6 +43,13 @@ it('removes the row and the access it gave', async () => {
   expect(body.data).toBe('deleted');
 });
 
+it('answers 409 for a row that names an owner: owners are removed from the People tab', async () => {
+  remove.mockResolvedValue('owner');
+  const { code, body } = await del({ id: 7 });
+  expect(code).toBe(409);
+  expect(body).toMatchObject({ success: false, message: 'Remove owners from the People tab.' });
+});
+
 it('answers 404 for a row that is not there', async () => {
   remove.mockResolvedValue(null);
   const { code } = await del({ id: 7 });

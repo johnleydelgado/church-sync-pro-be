@@ -64,6 +64,13 @@ const NEW_USER_TEXT = ['firstName', 'lastName', 'churchName', 'img_url'] as cons
  * only row this creates is the signed-in login's own, under the address SuperTokens holds (which
  * every guarded route looks the person up by), and only the profile fields below are taken from
  * the body - never `token` (the password-reset secret), `isActive` or any other column.
+ *
+ * A Users row whose address differs from the login's only in case (a Google login for an address
+ * that signed up another way) is that person's row: no second one is made, and the answer is
+ * `{ email: <the stored address> }`. GoogleCallBack should then use that address, not the
+ * login's, for getUserRelated and the rest: the guarded endpoints look accounts up by the exact
+ * stored address. (No such rows on staging or production as of 2026-10-15, so the browser still
+ * uses the login's address.) A new row answers 'success'.
  */
 export const createUser = async (req: SessionRequest, res: Response) => {
   const body = req.body ?? {};
@@ -100,7 +107,19 @@ export const createUser = async (req: SessionRequest, res: Response) => {
     }
 
     // Any case: a second row differing only in case would leave the person with no actor at all.
-    if (await Users.findOne({ where: lowerEq('email', email) as any })) {
+    const existing = await Users.findAll({ where: lowerEq('email', email) as any, attributes: ['id', 'email'] });
+    if (existing.length === 1 && existing[0].email !== email) {
+      logger.info('createUser: the login matches an existing Users row only in case; using that row', {
+        userId: existing[0].id,
+      });
+      return responseSuccess(res, { email: existing[0].email });
+    }
+    if (existing.length > 1 && !existing.some((u) => u.email === email)) {
+      logger.error('createUser: the login matches several Users rows in case only; using none', {
+        ids: existing.map((u) => u.id),
+      });
+    }
+    if (existing.length) {
       return responseError({ res, code: 409, message: 'An account with this email already exists.' });
     }
     await Users.create(fields as any);
@@ -740,7 +759,14 @@ export const createClientChurch = async (req: Request, res: Response) => {
     } catch (dbError) {
       // The login exists but the church does not: remove the login again, otherwise a
       // retry is refused as "already exists" for a church nobody can see.
-      await supertokens.deleteUser(signUp.user.id).catch(() => undefined);
+      await supertokens.deleteUser(signUp.user.id).catch((deleteError: unknown) => {
+        // Left behind, the login makes a retry answer "already exists" for a church nobody can see.
+        // The error's kind only: its message can quote the synthetic address, which holds the bookkeeper's.
+        logger.error('createClientChurch: could not remove the SuperTokens login after the church failed', {
+          superTokensUserId: signUp.user.id,
+          error: deleteError instanceof Error ? deleteError.name : 'unknown',
+        });
+      });
       throw dbError;
     }
   } catch (e) {

@@ -3,9 +3,10 @@
  * from ChurchMembers only, so deleting that row alone left the person able to open the church. The
  * matching member row goes too, in the same transaction.
  *
- * Only bookkeeper members: an owner is never removed this way (no last-owner check here). A row's
- * address only finds an invite still waiting for a login, so deleting the stale pending row of a
- * re-sent invite leaves the person who accepted the newer one on the church.
+ * Only bookkeeper members: a row naming an owner is refused and nothing is deleted - owners are
+ * removed from the People tab, which keeps a church from losing its last one. A row's address only
+ * finds an invite still waiting for a login, so deleting the stale pending row of a re-sent invite
+ * leaves the person who accepted the newer one on the church.
  */
 function mockModel() {
   return { __esModule: true, default: { findOne: jest.fn(), destroy: jest.fn() } };
@@ -34,7 +35,7 @@ import { removeLegacyBookkeeper } from '../legacyBookkeeper';
 
 const bk = bookkeeper as unknown as { findOne: jest.Mock; destroy: jest.Mock };
 const church = Church as unknown as { findOne: jest.Mock };
-const member = ChurchMember as unknown as { destroy: jest.Mock };
+const member = ChurchMember as unknown as { findOne: jest.Mock; destroy: jest.Mock };
 const transaction = (sequelize as unknown as { transaction: jest.Mock }).transaction;
 
 const lowerEq = (col: string, value: string) => ({ attribute: { fn: 'lower', args: [{ col }] }, logic: value });
@@ -44,6 +45,7 @@ const pendingInvite = (value: string) => ({ [Op.and]: [{ userId: null }, lowerEq
 beforeEach(() => {
   jest.clearAllMocks();
   church.findOne.mockResolvedValue({ id: 3, ownerUserId: 10 });
+  member.findOne.mockResolvedValue(null);
   member.destroy.mockResolvedValue(1);
   bk.destroy.mockResolvedValue(1);
 });
@@ -89,7 +91,21 @@ it('deleting the stale pending row of a re-sent invite only matches a member sti
   expect(bk.destroy).toHaveBeenCalledWith({ where: { id: 6 }, transaction: 'TX' });
 });
 
-it('never removes an owner: only bookkeeper members are matched', async () => {
+it('refuses a row that names an owner, deleting nothing', async () => {
+  bk.findOne.mockResolvedValue({ id: 7, clientId: 10, userId: 42, email: 'Owner@Cfp.com' });
+  member.findOne.mockResolvedValue({ id: 50, role: 'owner', userId: 42 });
+
+  await expect(removeLegacyBookkeeper(7)).resolves.toBe('owner');
+
+  expect(member.findOne).toHaveBeenCalledWith({
+    where: { churchId: 3, role: 'owner', [Op.or]: [{ userId: 42 }, pendingInvite('owner@cfp.com')] },
+    transaction: 'TX',
+  });
+  expect(member.destroy).not.toHaveBeenCalled();
+  expect(bk.destroy).not.toHaveBeenCalled();
+});
+
+it('only ever deletes bookkeeper members', async () => {
   bk.findOne.mockResolvedValue({ id: 7, clientId: 10, userId: 42, email: null });
   member.destroy.mockResolvedValue(0);
 

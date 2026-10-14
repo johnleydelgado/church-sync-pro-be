@@ -3,6 +3,10 @@
  * the person's Users row with `{ email }`. No row exists yet, so no church guard can run. The only
  * row this may create is the signed-in login's own, under the address SuperTokens holds, and only
  * profile fields are taken from the body - never `token`, `isActive` or any other column.
+ *
+ * A Users row already spelled the same apart from case (a Google login for an address that signed
+ * up another way) is the person's row: no second one is made, and the answer names the stored
+ * address, which is the one the guarded endpoints look the account up by.
  */
 function mockModel() {
   return {
@@ -33,12 +37,18 @@ jest.mock('../../services/clearingSnapshot', () => ({ captureClearingSnapshot: j
 jest.mock('../../services/emailVerification', () => ({ markEmailVerified: jest.fn() }));
 jest.mock('../../services/sessionEmail', () => ({ sessionEmail: jest.fn() }));
 jest.mock('supertokens-node/recipe/thirdpartyemailpassword', () => ({ emailPasswordSignUp: jest.fn() }));
+jest.mock('../../utils/logger', () => {
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  return { __esModule: true, createLogger: () => log, default: () => log };
+});
 
 import Users from '../../db/models/user';
 import { sessionEmail } from '../../services/sessionEmail';
+import { createLogger } from '../../utils/logger';
 import { createUser } from '../user';
 
-const users = Users as unknown as { findOne: jest.Mock; create: jest.Mock };
+const users = Users as unknown as { findAll: jest.Mock; create: jest.Mock };
+const log = createLogger('test') as any;
 const signedIn = sessionEmail as jest.Mock;
 
 const LOGIN = 'Grace.Admin@Example.test';
@@ -56,7 +66,7 @@ const create = async (body: Record<string, unknown>, sessionUserId: string | nul
 beforeEach(() => {
   jest.resetAllMocks();
   signedIn.mockResolvedValue(LOGIN);
-  users.findOne.mockResolvedValue(null);
+  users.findAll.mockResolvedValue([]);
   users.create.mockResolvedValue({ id: 50 });
 });
 
@@ -72,14 +82,39 @@ it("files the row under the login's address as SuperTokens holds it, whatever ca
   expect(users.create).toHaveBeenCalledWith({ email: LOGIN, isActive: true });
 });
 
-it('checks for an existing row in any case', async () => {
-  users.findOne.mockResolvedValue({ id: 9 });
+it('refuses with 409 a second row for the same address', async () => {
+  users.findAll.mockResolvedValue([{ id: 9, email: LOGIN }]);
   const { code } = await create({ email: LOGIN });
   expect(code).toBe(409);
-  expect(users.findOne).toHaveBeenCalledWith({
+  expect(users.findAll).toHaveBeenCalledWith({
     where: { attribute: { fn: 'lower', args: [{ col: 'email' }] }, logic: 'grace.admin@example.test' },
+    attributes: ['id', 'email'],
   });
   expect(users.create).not.toHaveBeenCalled();
+});
+
+it('answers with the stored address when the only row differs from the login only in case', async () => {
+  users.findAll.mockResolvedValue([{ id: 9, email: 'grace.admin@example.test' }]);
+  const { code, body } = await create({ email: LOGIN });
+  expect(code).toBe(200);
+  expect(body.data).toEqual({ email: 'grace.admin@example.test' });
+  expect(users.create).not.toHaveBeenCalled();
+  expect(log.info).toHaveBeenCalledWith(expect.any(String), { userId: 9 });
+  expect(JSON.stringify([log.info.mock.calls, log.warn.mock.calls]).toLowerCase()).not.toContain(
+    'grace.admin@example.test',
+  );
+});
+
+it('refuses with 409, logging ids only, when several rows differ from the login only in case', async () => {
+  users.findAll.mockResolvedValue([
+    { id: 9, email: 'grace.admin@example.test' },
+    { id: 12, email: 'GRACE.ADMIN@example.test' },
+  ]);
+  const { code } = await create({ email: LOGIN });
+  expect(code).toBe(409);
+  expect(users.create).not.toHaveBeenCalled();
+  expect(log.error).toHaveBeenCalledWith(expect.any(String), { ids: [9, 12] });
+  expect(JSON.stringify(log.error.mock.calls).toLowerCase()).not.toContain('grace.admin@example.test');
 });
 
 it("refuses with 403 a row for anyone else's address", async () => {

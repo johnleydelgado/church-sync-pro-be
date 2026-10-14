@@ -145,6 +145,18 @@ it('refuses with 409 someone already on the church, before writing the legacy ro
   expectNothingWritten();
 });
 
+it('refuses with 400 an account that has no church to invite to, before writing or mailing', async () => {
+  // ensureOwnChurch makes one only for a client login; a bookkeeper's own row has none.
+  mirror.mockResolvedValue('no-church');
+  const { code, body } = await send(
+    { emailTo: 'bk@example.test', clientId: 2 },
+    makeRes({ churchAccess: { account: { id: 2, role: 'bookkeeper', email: 'own@example.test' } } }),
+  );
+  expect(code).toBe(400);
+  expect(body).toMatchObject({ success: false, message: 'This account has no church to invite people to.' });
+  expectNothingWritten();
+});
+
 it('refreshes the pending legacy row of a re-sent invite instead of adding another', async () => {
   bkUpdate.mockResolvedValue([1]);
   const { code } = await send({ emailTo: 'BK@example.test', clientId: 10 });

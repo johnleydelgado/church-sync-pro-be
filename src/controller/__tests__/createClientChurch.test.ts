@@ -30,12 +30,17 @@ jest.mock('../../services/clearingSnapshot', () => ({ captureClearingSnapshot: j
 jest.mock('../../services/emailVerification', () => ({ markEmailVerified: jest.fn() }));
 jest.mock('supertokens-node/recipe/thirdpartyemailpassword', () => ({ emailPasswordSignUp: jest.fn() }));
 jest.mock('supertokens-node', () => ({ deleteUser: jest.fn().mockResolvedValue(undefined) }));
+jest.mock('../../utils/logger', () => {
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  return { __esModule: true, createLogger: () => log, default: () => log };
+});
 
 import Users from '../../db/models/user';
 import bookkeeper from '../../db/models/bookkeeper';
 import Church from '../../db/models/church';
 import ChurchMember from '../../db/models/churchMember';
 import sequelize from '../../db';
+import { createLogger } from '../../utils/logger';
 import { createClientChurch } from '../user';
 const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
 const supertokens = require('supertokens-node');
@@ -46,6 +51,7 @@ const mockedChurch = Church as unknown as { create: jest.Mock };
 const mockedMember = ChurchMember as unknown as { create: jest.Mock };
 const transaction = (sequelize as unknown as { transaction: jest.Mock }).transaction;
 const mockedSignUp = ThirdPartyEmailPassword.emailPasswordSignUp as jest.Mock;
+const log = createLogger('test') as any;
 
 const JAKE = { id: 5, email: 'jake@cfp.com', role: 'bookkeeper' };
 
@@ -180,4 +186,19 @@ it('refuses an absurdly long church name before creating anything', async () => 
   await createClientChurch({ body: { churchName: 'x'.repeat(201), bookkeeperId: 5 } } as any, res);
   expect(res.status).toHaveBeenCalledWith(400);
   expect(mockedSignUp).not.toHaveBeenCalled();
+});
+
+it('logs, by SuperTokens id and error kind only, a login it could not remove again', async () => {
+  mockedSignUp.mockResolvedValue({ status: 'OK', user: { id: 'st-9' } });
+  mockedUsers.create.mockRejectedValue(new Error('connection lost'));
+  const refused = new Error('core unreachable for active-church-jake@cfp.com');
+  refused.name = 'SuperTokensError';
+  supertokens.deleteUser.mockRejectedValueOnce(refused);
+  const res = makeRes();
+
+  await createClientChurch({ body: { churchName: 'Active Church', bookkeeperId: 5 } } as any, res);
+
+  expect(res.status).toHaveBeenCalledWith(500);
+  expect(log.error).toHaveBeenCalledWith(expect.any(String), { superTokensUserId: 'st-9', error: 'SuperTokensError' });
+  expect(JSON.stringify(log.error.mock.calls)).not.toContain('cfp.com');
 });

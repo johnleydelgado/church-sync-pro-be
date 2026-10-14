@@ -740,15 +740,15 @@ describe('removeLegacyBookkeeper (the old Bookkeepers tab)', () => {
     expect(await ChurchMember.findOne({ where: { id: invite.id } })).toBeNull();
   });
 
-  it('never removes an owner, even the one the legacy row names', async () => {
+  it('refuses a row that names an owner, deleting nothing', async () => {
     const id = await hopeChapel();
     const owner = await addOwner(id, EXISTING);
     const row = await legacyRow(CLIENT, 'existing-ch-it@example.test', { inviteAccepted: true, userId: EXISTING });
 
-    await expect(removeLegacyBookkeeper(row.id)).resolves.toEqual({ removedMembers: 0 });
+    await expect(removeLegacyBookkeeper(row.id)).resolves.toBe('owner');
     expect(await ChurchMember.findOne({ where: { id: owner.id } })).not.toBeNull();
     expect(await ownersOf(id)).toBe(2);
-    expect(await bookkeeper.findOne({ where: { id: row.id } })).toBeNull();
+    expect(await bookkeeper.findOne({ where: { id: row.id } })).not.toBeNull();
   });
 });
 
@@ -793,6 +793,16 @@ describe('sendEmailInvitation (the old Bookkeepers tab)', () => {
     const church: any = await Church.findOne({ where: { ownerUserId: CLIENT } });
     const members: any[] = await ChurchMember.findAll({ where: { churchId: church.id, userId: null } });
     expect(members.map((m) => m.invitationToken)).toEqual([rows[0].invitationToken]);
+  });
+
+  it('refuses an account with no church to invite to with a 400, writing and mailing nothing', async () => {
+    const { code, body } = await invite(BK_ONLY, 'someone-it@example.test');
+
+    expect(code).toBe(400);
+    expect(body.message).toBe('This account has no church to invite people to.');
+    expect(await Church.findOne({ where: { ownerUserId: BK_ONLY } })).toBeNull();
+    expect(await bookkeeper.count({ where: { clientId: BK_ONLY } })).toBe(0);
+    expect(mailer).not.toHaveBeenCalled();
   });
 
   it('refuses someone already on the church with a 409, writing and mailing nothing', async () => {

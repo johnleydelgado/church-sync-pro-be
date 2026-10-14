@@ -88,3 +88,71 @@ it('skips a deactivated church with reason church_inactive and runs the others',
   expect(res.status).toHaveBeenCalledWith(200);
   expect(res.json.mock.calls[0][0].data).toMatchObject({ processed: 1, skipped: 1, skips });
 });
+
+/**
+ * The operator overrides, `email` (one church) and `days` (exact days), are optional - the
+ * scheduler sends neither. Sent but unusable, they are refused: an empty `email` used to mean
+ * "every church", and ran them all.
+ */
+describe('operator overrides', () => {
+  const sync = async (body: Record<string, unknown>) => {
+    const res = makeRes();
+    await dailyJournalSync({ body } as any, res);
+    return { code: res.status.mock.calls[0]?.[0], body: res.json.mock.calls[0]?.[0] };
+  };
+  const synced = {
+    status: 'synced',
+    email: 'live@church.test',
+    daysExamined: ['2026-09-08'],
+    postedDays: ['2026-09-08'],
+    failedDays: [],
+  };
+
+  beforeEach(() => {
+    mockedSyncRun.create.mockResolvedValue({ update: jest.fn().mockResolvedValue(undefined) });
+    mockedUser.findAll.mockResolvedValue([{ id: 10, email: 'live@church.test' }]);
+    mockedChurch.findAll.mockResolvedValue([]);
+    mockedRun.mockResolvedValue(synced);
+  });
+
+  it.each([[''], ['   '], [null], [5], [['live@church.test']], [{ email: 'live@church.test' }]])(
+    'refuses email %p with 400, before opening a run or reading any church',
+    async (email) => {
+      const { code, body } = await sync({ email });
+      expect(code).toBe(400);
+      expect(body.success).toBe(false);
+      expect(mockedSyncRun.create).not.toHaveBeenCalled();
+      expect(mockedUser.findAll).not.toHaveBeenCalled();
+      expect(mockedRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['an empty list', []],
+    ['not a list', '2026-09-08'],
+    ['null', null],
+    ['a day not written YYYY-MM-DD', ['2026-9-8']],
+    ['a day that does not exist', ['2026-02-30']],
+    ['a day that is not a string', [20260908]],
+    ['one bad day among good ones', ['2026-09-08', 'yesterday']],
+  ])('refuses days that are %s with 400, running nothing', async (_label, days) => {
+    const { code } = await sync({ days });
+    expect(code).toBe(400);
+    expect(mockedSyncRun.create).not.toHaveBeenCalled();
+    expect(mockedRun).not.toHaveBeenCalled();
+  });
+
+  it('runs only the church named, for the days named', async () => {
+    const { code } = await sync({ email: 'live@church.test', days: ['2026-09-08', '2026-09-09'] });
+    expect(code).toBe(200);
+    expect(mockedUser.findAll).toHaveBeenCalledWith({ where: { role: 'client', email: 'live@church.test' } });
+    expect(mockedRun.mock.calls[0][1]).toMatchObject({ days: ['2026-09-08', '2026-09-09'] });
+  });
+
+  it('runs every church for the default days when neither is sent', async () => {
+    const { code } = await sync({});
+    expect(code).toBe(200);
+    expect(mockedUser.findAll).toHaveBeenCalledWith({ where: { role: 'client' } });
+    expect(mockedRun.mock.calls[0][1].days).toBeUndefined();
+  });
+});

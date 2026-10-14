@@ -58,7 +58,9 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
     const outcome = await sequelize.transaction(async (transaction) => {
       // Accepting reads ChurchMembers only, so the pending row there carries the same token.
       const recorded = await recordPendingChurchInvite({ clientId: account.id, email, token: rand, transaction });
-      if (recorded === 'already-member') return recorded;
+      // Neither wrote anything: the person is on the church already, or there is no church (an
+      // account that isn't a client's, which ensureOwnChurch leaves alone).
+      if (recorded === 'already-member' || recorded === 'no-church') return recorded;
       // An invite sent again: the legacy row(s) still pending for this address take the new token,
       // rather than the Bookkeepers tab listing the person once per mail.
       const [refreshed] = await bookkeeper.update(
@@ -90,6 +92,9 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
     });
     if (outcome === 'already-member') {
       return responseError({ res, code: 409, message: `${email} is already on this church.` });
+    }
+    if (outcome === 'no-church') {
+      return responseError({ res, code: 400, message: 'This account has no church to invite people to.' });
     }
 
     await sendInviteEmail(email, inviteLink);
@@ -214,6 +219,10 @@ export const deleteBookeeper = async (req: Request, res: Response) => {
     const removed = await removeLegacyBookkeeper(id);
     if (!removed) {
       return responseError({ res, code: 404, message: 'Bookkeeper not found' });
+    }
+    if (removed === 'owner') {
+      // Nothing was deleted. The People tab removes owners, and keeps a church from losing its last.
+      return responseError({ res, code: 409, message: 'Remove owners from the People tab.' });
     }
     return responseSuccess(res, 'deleted');
   } catch (e) {

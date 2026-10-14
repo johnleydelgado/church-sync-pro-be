@@ -14,10 +14,11 @@ import ChurchMember from '../db/models/churchMember';
  * address the invite went to (any case), so a pending invite is withdrawn too. The address never
  * finds a member who has a login: an invite sent twice leaves a stale pending legacy row next to the
  * accepted one, and deleting the stale row must not take the person who accepted off the church.
- * Only bookkeeper members are removed: this path has no last-owner check, so owners are left alone.
- * Returns null when there is no such row.
+ * A row that names an owner is refused ('owner') and nothing is deleted: owners are removed from
+ * the People tab, which keeps a church from losing its last one. Returns null when there is no
+ * such row.
  */
-export const removeLegacyBookkeeper = async (id: number): Promise<{ removedMembers: number } | null> =>
+export const removeLegacyBookkeeper = async (id: number): Promise<{ removedMembers: number } | 'owner' | null> =>
   sequelize.transaction(async (transaction) => {
     const row = await bookkeeper.findOne({ where: { id }, transaction });
     if (!row) return null;
@@ -38,6 +39,12 @@ export const removeLegacyBookkeeper = async (id: number): Promise<{ removedMembe
         });
       }
       if (who.length) {
+        const owner = await ChurchMember.findOne({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          where: { churchId: church.id, role: 'owner', [Op.or]: who } as any,
+          transaction,
+        });
+        if (owner) return 'owner';
         removedMembers = await ChurchMember.destroy({
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           where: { churchId: church.id, role: 'bookkeeper', [Op.or]: who } as any,

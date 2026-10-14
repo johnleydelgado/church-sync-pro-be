@@ -22,7 +22,6 @@ const stripeRoutes = {
 };
 
 const userRoutes = {
-  updateUser: '/user/updateUser',
   createUser: '/user/createUser',
   addTokenInUser: '/user/addTokenInUser',
   createSettings: '/user/createSettings',
