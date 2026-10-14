@@ -16,6 +16,9 @@ import userEmailPreferences from '../db/models/userEmailPreferences';
 import Billing from '../db/models/billing';
 import { captureClearingSnapshot } from '../services/clearingSnapshot';
 import { markEmailVerified } from '../services/emailVerification';
+import ChurchMember from '../db/models/churchMember';
+import sequelize from '../db';
+import { Op } from 'sequelize';
 import crypto from 'crypto';
 const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
 const supertokens = require('supertokens-node');
@@ -446,10 +449,24 @@ export const updateUserToken = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * The pending ChurchMembers row an invitation link points at. The address is compared without
+ * case: the link carries it as typed by whoever sent the invite, and the token is what matters.
+ */
+const findInvite = (email: string, token: string) =>
+  ChurchMember.findOne({
+    where: {
+      [Op.and]: [
+        { invitationToken: token },
+        sequelize.where(sequelize.fn('lower', sequelize.col('invitedEmail')), String(email).trim().toLowerCase()),
+      ],
+    } as any,
+  });
+
 export const checkValidInvitation = async (req: Request, res: Response) => {
   const { email, invitationToken } = req.body;
   try {
-    const invitation = await bookkeeper.findOne({ where: { email, invitationToken } });
+    const invitation = await findInvite(email, invitationToken);
 
     if (invitation) {
       return responseSuccess(res, 'exist');
@@ -507,7 +524,7 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
       return responseError({ res, code: 401, message: 'Invitation token required' });
     }
 
-    const invite = await bookkeeper.findOne({ where: { email, invitationToken } });
+    const invite: any = await findInvite(email, invitationToken);
     if (!invite) {
       return responseError({ res, code: 400, message: 'Error in invitation' });
     }
@@ -519,13 +536,26 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
 
     // Derive the user from the email rather than trusting an id from the body.
     const user = await Users.findOne({ where: { email } });
-    const updateData: { inviteAccepted: boolean; userId?: number } = { inviteAccepted: true };
-    if (user) {
-      updateData.userId = user.id;
+
+    // No login yet: the row stays pending, and the invite page calls this again once the
+    // sign-up has made one. Already accepted: nothing to do (the page calls this twice).
+    if (user && !invite.inviteAccepted) {
+      // One row per person per church: a login already on this church keeps its row (and its
+      // role), and the invite is spent.
+      const already = await ChurchMember.findOne({ where: { churchId: invite.churchId, userId: user.id } });
+      if (already) {
+        await invite.destroy();
+      } else {
+        await invite.update({ userId: user.id, inviteAccepted: true });
+      }
     }
 
-    const bookkeeperData = await bookkeeper.update(updateData, { where: { email, invitationToken } });
-    return responseSuccess(res, bookkeeperData);
+    // Mirror to the legacy bookkeeper table while the old screens still read it.
+    await bookkeeper.update(
+      { inviteAccepted: true, ...(user ? { userId: user.id } : {}) },
+      { where: { email, invitationToken } },
+    );
+    return responseSuccess(res, 'accepted');
   } catch (e) {
     return responseError({ res, code: 400, message: e });
   }
