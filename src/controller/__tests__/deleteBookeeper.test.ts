@@ -16,6 +16,8 @@ jest.mock('supertokens-node/recipe/emailpassword', () => ({ __esModule: true, de
 jest.mock('../../services/syncEngine', () => ({ syncBatchToJournalEntries: jest.fn() }));
 jest.mock('../../services/pendingInvite', () => ({ recordPendingChurchInvite: jest.fn() }));
 jest.mock('../../services/legacyBookkeeper', () => ({ removeLegacyBookkeeper: jest.fn() }));
+jest.mock('../../services/churches', () => ({ ensureOwnChurch: jest.fn() }));
+jest.mock('../../db', () => ({ __esModule: true, default: {} }));
 jest.mock('@sendgrid/mail', () => ({ setApiKey: jest.fn(), send: jest.fn() }));
 
 import { removeLegacyBookkeeper } from '../../services/legacyBookkeeper';

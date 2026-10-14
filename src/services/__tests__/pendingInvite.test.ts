@@ -50,15 +50,31 @@ beforeEach(() => {
 it('writes a pending bookkeeper row with the same token as the mail', async () => {
   await expect(recordPendingChurchInvite(invite)).resolves.toBe('created');
   expect(churches).toHaveBeenCalledWith({ where: { ownerUserId: 10 } });
-  expect(memberCreate).toHaveBeenCalledWith({
-    churchId: 100,
-    userId: null,
-    role: 'bookkeeper',
-    integrationAccessEnabled: false,
-    invitedEmail: 'bk@example.test',
-    invitationToken: 'tok-new',
-    inviteAccepted: false,
-  });
+  expect(memberCreate).toHaveBeenCalledWith(
+    {
+      churchId: 100,
+      userId: null,
+      role: 'bookkeeper',
+      integrationAccessEnabled: false,
+      invitedEmail: 'bk@example.test',
+      invitationToken: 'tok-new',
+      inviteAccepted: false,
+    },
+    { transaction: undefined },
+  );
+});
+
+it("reads and writes inside the caller's transaction, so the legacy row and this one go together", async () => {
+  await recordPendingChurchInvite({ ...invite, transaction: 'TX' as any });
+  expect(churches).toHaveBeenCalledWith({ where: { ownerUserId: 10 }, transaction: 'TX' });
+  expect(logins.mock.calls[0][0].transaction).toBe('TX');
+  expect(memberFind.mock.calls[0][0].transaction).toBe('TX');
+  expect(memberCreate.mock.calls[0][1]).toEqual({ transaction: 'TX' });
+
+  const pending = { id: 8, userId: null, inviteAccepted: false, update: jest.fn().mockResolvedValue(undefined) };
+  memberFind.mockResolvedValue(pending);
+  await recordPendingChurchInvite({ ...invite, transaction: 'TX' as any });
+  expect(pending.update).toHaveBeenCalledWith({ invitationToken: 'tok-new' }, { transaction: 'TX' });
 });
 
 it('looks for an existing member by invited email (any case) and by the login with that email', async () => {
@@ -86,7 +102,7 @@ it('points a still-pending invite at the newest token, so the link just mailed w
   const pending = { id: 8, userId: null, inviteAccepted: false, update: jest.fn().mockResolvedValue(undefined) };
   memberFind.mockResolvedValue(pending);
   await expect(recordPendingChurchInvite(invite)).resolves.toBe('refreshed');
-  expect(pending.update).toHaveBeenCalledWith({ invitationToken: 'tok-new' });
+  expect(pending.update).toHaveBeenCalledWith({ invitationToken: 'tok-new' }, { transaction: undefined });
   expect(memberCreate).not.toHaveBeenCalled();
 });
 

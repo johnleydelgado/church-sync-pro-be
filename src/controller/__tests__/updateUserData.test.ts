@@ -17,6 +17,7 @@ jest.mock('../../db/models/bookkeeper', mockModel);
 jest.mock('../../db/models/userEmailPreferences', mockModel);
 jest.mock('../../db/models/billing', mockModel);
 jest.mock('../../db/models/churchMember', mockModel);
+jest.mock('../../db/models/church', mockModel);
 jest.mock('../../db', () => ({ __esModule: true, default: {} }));
 jest.mock('../../utils/storage', () => ({ uploadImage: jest.fn() }));
 jest.mock('../../services/clearingSnapshot', () => ({ captureClearingSnapshot: jest.fn() }));

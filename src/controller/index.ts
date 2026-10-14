@@ -18,7 +18,13 @@ import EmailPassword from 'supertokens-node/recipe/emailpassword';
 import { syncBatchToJournalEntries } from '../services/syncEngine';
 import { recordPendingChurchInvite } from '../services/pendingInvite';
 import { removeLegacyBookkeeper } from '../services/legacyBookkeeper';
+import { ensureOwnChurch } from '../services/churches';
 import { NO_CLICK_TRACKING, inviteLinkFor, sendInviteEmail } from '../services/inviteEmail';
+import sequelize from '../db';
+import { Op } from 'sequelize';
+import { createLogger } from '../utils/logger';
+
+const logger = createLogger('invite');
 
 const sgMail = require('@sendgrid/mail');
 const { SENDGRID_API_KEY, RESET_PASSWORD_URL } = process.env;
@@ -27,29 +33,66 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
   // Always a pending invite with a mail. `createdByBk` / `bookkeeperId` in the body are ignored: they
   // wrote an already-accepted row for whatever user id was sent, and no screen sends them any more
   // (createClientChurch writes its own row).
-  const { emailTo, clientId } = req.body;
+  const { emailTo } = req.body;
   if (typeof emailTo !== 'string' || !emailTo.trim()) {
     return responseError({ res, code: 400, message: 'emailTo is required' });
+  }
+  const email = emailTo.trim();
+  // Behind requireAccountAccess(fromBodyClientId, 'owner'): the church inviting is the account it checked.
+  const account = res.locals?.churchAccess?.account;
+  if (!account) {
+    // Only reachable if the route is wired without its guard; refuse rather than guess a church.
+    logger.error('sendEmailInvitation reached without a church access check', { path: req.path });
+    return responseError({ res, code: 403, message: "You don't have access to this church." });
   }
   const rand = crypto.randomBytes(16).toString('hex');
 
   try {
     // Built before anything is written: with no INVITATION_URL this refuses rather than mail a broken link.
-    const inviteLink = inviteLinkFor(emailTo, rand);
+    const inviteLink = inviteLinkFor(email, rand);
 
-    // Create bookkeeper in the database
-    await bookkeeper.create({
-      email: emailTo,
-      inviteSent: true,
-      invitationToken: rand,
-      inviteAccepted: false,
-      clientId,
-      bookkeeperIntegrationAccessEnabled: false,
+    // A client who signed up after the churches migration has no church until /church/mine runs,
+    // and an invite to no church can never be accepted. Does nothing for a church that has one.
+    await ensureOwnChurch(account);
+
+    const outcome = await sequelize.transaction(async (transaction) => {
+      // Accepting reads ChurchMembers only, so the pending row there carries the same token.
+      const recorded = await recordPendingChurchInvite({ clientId: account.id, email, token: rand, transaction });
+      if (recorded === 'already-member') return recorded;
+      // An invite sent again: the legacy row(s) still pending for this address take the new token,
+      // rather than the Bookkeepers tab listing the person once per mail.
+      const [refreshed] = await bookkeeper.update(
+        { invitationToken: rand, inviteSent: true },
+        {
+          where: {
+            [Op.and]: [
+              { clientId: account.id, userId: null, inviteAccepted: { [Op.not]: true } },
+              sequelize.where(sequelize.fn('lower', sequelize.col('email')), email.toLowerCase()),
+            ],
+          } as any,
+          transaction,
+        },
+      );
+      if (!refreshed) {
+        await bookkeeper.create(
+          {
+            email,
+            inviteSent: true,
+            invitationToken: rand,
+            inviteAccepted: false,
+            clientId: account.id,
+            bookkeeperIntegrationAccessEnabled: false,
+          } as any,
+          { transaction },
+        );
+      }
+      return recorded;
     });
-    // Accepting reads ChurchMembers only, so the pending row there carries the same token.
-    await recordPendingChurchInvite({ clientId: Number(clientId), email: emailTo, token: rand });
+    if (outcome === 'already-member') {
+      return responseError({ res, code: 409, message: `${email} is already on this church.` });
+    }
 
-    await sendInviteEmail(emailTo, inviteLink);
+    await sendInviteEmail(email, inviteLink);
 
     return responseSuccess(res, 'Email sent');
   } catch (e) {

@@ -30,6 +30,8 @@ import {
   setIntegrationAccess,
   updateChurch,
 } from '../churches';
+import { removeLegacyBookkeeper } from '../legacyBookkeeper';
+import { sendEmailInvitation } from '../../controller';
 
 const mailer = sendInviteEmail as jest.Mock;
 const log = createLogger('test') as any;
@@ -673,6 +675,134 @@ describe('removePerson', () => {
       message: "This is the church's own login; it can't be removed.",
     });
     expect(await ChurchMember.findOne({ where: { id: itself.id } })).not.toBeNull();
+  });
+});
+
+describe('removeLegacyBookkeeper (the old Bookkeepers tab)', () => {
+  const legacyRow = (clientId: number, email: string, extra: any = {}): Promise<any> =>
+    bookkeeper.create({
+      inviteSent: true,
+      inviteAccepted: false,
+      bookkeeperIntegrationAccessEnabled: false,
+      userId: null,
+      clientId,
+      email,
+      invitationToken: 'tok',
+      ...extra,
+    } as any);
+  const hopeChapel = async () => (await listMyChurches(await user(CLIENT)))[0].id;
+
+  it('deleting the stale row of a re-sent invite keeps the person who accepted the newer one', async () => {
+    const id = await hopeChapel();
+    // Invited twice: the first mail was never used, the second was accepted by EXISTING's login.
+    const stale = await legacyRow(CLIENT, 'existing-ch-it@example.test', { invitationToken: 'old' });
+    const accepted = await legacyRow(CLIENT, 'Existing-CH-it@example.test', {
+      invitationToken: 'new',
+      inviteAccepted: true,
+      userId: EXISTING,
+    });
+    const member = await ChurchMember.create({
+      churchId: id,
+      userId: EXISTING,
+      role: 'bookkeeper',
+      integrationAccessEnabled: false,
+      invitedEmail: 'existing-ch-it@example.test',
+      invitationToken: 'new',
+      inviteAccepted: true,
+    });
+
+    await expect(removeLegacyBookkeeper(stale.id)).resolves.toEqual({ removedMembers: 0 });
+    expect(await ChurchMember.findOne({ where: { id: member.id } })).not.toBeNull();
+    expect(await bookkeeper.findOne({ where: { id: stale.id } })).toBeNull();
+
+    // Deleting the row they accepted does take them off.
+    await expect(removeLegacyBookkeeper(accepted.id)).resolves.toEqual({ removedMembers: 1 });
+    expect(await ChurchMember.findOne({ where: { id: member.id } })).toBeNull();
+  });
+
+  it('withdraws an invite still waiting for a login, by its address in any case', async () => {
+    const id = await hopeChapel();
+    const invite = await ChurchMember.create({
+      churchId: id,
+      userId: null,
+      role: 'bookkeeper',
+      integrationAccessEnabled: false,
+      invitedEmail: 'new-legacy-it@example.test',
+      invitationToken: 'tok',
+      inviteAccepted: false,
+    });
+    const row = await legacyRow(CLIENT, 'New-Legacy-it@example.test');
+
+    await expect(removeLegacyBookkeeper(row.id)).resolves.toEqual({ removedMembers: 1 });
+    expect(await ChurchMember.findOne({ where: { id: invite.id } })).toBeNull();
+  });
+
+  it('never removes an owner, even the one the legacy row names', async () => {
+    const id = await hopeChapel();
+    const owner = await addOwner(id, EXISTING);
+    const row = await legacyRow(CLIENT, 'existing-ch-it@example.test', { inviteAccepted: true, userId: EXISTING });
+
+    await expect(removeLegacyBookkeeper(row.id)).resolves.toEqual({ removedMembers: 0 });
+    expect(await ChurchMember.findOne({ where: { id: owner.id } })).not.toBeNull();
+    expect(await ownersOf(id)).toBe(2);
+    expect(await bookkeeper.findOne({ where: { id: row.id } })).toBeNull();
+  });
+});
+
+describe('sendEmailInvitation (the old Bookkeepers tab)', () => {
+  /** What the route's guard (requireAccountAccess on clientId, 'owner') leaves for the handler. */
+  const invite = async (accountId: number, emailTo: string) => {
+    const res: any = { locals: { churchAccess: { account: await user(accountId) } } };
+    res.status = jest.fn().mockReturnValue(res);
+    res.json = jest.fn().mockReturnValue(res);
+    await sendEmailInvitation({ body: { emailTo, clientId: accountId } } as any, res);
+    return { code: res.status.mock.calls[0]?.[0], body: res.json.mock.calls[0]?.[0] };
+  };
+  const legacyRows = (): Promise<any[]> => bookkeeper.findAll({ where: { clientId: CLIENT }, order: [['id', 'ASC']] });
+
+  it('gives a client who signed up since the migration their church, so the mailed link can be accepted', async () => {
+    expect(await Church.findOne({ where: { ownerUserId: CLIENT } })).toBeNull();
+
+    await expect(invite(CLIENT, '  New-Bk-it@example.test ')).resolves.toMatchObject({ code: 200 });
+
+    const church: any = await Church.findOne({ where: { ownerUserId: CLIENT } });
+    expect(church).not.toBeNull();
+    const [row] = await legacyRows();
+    expect(row).toMatchObject({ email: 'New-Bk-it@example.test', inviteAccepted: false, userId: null });
+    const pending: any = await ChurchMember.findOne({ where: { churchId: church.id, userId: null } });
+    expect(pending).toMatchObject({ invitedEmail: 'new-bk-it@example.test', invitationToken: row.invitationToken });
+    expect(mailer).toHaveBeenCalledWith(
+      'New-Bk-it@example.test',
+      inviteLinkFor('New-Bk-it@example.test', row.invitationToken),
+    );
+  });
+
+  it('sends a re-sent invite with a new token on the same rows, not a second pending row', async () => {
+    await invite(CLIENT, 'new-bk-it@example.test');
+    const [first] = await legacyRows();
+
+    await expect(invite(CLIENT, 'NEW-BK-it@example.test')).resolves.toMatchObject({ code: 200 });
+
+    const rows = await legacyRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(first.id);
+    expect(rows[0].invitationToken).not.toBe(first.invitationToken);
+    const church: any = await Church.findOne({ where: { ownerUserId: CLIENT } });
+    const members: any[] = await ChurchMember.findAll({ where: { churchId: church.id, userId: null } });
+    expect(members.map((m) => m.invitationToken)).toEqual([rows[0].invitationToken]);
+  });
+
+  it('refuses someone already on the church with a 409, writing and mailing nothing', async () => {
+    const [hope] = await listMyChurches(await user(CLIENT));
+    await invitePerson(await accessAs(CLIENT, hope.id), 'existing-ch-it@example.test');
+    mailer.mockClear();
+
+    const { code, body } = await invite(CLIENT, 'Existing-CH-it@example.test');
+
+    expect(code).toBe(409);
+    expect(body.message).toBe('Existing-CH-it@example.test is already on this church.');
+    expect(await legacyRows()).toEqual([]);
+    expect(mailer).not.toHaveBeenCalled();
   });
 });
 

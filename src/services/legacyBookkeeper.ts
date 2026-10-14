@@ -10,8 +10,12 @@ import ChurchMember from '../db/models/churchMember';
  * person able to open the church. This removes the matching member row on the church filed under
  * the row's clientId as well, in the same transaction: both go, or neither.
  *
- * The member is matched by the row's login, or by the address the invite went to (any case), so a
- * still-pending invite is withdrawn too. Returns null when there is no such row.
+ * The member is matched by the row's login, or - only while it is still waiting for a login - by the
+ * address the invite went to (any case), so a pending invite is withdrawn too. The address never
+ * finds a member who has a login: an invite sent twice leaves a stale pending legacy row next to the
+ * accepted one, and deleting the stale row must not take the person who accepted off the church.
+ * Only bookkeeper members are removed: this path has no last-owner check, so owners are left alone.
+ * Returns null when there is no such row.
  */
 export const removeLegacyBookkeeper = async (id: number): Promise<{ removedMembers: number } | null> =>
   sequelize.transaction(async (transaction) => {
@@ -26,12 +30,17 @@ export const removeLegacyBookkeeper = async (id: number): Promise<{ removedMembe
       // it too): matching it by userId would take the church's own login off its church.
       if (row.userId && row.userId !== row.clientId) who.push({ userId: row.userId });
       if (typeof row.email === 'string' && row.email.trim()) {
-        who.push(sequelize.where(sequelize.fn('lower', sequelize.col('invitedEmail')), row.email.trim().toLowerCase()));
+        who.push({
+          [Op.and]: [
+            { userId: null },
+            sequelize.where(sequelize.fn('lower', sequelize.col('invitedEmail')), row.email.trim().toLowerCase()),
+          ],
+        });
       }
       if (who.length) {
         removedMembers = await ChurchMember.destroy({
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          where: { churchId: church.id, [Op.or]: who } as any,
+          where: { churchId: church.id, role: 'bookkeeper', [Op.or]: who } as any,
           transaction,
         });
       }

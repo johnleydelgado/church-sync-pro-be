@@ -2,6 +2,11 @@
  * A bookkeeper adding a church must not end up logged in AS that church. The browser
  * sign-up API sets the new user's session cookies; the backend SDK call does not. This
  * also retires the shared default password the old flow hard-coded in the browser.
+ *
+ * Access reads ChurchMembers only, so the church is filed as a Church owned by the bookkeeper
+ * who added it (as the resync migration does for older Clients-page churches), in the same
+ * transaction as the account row and the legacy bookkeeper row. Only the signed-in bookkeeper
+ * can add a church for themselves.
  */
 function mockModel() {
   return { __esModule: true, default: { findOne: jest.fn(), findAll: jest.fn(), update: jest.fn(), create: jest.fn() } };
@@ -14,7 +19,12 @@ jest.mock('../../db/models/bookkeeper', mockModel);
 jest.mock('../../db/models/userEmailPreferences', mockModel);
 jest.mock('../../db/models/billing', mockModel);
 jest.mock('../../db/models/churchMember', mockModel);
-jest.mock('../../db', () => ({ __esModule: true, default: {} }));
+jest.mock('../../db/models/church', mockModel);
+// Runs the callback with a marker transaction, so a test can see every write joined it.
+jest.mock('../../db', () => ({
+  __esModule: true,
+  default: { transaction: jest.fn((work: (t: unknown) => unknown) => work('TX')) },
+}));
 jest.mock('../../utils/storage', () => ({ uploadImage: jest.fn() }));
 jest.mock('../../services/clearingSnapshot', () => ({ captureClearingSnapshot: jest.fn() }));
 jest.mock('../../services/emailVerification', () => ({ markEmailVerified: jest.fn() }));
@@ -23,16 +33,25 @@ jest.mock('supertokens-node', () => ({ deleteUser: jest.fn().mockResolvedValue(u
 
 import Users from '../../db/models/user';
 import bookkeeper from '../../db/models/bookkeeper';
+import Church from '../../db/models/church';
+import ChurchMember from '../../db/models/churchMember';
+import sequelize from '../../db';
 import { createClientChurch } from '../user';
 const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
 const supertokens = require('supertokens-node');
 
 const mockedUsers = Users as unknown as { findOne: jest.Mock; create: jest.Mock };
 const mockedBk = bookkeeper as unknown as { create: jest.Mock };
+const mockedChurch = Church as unknown as { create: jest.Mock };
+const mockedMember = ChurchMember as unknown as { create: jest.Mock };
+const transaction = (sequelize as unknown as { transaction: jest.Mock }).transaction;
 const mockedSignUp = ThirdPartyEmailPassword.emailPasswordSignUp as jest.Mock;
 
-const makeRes = () => {
-  const res: any = {};
+const JAKE = { id: 5, email: 'jake@cfp.com', role: 'bookkeeper' };
+
+// What the route's guard leaves behind: the signed-in person.
+const makeRes = (actor: unknown = JAKE) => {
+  const res: any = { locals: actor ? { actor } : {} };
   res.status = jest.fn().mockReturnValue(res);
   res.json = jest.fn().mockReturnValue(res);
   return res;
@@ -40,7 +59,8 @@ const makeRes = () => {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockedUsers.findOne.mockResolvedValue({ id: 5, email: 'jake@cfp.com', role: 'bookkeeper' });
+  mockedChurch.create.mockResolvedValue({ id: 300 });
+  mockedMember.create.mockResolvedValue({ id: 400 });
 });
 
 it('creates the SuperTokens user with the synthetic address and a random password, then the rows', async () => {
@@ -56,8 +76,10 @@ it('creates the SuperTokens user with the synthetic address and a random passwor
   expect(password).not.toBe('csp@2024');
   expect(password.length).toBeGreaterThanOrEqual(24);
 
+  expect(transaction).toHaveBeenCalledTimes(1);
   expect(mockedUsers.create).toHaveBeenCalledWith(
     expect.objectContaining({ email, churchName: 'Active Church', role: 'client', isActive: true }),
+    { transaction: 'TX' },
   );
   expect(mockedBk.create).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -67,9 +89,54 @@ it('creates the SuperTokens user with the synthetic address and a random passwor
       inviteAccepted: true,
       bookkeeperIntegrationAccessEnabled: false,
     }),
+    { transaction: 'TX' },
   );
   expect(res.status).toHaveBeenCalledWith(200);
   expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: { clientId: 77, email } }));
+});
+
+it('files the church under the new account, owned by the bookkeeper who added it, so access lets them in', async () => {
+  mockedSignUp.mockResolvedValue({ status: 'OK', user: { id: 'st-9' } });
+  mockedUsers.create.mockResolvedValue({ id: 77 });
+  mockedBk.create.mockResolvedValue({});
+  const res = makeRes();
+  await createClientChurch({ body: { churchName: '  Active Church ', bookkeeperId: '5' } } as any, res);
+
+  expect(mockedChurch.create).toHaveBeenCalledWith(
+    { name: 'Active Church', ownerUserId: 77, isActive: true },
+    { transaction: 'TX' },
+  );
+  expect(mockedMember.create).toHaveBeenCalledWith(
+    {
+      churchId: 300,
+      userId: 5,
+      role: 'owner',
+      integrationAccessEnabled: true,
+      invitedEmail: null,
+      invitationToken: null,
+      inviteAccepted: true,
+    },
+    { transaction: 'TX' },
+  );
+  expect(res.status).toHaveBeenCalledWith(200);
+});
+
+it.each([
+  ['someone other than the signed-in person', 6],
+  ['no account at all', 'abc'],
+])('refuses with 403 a bookkeeperId naming %s', async (_label, bookkeeperId) => {
+  const res = makeRes();
+  await createClientChurch({ body: { churchName: 'Active Church', bookkeeperId } } as any, res);
+  expect(res.status).toHaveBeenCalledWith(403);
+  expect(mockedSignUp).not.toHaveBeenCalled();
+  expect(mockedUsers.create).not.toHaveBeenCalled();
+});
+
+it('refuses with 403 when the route ran without its guard (no signed-in person)', async () => {
+  const res = makeRes(null);
+  await createClientChurch({ body: { churchName: 'Active Church', bookkeeperId: 5 } } as any, res);
+  expect(res.status).toHaveBeenCalledWith(403);
+  expect(mockedSignUp).not.toHaveBeenCalled();
 });
 
 it('returns 409 when that church already exists for this bookkeeper', async () => {
@@ -80,15 +147,10 @@ it('returns 409 when that church already exists for this bookkeeper', async () =
   expect(mockedUsers.create).not.toHaveBeenCalled();
 });
 
-it('rejects a missing church name or unknown bookkeeper', async () => {
-  const res1 = makeRes();
-  await createClientChurch({ body: { churchName: '', bookkeeperId: 5 } } as any, res1);
-  expect(res1.status).toHaveBeenCalledWith(400);
-
-  mockedUsers.findOne.mockResolvedValue(null);
-  const res2 = makeRes();
-  await createClientChurch({ body: { churchName: 'X', bookkeeperId: 5 } } as any, res2);
-  expect(res2.status).toHaveBeenCalledWith(400);
+it('rejects a missing church name', async () => {
+  const res = makeRes();
+  await createClientChurch({ body: { churchName: '', bookkeeperId: 5 } } as any, res);
+  expect(res.status).toHaveBeenCalledWith(400);
   expect(mockedSignUp).not.toHaveBeenCalled();
 });
 
@@ -100,6 +162,17 @@ it('removes the SuperTokens login again when the church rows cannot be written',
   expect(supertokens.deleteUser).toHaveBeenCalledWith('st-9');
   expect(res.status).toHaveBeenCalledWith(500);
   expect(mockedBk.create).not.toHaveBeenCalled();
+});
+
+it('removes the SuperTokens login again when the church itself cannot be written (the transaction undoes the rest)', async () => {
+  mockedSignUp.mockResolvedValue({ status: 'OK', user: { id: 'st-9' } });
+  mockedUsers.create.mockResolvedValue({ id: 77 });
+  mockedBk.create.mockResolvedValue({});
+  mockedMember.create.mockRejectedValue(new Error('duplicate key value violates unique constraint'));
+  const res = makeRes();
+  await createClientChurch({ body: { churchName: 'Active Church', bookkeeperId: 5 } } as any, res);
+  expect(supertokens.deleteUser).toHaveBeenCalledWith('st-9');
+  expect(res.status).toHaveBeenCalledWith(500);
 });
 
 it('refuses an absurdly long church name before creating anything', async () => {

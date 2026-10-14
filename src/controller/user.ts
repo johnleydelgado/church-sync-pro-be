@@ -17,6 +17,7 @@ import Billing from '../db/models/billing';
 import { captureClearingSnapshot } from '../services/clearingSnapshot';
 import { markEmailVerified } from '../services/emailVerification';
 import ChurchMember from '../db/models/churchMember';
+import Church from '../db/models/church';
 import sequelize from '../db';
 import { Op } from 'sequelize';
 import { isChurchAccountEmail } from '../services/churchAccountEmail';
@@ -658,16 +659,21 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
  * session with the new client's. The address is synthetic (nobody reads it) and the
  * password random (nobody is meant to log in as it): the bookkeeper works on the
  * church through their own login.
+ *
+ * Access reads ChurchMembers only, so the church is filed as a Church owned by the bookkeeper
+ * who added it - what the resync migration made of the churches added this way before.
  */
 export const createClientChurch = async (req: Request, res: Response) => {
   const { churchName, bookkeeperId } = req.body;
   try {
+    // The guard (requireAccountAccess on bookkeeperId) lets any member of that account through;
+    // only the person themselves may add a church they will own.
+    const bk = res.locals?.actor;
+    if (!bk || bk.id !== Number(bookkeeperId)) {
+      return responseError({ res, code: 403, message: 'You can only add a church for yourself.' });
+    }
     if (!churchName || typeof churchName !== 'string' || !churchName.trim()) {
       return responseError({ res, code: 400, message: 'Church name is required' });
-    }
-    const bk = await Users.findOne({ where: { id: bookkeeperId } });
-    if (!bk) {
-      return responseError({ res, code: 400, message: 'Bookkeeper not found' });
     }
 
     const email = `${churchName.trim().toLowerCase().replace(/ /g, '-')}-${bk.email}`;
@@ -683,28 +689,52 @@ export const createClientChurch = async (req: Request, res: Response) => {
     }
 
     try {
-      const client = await Users.create({
-        email,
-        churchName: churchName.trim(),
-        firstName: 'N/A',
-        lastName: 'N/A',
-        role: 'client',
-        isSubscribe: '0',
-        isActive: true,
-      } as any);
+      const name = churchName.trim();
+      const clientId = await sequelize.transaction(async (transaction) => {
+        const client = await Users.create(
+          {
+            email,
+            churchName: name,
+            firstName: 'N/A',
+            lastName: 'N/A',
+            role: 'client',
+            isSubscribe: '0',
+            isActive: true,
+          } as any,
+          { transaction },
+        );
 
-      // Same row sendEmailInvitation writes on its createdByBk branch.
-      await bookkeeper.create({
-        email,
-        inviteSent: true,
-        invitationToken: crypto.randomBytes(16).toString('hex'),
-        inviteAccepted: true,
-        clientId: client.id,
-        userId: bk.id,
-        bookkeeperIntegrationAccessEnabled: false,
-      } as any);
+        // The legacy row the Clients page still lists.
+        await bookkeeper.create(
+          {
+            email,
+            inviteSent: true,
+            invitationToken: crypto.randomBytes(16).toString('hex'),
+            inviteAccepted: true,
+            clientId: client.id,
+            userId: bk.id,
+            bookkeeperIntegrationAccessEnabled: false,
+          } as any,
+          { transaction },
+        );
 
-      return responseSuccess(res, { clientId: client.id, email });
+        const church = await Church.create({ name, ownerUserId: client.id as number, isActive: true }, { transaction });
+        await ChurchMember.create(
+          {
+            churchId: church.id,
+            userId: bk.id,
+            role: 'owner',
+            integrationAccessEnabled: true,
+            invitedEmail: null,
+            invitationToken: null,
+            inviteAccepted: true,
+          },
+          { transaction },
+        );
+        return client.id;
+      });
+
+      return responseSuccess(res, { clientId, email });
     } catch (dbError) {
       // The login exists but the church does not: remove the login again, otherwise a
       // retry is refused as "already exists" for a church nobody can see.

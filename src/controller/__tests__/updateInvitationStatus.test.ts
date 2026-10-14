@@ -22,6 +22,7 @@ jest.mock('../../db/models/bookkeeper', mockModel);
 jest.mock('../../db/models/userEmailPreferences', mockModel);
 jest.mock('../../db/models/billing', mockModel);
 jest.mock('../../db/models/churchMember', mockModel);
+jest.mock('../../db/models/church', mockModel);
 // The lower(...) comparisons are built through the sequelize instance. This stand-in records its
 // arguments so a test can read the query back, and needs no config.json.
 jest.mock('../../db', () => ({
