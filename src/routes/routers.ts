@@ -90,7 +90,7 @@ import {
   addChurch,
   churchPeople,
   editChurch,
-  invite,
+  inviteToChurch,
   myChurches,
   personAccess,
   removeFromChurch,
@@ -212,7 +212,7 @@ routers.get(churchRoutes.mine, verifySession(), myChurches);
 routers.post(churchRoutes.create, verifySession(), addChurch);
 routers.post(churchRoutes.update, verifySession(), requireChurch('owner'), editChurch);
 routers.get(churchRoutes.people, verifySession(), requireChurch('member'), churchPeople);
-routers.post(churchRoutes.invite, verifySession(), requireChurch('owner'), invite);
+routers.post(churchRoutes.invite, verifySession(), requireChurch('owner'), inviteToChurch);
 routers.post(churchRoutes.access, verifySession(), requireChurch('owner'), personAccess);
 routers.post(churchRoutes.remove, verifySession(), requireChurch('owner'), removeFromChurch);
 

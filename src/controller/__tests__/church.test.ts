@@ -36,7 +36,15 @@ jest.mock('../../services/churches', () => {
 import { createLogger } from '../../utils/logger';
 import { actorFromSession } from '../../services/churchAccess';
 import * as churches from '../../services/churches';
-import { addChurch, churchPeople, editChurch, invite, myChurches, personAccess, removeFromChurch } from '../church';
+import {
+  addChurch,
+  churchPeople,
+  editChurch,
+  inviteToChurch,
+  myChurches,
+  personAccess,
+  removeFromChurch,
+} from '../church';
 
 const { ChurchServiceError } = churches;
 const log = createLogger('test') as any;
@@ -87,6 +95,11 @@ beforeEach(() => {
   jest.resetAllMocks();
 });
 
+it('names each handler after its export, for stack traces and router walks', () => {
+  const handlers = { myChurches, addChurch, editChurch, churchPeople, inviteToChurch, personAccess, removeFromChurch };
+  for (const [exported, fn] of Object.entries(handlers)) expect([exported, fn.name]).toEqual([exported, exported]);
+});
+
 describe('myChurches', () => {
   it("lists the signed-in person's churches", async () => {
     const list = [{ id: 5, name: 'Grace Church', role: 'owner' }];
@@ -101,6 +114,9 @@ describe('myChurches', () => {
     fromSession.mockResolvedValue(null);
     expect(await call(myChurches, makeReq(), {})).toEqual(failed(403, NO_ACCOUNT));
     expect(svc.list).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith('church action refused: no Users row for the session', {
+      path: '/church/x',
+    });
   });
 
   it('answers 500 with a plain sentence, no internals, when something unexpected breaks', async () => {
@@ -133,6 +149,9 @@ describe('addChurch', () => {
     fromSession.mockResolvedValue(null);
     expect(await call(addChurch, makeReq({ body: { name: 'Hope Church' } }), {})).toEqual(failed(403, NO_ACCOUNT));
     expect(svc.create).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith('church action refused: no Users row for the session', {
+      path: '/church/x',
+    });
   });
 
   it("passes the service's 409 and 400 on with their sentences", async () => {
@@ -214,32 +233,39 @@ describe('churchPeople', () => {
   });
 });
 
-describe('invite', () => {
+describe('inviteToChurch', () => {
   it('invites the address sent to the church the guard checked, and returns the result', async () => {
     const result = { memberId: 8, addedExisting: false, inviteLink: 'https://x.test/invite?t=1', emailSent: false };
     svc.invite.mockResolvedValue(result);
     const req = makeReq({ body: { churchId: OTHER_CHURCH_ID, email: 'new@example.test' } });
-    expect(await call(invite, req)).toEqual(ok(result));
+    expect(await call(inviteToChurch, req)).toEqual(ok(result));
     expect(svc.invite).toHaveBeenCalledWith(ACCESS, 'new@example.test');
     expect(svc.invite.mock.calls[0][0]).toBe(ACCESS);
   });
 
   it("passes the service's 409 and 400 on with their sentences", async () => {
     svc.invite.mockRejectedValueOnce(new ChurchServiceError('new@example.test is already on this church.', 409));
-    expect(await call(invite, makeReq({ body: { churchId: 5, email: 'new@example.test' } }))).toEqual(
+    expect(await call(inviteToChurch, makeReq({ body: { churchId: 5, email: 'new@example.test' } }))).toEqual(
       failed(409, 'new@example.test is already on this church.'),
     );
     svc.invite.mockRejectedValueOnce(new ChurchServiceError('Enter a valid email address.'));
-    expect(await call(invite, makeReq({ body: { churchId: 5, email: 'nope' } }))).toEqual(
+    expect(await call(inviteToChurch, makeReq({ body: { churchId: 5, email: 'nope' } }))).toEqual(
       failed(400, 'Enter a valid email address.'),
     );
   });
 
-  it('answers 500 "Could not send the invite." for anything else', async () => {
-    svc.invite.mockRejectedValue(new Error('INVITATION_URL is not set'));
-    expect(await call(invite, makeReq({ body: { churchId: 5, email: 'new@example.test' } }))).toEqual(
+  it('answers 500 "Could not send the invite." for anything else, and logs no address', async () => {
+    // A database or mail error can echo the address it was given.
+    svc.invite.mockRejectedValue(new Error('insert failed for "New@Example.test" <new@example.test>'));
+    expect(await call(inviteToChurch, makeReq({ body: { churchId: 5, email: 'New@Example.test' } }))).toEqual(
       failed(500, 'Could not send the invite. Try again in a minute.'),
     );
+    expect(log.error).toHaveBeenCalledWith(
+      'Could not send the invite.',
+      expect.objectContaining({ error: 'insert failed for "<address>" <<address>>' }),
+    );
+    const logged = JSON.stringify([log.error.mock.calls, log.warn.mock.calls, log.info.mock.calls]).toLowerCase();
+    expect(logged).not.toContain('new@example.test');
   });
 });
 
@@ -302,7 +328,7 @@ describe('a handler reached without requireChurch in front of it', () => {
   const guardedHandlers: [string, any, jest.Mock][] = [
     ['editChurch', editChurch, svc.update],
     ['churchPeople', churchPeople, svc.people],
-    ['invite', invite, svc.invite],
+    ['inviteToChurch', inviteToChurch, svc.invite],
     ['personAccess', personAccess, svc.access],
     ['removeFromChurch', removeFromChurch, svc.remove],
   ];

@@ -13,6 +13,7 @@ import type { ChurchAccess } from './churchAccess';
 import { ACCOUNT_EMAIL_DOMAIN, isChurchAccountEmail } from './churchAccountEmail';
 import { inviteLinkFor, sendInviteEmail } from './inviteEmail';
 import { createLogger } from '../utils/logger';
+import { withoutAddresses } from '../utils/withoutAddresses';
 
 const logger = createLogger('churches');
 
@@ -99,9 +100,6 @@ const lowerEq = (column: string, value: string) =>
 
 const personName = (u: any): string | null =>
   u ? [u.firstName, u.lastName].filter((s: string) => s && s !== 'N/A').join(' ') || null : null;
-
-/** Error text from SendGrid can echo the recipient; logs never carry addresses. */
-const withoutAddresses = (text: string) => text.replace(/[^\s@<>"',;:]+@[^\s@<>"',;:]+/g, '<address>');
 
 const churchOf = (access: ChurchAccess): Church => {
   if (!access.church) throw new ChurchServiceError('Church not found.', 404);

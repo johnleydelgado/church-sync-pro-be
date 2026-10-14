@@ -183,12 +183,15 @@ const guard =
     }
   };
 
+/** How a guard finds the church: by the account a request names, or by a /church churchId. */
+export type ChurchGuardKind = 'account' | 'church';
+
 /**
  * Marks a guard so routes/__tests__/routers.test.ts can tell a guarded route from an unguarded one
- * by looking at the router, and check each route asks for the right need.
+ * by looking at the router, and check each route asks for the right need with the right kind.
  */
-const marked = <T extends (...args: any[]) => unknown>(fn: T, need: ChurchNeed) =>
-  Object.assign(fn, { churchGuard: true as const, need });
+const marked = <T extends (...args: any[]) => unknown>(fn: T, need: ChurchNeed, kind: ChurchGuardKind) =>
+  Object.assign(fn, { churchGuard: true as const, need, kind });
 
 export const isChurchGuard = (fn: unknown): boolean =>
   typeof fn === 'function' && (fn as { churchGuard?: unknown }).churchGuard === true;
@@ -198,6 +201,7 @@ export const requireAccountAccess = (locate: (req: Request) => Named | Promise<N
   marked(
     guard(async (req) => ({ account: await findAccount(await locate(req)) }), need),
     need,
+    'account',
   );
 
 /** For /church endpoints, which name the church by churchId (body, or query string for GETs). */
@@ -211,6 +215,7 @@ export const requireChurch = (need: ChurchNeed = 'member') =>
       return { account, churchId };
     }, need),
     need,
+    'church',
   );
 
 // Where each existing endpoint names its church.

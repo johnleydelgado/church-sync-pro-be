@@ -250,6 +250,10 @@ describe('isChurchGuard', () => {
     expect(isChurchGuard(requireChurch('integrations'))).toBe(true);
     expect(requireChurch('integrations').need).toBe('integrations');
   });
+  it('says which kind of guard it is: by account (existing endpoints) or by churchId (/church)', () => {
+    expect(requireAccountAccess(fromBody, 'owner').kind).toBe('account');
+    expect(requireChurch('owner').kind).toBe('church');
+  });
   it('does not mistake any other function for a guard', () => {
     expect(isChurchGuard(() => undefined)).toBe(false);
     expect(isChurchGuard(undefined)).toBe(false);

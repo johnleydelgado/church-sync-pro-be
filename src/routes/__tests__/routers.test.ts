@@ -83,7 +83,7 @@ const NEEDS: Record<string, 'integrations' | 'owner'> = {
   sendEmailInvitation: 'owner',
   deleteBookeeper: 'owner',
   editChurch: 'owner',
-  invite: 'owner',
+  inviteToChurch: 'owner',
   personAccess: 'owner',
   removeFromChurch: 'owner',
 };
@@ -153,17 +153,28 @@ it('mounts the /church routes as the API contract gives them', () => {
       handler: r.handler,
       session: hasSession(r),
       need: guardsOf(r)[0]?.need ?? null,
+      kind: guardsOf(r)[0]?.kind ?? null,
     }));
   // mine and create name no church: they work from the session alone (UNGUARDED above).
+  const session = true;
   expect(church).toEqual([
-    { route: 'GET /church/mine', handler: 'myChurches', session: true, need: null },
-    { route: 'POST /church/create', handler: 'addChurch', session: true, need: null },
-    { route: 'POST /church/update', handler: 'editChurch', session: true, need: 'owner' },
-    { route: 'GET /church/people', handler: 'churchPeople', session: true, need: 'member' },
-    { route: 'POST /church/people/invite', handler: 'invite', session: true, need: 'owner' },
-    { route: 'POST /church/people/access', handler: 'personAccess', session: true, need: 'owner' },
-    { route: 'POST /church/people/remove', handler: 'removeFromChurch', session: true, need: 'owner' },
+    { route: 'GET /church/mine', handler: 'myChurches', session, need: null, kind: null },
+    { route: 'POST /church/create', handler: 'addChurch', session, need: null, kind: null },
+    { route: 'POST /church/update', handler: 'editChurch', session, need: 'owner', kind: 'church' },
+    { route: 'GET /church/people', handler: 'churchPeople', session, need: 'member', kind: 'church' },
+    { route: 'POST /church/people/invite', handler: 'inviteToChurch', session, need: 'owner', kind: 'church' },
+    { route: 'POST /church/people/access', handler: 'personAccess', session, need: 'owner', kind: 'church' },
+    { route: 'POST /church/people/remove', handler: 'removeFromChurch', session, need: 'owner', kind: 'church' },
   ]);
+});
+
+it('checks the church by churchId on the /church/ routes, and by account on every other route', () => {
+  const guarded = mounted.filter((r) => guardsOf(r).length);
+  const wrongKind = guarded
+    .filter((r) => guardsOf(r)[0].kind !== (r.path.startsWith('/church/') ? 'church' : 'account'))
+    .map((r) => `${label(r)} (${guardsOf(r)[0].kind})`);
+  expect(wrongKind).toEqual([]);
+  expect(guarded.filter((r) => guardsOf(r)[0].kind === 'church').length).toBe(5);
 });
 
 it('no longer mounts updateUser', () => {
