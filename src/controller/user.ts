@@ -8,7 +8,7 @@ import { responseError, responseSuccess } from '../utils/response';
 import UserSettings from '../db/models/userSettings';
 import tokens from '../db/models/tokens';
 import tokenEntity from '../db/models/tokenEntity';
-import { isEmpty } from 'lodash';
+import { isEmpty, omit } from 'lodash';
 import bookkeeper from '../db/models/bookkeeper';
 import User from '../db/models/user';
 import { uploadImage } from '../utils/storage';
@@ -29,6 +29,8 @@ const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemail
 const supertokens = require('supertokens-node');
 
 const logger = createLogger('user');
+/** Bookkeeper rows go to the browser without the invitation token: it belongs only in the invite link. */
+const INVITATION_SECRET_COLUMNS = ['invitationToken'];
 
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '';
 
@@ -349,11 +351,18 @@ export const getUserRelated = async (req: Request, res: Response) => {
   try {
     const userData = await Users.findOne({
       where: { email: email as string },
-      include: [{ model: bookkeeper, as: 'UserBookkeepers' }, { model: UserSettings }],
+      // `token` is the password-reset token: never send it to a browser.
+      attributes: { exclude: ['token'] },
+      include: [
+        { model: bookkeeper, as: 'UserBookkeepers', attributes: { exclude: INVITATION_SECRET_COLUMNS } },
+        { model: UserSettings },
+      ],
     });
     console.log('userData', userData);
     if (userData !== null) {
       const user = userData.toJSON();
+      delete user.token;
+      ((user as any).UserBookkeepers || []).forEach((b: any) => delete b.invitationToken);
       return responseSuccess(res, user);
     }
     res.status(500).json({ error: 'Email not exist' });
@@ -547,16 +556,20 @@ export const bookkeeperList = async (req: Request, res: Response) => {
 
     const bookkeeperData = await bookkeeper.findAll({
       where: condition,
+      attributes: { exclude: INVITATION_SECRET_COLUMNS },
       include: [
         {
           model: User,
           as: 'User',
+          // The password-reset token: a bookkeeper must not read the church's (or vice versa).
+          attributes: { exclude: ['token'] },
           // Then include tokens that belong to this user
           include: [{ model: tokens, as: 'tokens', attributes: { exclude: TOKEN_SECRETS } }],
         },
         {
           model: User,
           as: 'Client',
+          attributes: { exclude: ['token'] },
           include: [{ model: tokens, as: 'tokens', attributes: { exclude: TOKEN_SECRETS } }],
         },
       ],
