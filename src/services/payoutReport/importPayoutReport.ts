@@ -41,8 +41,22 @@ export interface PayoutSetup {
   fees: { value: string; name?: string; classRef?: string };
 }
 
+export interface PreviousUpload {
+  id: number;
+  fileName: string | null;
+  uploadedAt: string;
+  uploadedBy: string | null;
+  firstDay: string | null;
+  lastDay: string | null;
+}
+
 export interface PayoutSummary {
   file: { rows: number; firstDay: string | null; lastDay: string | null };
+  /**
+   * Earlier uploads covering any of the same dates, and how many of this file's lines they already
+   * brought in. Re-uploading is safe - those lines are skipped - but people should see it coming.
+   */
+  overlap: { rowsSeenBefore: number; previousUploads: PreviousUpload[] };
   registrations: {
     toPost: { count: number; gross: number; fees: number; net: number };
     alreadyRecorded: number;
@@ -162,7 +176,42 @@ const groupForPosting = <T extends { row: PayoutRow }>(items: T[]) => {
   return [...groups.values()].sort((a, b) => a.day.localeCompare(b.day) || (a.kind === 'charge' ? -1 : 1));
 };
 
-const summarize = (c: Classified, entries: PayoutSummary['entries']): PayoutSummary => {
+/** Uploads whose charge dates overlap [firstDay, lastDay], newest first. */
+const earlierUploads = async (
+  userId: number,
+  firstDay: string | null,
+  lastDay: string | null,
+  excludeId?: number,
+): Promise<PreviousUpload[]> => {
+  if (!firstDay || !lastDay) return [];
+  const rows = await PayoutReportUpload.findAll({
+    where: {
+      userId,
+      firstDay: { [Op.lte]: lastDay },
+      lastDay: { [Op.gte]: firstDay },
+      ...(excludeId ? { id: { [Op.ne]: excludeId } } : {}),
+    },
+    order: [
+      ['createdAt', 'DESC'],
+      ['id', 'DESC'],
+    ],
+    limit: 5,
+  });
+  return (rows as any[]).map((u) => ({
+    id: Number(u.id),
+    fileName: u.fileName ?? null,
+    uploadedAt: u.createdAt instanceof Date ? u.createdAt.toISOString() : String(u.createdAt),
+    uploadedBy: u.uploadedBy ?? null,
+    firstDay: u.firstDay ?? null,
+    lastDay: u.lastDay ?? null,
+  }));
+};
+
+const summarize = (
+  c: Classified,
+  entries: PayoutSummary['entries'],
+  previousUploads: PreviousUpload[],
+): PayoutSummary => {
   const toPost = c.classified.filter((x) => x.status === 'to_post').map((x) => x.row);
   const beforeStart = c.classified.filter((x) => x.status === 'before_start').map((x) => x.row);
   const known = c.classified.filter((x) => x.status === 'already_recorded');
@@ -186,6 +235,7 @@ const summarize = (c: Classified, entries: PayoutSummary['entries']): PayoutSumm
   const reg = figures(toPost);
   return {
     file: { rows: c.rows.length, firstDay: days[0] ?? null, lastDay: days[days.length - 1] ?? null },
+    overlap: { rowsSeenBefore: c.rows.filter((r) => c.stored.has(r.rowKey)).length, previousUploads },
     registrations: {
       toPost: { count: reg.count, gross: reg.gross, fees: reg.fees, net: reg.net },
       // Rows a person is handling (held, dismissed) are in the review list, not "recorded".
@@ -421,7 +471,8 @@ export const previewPayoutReport = async (p: { email: string; csvText: string })
     entriesSoFar.set(g.day, seq);
     return { day: g.day, kind: g.kind, docNumber: registrationDocNumber(g.day, seq, g.kind), ...figures(g.items.map((i) => i.row)) };
   });
-  return summarize(c, entries);
+  const fileDays = c.rows.map((r) => r.day).sort();
+  return summarize(c, entries, await earlierUploads(setup.userId, fileDays[0] ?? null, fileDays[fileDays.length - 1] ?? null));
 };
 
 /**
@@ -523,7 +574,8 @@ export const importPayoutReport = async (p: {
 
     // 3. Everything else, and the summary.
     await storeOtherRows(c, upload.id, setup.userId);
-    const summary = summarize(c, entries);
+    const previous = await earlierUploads(setup.userId, days[0] ?? null, days[days.length - 1] ?? null, Number(upload.id));
+    const summary = summarize(c, entries, previous);
     await upload.update({ summary });
     return { ...summary, uploadId: Number(upload.id) };
   });

@@ -412,3 +412,45 @@ describe('giving lines', () => {
     expect(coverage).toHaveBeenCalledWith(EMAIL, USER_ID, []);
   });
 });
+
+describe('earlier uploads covering the same dates', () => {
+  test('a fresh file has none', async () => {
+    const s = await previewPayoutReport({ email: EMAIL, csvText: OCT });
+    expect(s.overlap).toEqual({ rowsSeenBefore: 0, previousUploads: [] });
+  });
+
+  test('the preview names the earlier upload and counts the lines it already brought in', async () => {
+    pcoDays(OCT_5_POSTED);
+    await importPayoutReport({ email: EMAIL, fileName: 'oct-week1.csv', uploadedBy: 'bk@example.test', csvText: OCT });
+    const s = await previewPayoutReport({
+      email: EMAIL,
+      csvText: file(reg('2026-10-05', 1, 60, 1.59), reg('2026-10-06', 3, 30, 0.95), reg('2026-10-07', 5, 60, 1.59)),
+    });
+    expect(s.overlap.rowsSeenBefore).toBe(2);
+    expect(s.overlap.previousUploads).toHaveLength(1);
+    expect(s.overlap.previousUploads[0]).toMatchObject({
+      fileName: 'oct-week1.csv',
+      uploadedBy: 'bk@example.test',
+      firstDay: '2026-10-05',
+      lastDay: '2026-10-06',
+    });
+    expect(typeof s.overlap.previousUploads[0].uploadedAt).toBe('string');
+  });
+
+  test('an upload with no dates in common is not mentioned', async () => {
+    await importPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
+    const s = await previewPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-20', 9, 60, 1.59)) });
+    expect(s.overlap).toEqual({ rowsSeenBefore: 0, previousUploads: [] });
+  });
+
+  test('the import result lists the earlier uploads, not itself', async () => {
+    await importPayoutReport({ email: EMAIL, fileName: 'first.csv', csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
+    const s = await importPayoutReport({
+      email: EMAIL,
+      fileName: 'second.csv',
+      csvText: file(reg('2026-10-05', 1, 60, 1.59), reg('2026-10-05', 2, 60, 1.59)),
+    });
+    expect(s.overlap.rowsSeenBefore).toBe(1);
+    expect(s.overlap.previousUploads.map((u) => u.fileName)).toEqual(['first.csv']);
+  });
+});
