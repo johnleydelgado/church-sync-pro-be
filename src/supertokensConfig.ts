@@ -8,6 +8,7 @@ import type { TypeInput as EmailVerificationInput } from 'supertokens-node/recip
 import User from './db/models/user';
 import { formFields } from './constant/forms';
 import { sendVerificationEmail } from './services/verificationEmail';
+import { isChurchAccountEmail } from './services/churchAccountEmail';
 
 const apiPort = process.env.API_PORT || 8080;
 export const apiDomain = process.env.API_URL || `http://localhost:${apiPort}`;
@@ -18,6 +19,17 @@ const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, API_KEYS } = process.env;
 interface ResultObject {
   [key: string]: string;
 }
+
+// A church added from the Churches page files its data under a Users row with an
+// @accounts.churchsyncpro.invalid address; signing up with one would take that row over, so both
+// sign-up APIs refuse it before SuperTokens creates anything. SDK 13.x sends GENERAL_ERROR to the
+// browser as is (any other non-OK status becomes its own "This email already exists" field error).
+const isChurchAccountSignUp = (fields: { id: string; value: string }[]) =>
+  isChurchAccountEmail(fields.find((field) => field.id === 'email')?.value);
+const CHURCH_ACCOUNT_SIGN_UP_REFUSED = {
+  status: 'GENERAL_ERROR' as const,
+  message: 'This email address cannot be used.',
+};
 
 // REQUIRED means verifySession() itself refuses a session whose email is not verified, so
 // the backend enforces this, not just the sign-up page. Accounts that predate this must be
@@ -71,6 +83,7 @@ export const buildSupertokensConfig = () => ({
               if (originalImplementation.emailPasswordSignUpPOST === undefined) {
                 throw Error('Should never come here');
               }
+              if (isChurchAccountSignUp(input.formFields)) return CHURCH_ACCOUNT_SIGN_UP_REFUSED;
 
               // First we call the original implementation
               const response = await originalImplementation.emailPasswordSignUpPOST(input);
@@ -121,6 +134,7 @@ export const buildSupertokensConfig = () => ({
               if (originalImp.signUpPOST === undefined) {
                 throw Error('Should never come here');
               }
+              if (isChurchAccountSignUp(input.formFields)) return CHURCH_ACCOUNT_SIGN_UP_REFUSED;
               // First we call the original implementation of signUpPOST.
               const response = await originalImp.signUpPOST(input);
 

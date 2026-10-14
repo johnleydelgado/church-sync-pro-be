@@ -1,12 +1,13 @@
 /**
- * The payout-report endpoints: who may call them, what they accept, and how each failure is
- * answered. The services are faked - their behaviour has its own integration tests.
+ * The payout-report endpoints: who is recorded as acting, what they accept, and how each failure is
+ * answered. Whether the caller may work on the church is the route guard's job (churchAccess tests);
+ * these handlers run after it and take the actor and the church from what it left on res.locals.
+ * The services are faked - their behaviour has its own integration tests.
  */
-jest.mock('supertokens-node/recipe/thirdpartyemailpassword', () => ({ __esModule: true, default: { getUserById: jest.fn() } }));
-jest.mock('supertokens-node/recipe/emailpassword', () => ({ __esModule: true, default: { getUserById: jest.fn() } }));
-jest.mock('../../db/models/user', () => ({ __esModule: true, default: { findOne: jest.fn() } }));
-jest.mock('../../db/models/bookkeeper', () => ({ __esModule: true, default: { findOne: jest.fn() } }));
-jest.mock('../../utils/logger', () => ({ createLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }) }));
+jest.mock('../../utils/logger', () => {
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  return { createLogger: () => log };
+});
 jest.mock('../../services/payoutReport/importPayoutReport', () => {
   class PayoutImportSetupError extends Error {}
   class PayoutImportBusyError extends Error {}
@@ -28,10 +29,7 @@ jest.mock('../../services/payoutReport/reviewPayoutRows', () => {
   };
 });
 
-import ThirdPartyEmailPassword from 'supertokens-node/recipe/thirdpartyemailpassword';
-import EmailPassword from 'supertokens-node/recipe/emailpassword';
-import Users from '../../db/models/user';
-import bookkeeper from '../../db/models/bookkeeper';
+import { createLogger } from '../../utils/logger';
 import { PayoutReportFormatError } from '../../services/payoutReport/parsePayoutReport';
 import * as importer from '../../services/payoutReport/importPayoutReport';
 import * as review from '../../services/payoutReport/reviewPayoutRows';
@@ -47,10 +45,7 @@ import {
 
 const CHURCH = 'church@example.test';
 const BOOKKEEPER = 'bk@example.test';
-const tpep = (ThirdPartyEmailPassword as any).getUserById as jest.Mock;
-const ep = (EmailPassword as any).getUserById as jest.Mock;
-const users = (Users as any).findOne as jest.Mock;
-const links = (bookkeeper as any).findOne as jest.Mock;
+const log = createLogger('test') as any;
 const svc = {
   preview: importer.previewPayoutReport as jest.Mock,
   import: importer.importPayoutReport as jest.Mock,
@@ -61,16 +56,18 @@ const svc = {
   resolve: review.resolvePayoutRow as jest.Mock,
 };
 
-const makeReq = (o: { body?: any; query?: any; signedIn?: boolean } = {}) =>
-  ({ body: o.body ?? {}, query: o.query ?? {}, session: o.signedIn === false ? undefined : { getUserId: () => 'st-1' } } as any);
-const makeRes = () => {
-  const res: any = {};
+const makeReq = (o: { body?: any; query?: any } = {}) => ({ body: o.body ?? {}, query: o.query ?? {}, path: '/x' } as any);
+/** Who the route guard found signed in; the church it checked is always CHURCH. */
+let signedIn = CHURCH;
+const guarded = () => ({ actor: { id: 2, email: signedIn }, churchAccess: { account: { id: 10, email: CHURCH } } });
+const makeRes = (locals: any) => {
+  const res: any = { locals };
   res.status = jest.fn().mockReturnValue(res);
   res.json = jest.fn().mockReturnValue(res);
   return res;
 };
-const call = async (handler: any, req: any) => {
-  const res = makeRes();
+const call = async (handler: any, req: any, locals: any = guarded()) => {
+  const res = makeRes(locals);
   await handler(req, res);
   return { code: res.status.mock.calls[0]?.[0], body: res.json.mock.calls[0]?.[0] };
 };
@@ -78,11 +75,10 @@ const CSV = 'Date,Type,Source,Name,Fund/Signup,Gross,Fee,Net,Payment method,Camp
 
 beforeEach(() => {
   jest.resetAllMocks();
-  tpep.mockResolvedValue({ id: 'st-1', email: CHURCH }); // signed in as the church itself
-  ep.mockResolvedValue(undefined);
+  signedIn = CHURCH; // signed in as the church itself
 });
 
-describe('who may call', () => {
+describe('who is asking', () => {
   test('the church itself', async () => {
     svc.status.mockResolvedValue({ ready: true });
     const { code, body } = await call(payoutReportStatus, makeReq({ query: { email: CHURCH } }));
@@ -91,44 +87,28 @@ describe('who may call', () => {
     expect(svc.status).toHaveBeenCalledWith(CHURCH);
   });
 
-  test("a bookkeeper who accepted the church's invite", async () => {
-    tpep.mockResolvedValue(undefined);
-    ep.mockResolvedValue({ id: 'st-1', email: BOOKKEEPER });
-    users.mockImplementation(async ({ where }: any) => (where.email === CHURCH ? { id: 1 } : { id: 2 }));
-    links.mockResolvedValue({ id: 7 });
-    const { code } = await call(payoutReportStatus, makeReq({ query: { email: CHURCH } }));
-    expect(code).toBe(200);
-    expect(links.mock.calls[0][0].where).toMatchObject({ clientId: 1, inviteAccepted: true });
+  test('the church is the one the guard checked, whatever the request names', async () => {
+    svc.signups.mockResolvedValue([]);
+    await call(payoutReportSignups, makeReq({ query: { email: 'other@example.test' } }));
+    expect(svc.signups).toHaveBeenCalledWith(CHURCH);
   });
 
-  test('anyone else is refused before anything runs', async () => {
-    tpep.mockResolvedValue({ id: 'st-1', email: 'stranger@example.test' });
-    users.mockResolvedValue({ id: 1 });
-    links.mockResolvedValue(null);
-    const { code, body } = await call(payoutReportImport, makeReq({ body: { email: CHURCH, csvText: CSV } }));
+  test.each([
+    ['nothing from the guard', {}],
+    ['no actor', { churchAccess: { account: { id: 10, email: CHURCH } } }],
+    ['no church', { actor: { id: 2, email: CHURCH } }],
+  ])('a route wired without its guard is refused and logged (%s)', async (_label, locals) => {
+    const { code, body } = await call(payoutReportReview, makeReq({ query: { email: CHURCH } }), locals);
     expect(code).toBe(403);
     expect(body).toEqual({ success: false, message: "You don't have access to this church." });
-    expect(svc.import).not.toHaveBeenCalled();
-  });
-
-  test('a session whose user cannot be found is refused', async () => {
-    tpep.mockResolvedValue(undefined);
-    const { code } = await call(payoutReportReview, makeReq({ query: { email: CHURCH } }));
-    expect(code).toBe(403);
     expect(svc.review).not.toHaveBeenCalled();
-  });
-
-  test('no church email is a bad request', async () => {
-    const { code } = await call(payoutReportSignups, makeReq({ query: {} }));
-    expect(code).toBe(400);
+    expect(log.error).toHaveBeenCalledWith('payout report route reached without its church guard', { path: '/x' });
   });
 });
 
 describe('upload', () => {
-  test('preview passes the file for the church named, not the caller', async () => {
-    tpep.mockResolvedValue({ id: 'st-1', email: BOOKKEEPER });
-    users.mockResolvedValue({ id: 1 });
-    links.mockResolvedValue({ id: 7 });
+  test('preview passes the file for the church, not the caller', async () => {
+    signedIn = BOOKKEEPER;
     svc.preview.mockResolvedValue({ file: { rows: 0 } });
     const { code } = await call(payoutReportPreview, makeReq({ body: { email: CHURCH, csvText: CSV } }));
     expect(code).toBe(200);
@@ -136,9 +116,10 @@ describe('upload', () => {
   });
 
   test('import records the signed-in user as the uploader, whatever the request says', async () => {
+    signedIn = BOOKKEEPER;
     svc.import.mockResolvedValue({ uploadId: 3 });
     await call(payoutReportImport, makeReq({ body: { email: CHURCH, csvText: CSV, fileName: 'oct.csv', uploadedBy: 'someone@else.test' } }));
-    expect(svc.import).toHaveBeenCalledWith({ email: CHURCH, fileName: 'oct.csv', csvText: CSV, uploadedBy: CHURCH });
+    expect(svc.import).toHaveBeenCalledWith({ email: CHURCH, fileName: 'oct.csv', csvText: CSV, uploadedBy: BOOKKEEPER });
   });
 
   test.each([

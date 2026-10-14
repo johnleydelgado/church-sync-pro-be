@@ -16,47 +16,118 @@ import userEmailPreferences from '../db/models/userEmailPreferences';
 import Billing from '../db/models/billing';
 import { captureClearingSnapshot } from '../services/clearingSnapshot';
 import { markEmailVerified } from '../services/emailVerification';
+import ChurchMember from '../db/models/churchMember';
+import Church from '../db/models/church';
+import sequelize from '../db';
+import { Op } from 'sequelize';
+import { isChurchAccountEmail } from '../services/churchAccountEmail';
+import { createLogger } from '../utils/logger';
+import { sessionEmail } from '../services/sessionEmail';
+import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
 import crypto from 'crypto';
 const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
 const supertokens = require('supertokens-node');
 
-/**
- * Columns that never go to a browser. The OAuth secrets reach the browser only once, from the
- * callBack* exchange; after that the browser needs a token row's id and token_type, never the
- * secret. An invitation token belongs only in the invite link it was emailed in.
- */
-const OAUTH_SECRET_COLUMNS = ['access_token', 'refresh_token'];
+const logger = createLogger('user');
+/** Bookkeeper rows go to the browser without the invitation token: it belongs only in the invite link. */
 const INVITATION_SECRET_COLUMNS = ['invitationToken'];
 
-export const updateUser = async (req: Request, res: Response) => {
-  // `token` is the password-reset credential; only sendPasswordReset may write it. Taking it from
-  // the body let any signed-in account plant a known token on someone else's row, then reset
-  // their password.
-  const data = omit(req.body, 'token');
-  try {
-    await Users.update({ ...data }, { where: { email: data.email } });
+const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '';
 
-    return responseSuccess(res, 'success');
-  } catch (e) {
-    console.log('ERROR: ', e);
-    res.status(500).json({ error: e.message });
-  }
+/**
+ * OAuth secrets stay on the server. The screens that list connections use each token's id and type,
+ * and whether one exists; never the access or refresh token.
+ */
+const TOKEN_SECRETS = ['access_token', 'refresh_token'];
+const plain = (row: any) => (row && typeof row.toJSON === 'function' ? row.toJSON() : row);
+/** `holder` with its `tokens` stripped of secrets, should a query ever select them again. */
+const withoutTokenSecrets = (holder: any) => {
+  if (!holder || !Array.isArray(holder.tokens)) return holder;
+  return {
+    ...holder,
+    tokens: holder.tokens.map((t: any) =>
+      Object.fromEntries(Object.entries(plain(t) ?? {}).filter(([key]) => !TOKEN_SECRETS.includes(key))),
+    ),
+  };
 };
 
-export const createUser = async (req: Request, res: Response) => {
-  const { email, ...rest } = req.body;
+/** `lower(col) = value`, with the value trimmed and lowercased. */
+const lowerEq = (col: string, value: string) =>
+  sequelize.where(sequelize.fn('lower', sequelize.col(col)), value.trim().toLowerCase());
+
+const NEW_USER_ROLES = ['client', 'bookkeeper'];
+const NEW_USER_TEXT = ['firstName', 'lastName', 'churchName', 'img_url'] as const;
+
+/**
+ * Google sign-up: once SuperTokens has made the login, the browser (GoogleCallBack.tsx) asks for
+ * the person's Users row, sending `{ email }`. No row exists yet, so no church guard can run: the
+ * only row this creates is the signed-in login's own, under the address SuperTokens holds (which
+ * every guarded route looks the person up by), and only the profile fields below are taken from
+ * the body - never `token` (the password-reset secret), `isActive` or any other column.
+ *
+ * A Users row whose address differs from the login's only in case (a Google login for an address
+ * that signed up another way) is that person's row: no second one is made, and the answer is
+ * `{ email: <the stored address> }`. GoogleCallBack should then use that address, not the
+ * login's, for getUserRelated and the rest: the guarded endpoints look accounts up by the exact
+ * stored address. (No such rows on staging or production as of 2026-10-15, so the browser still
+ * uses the login's address.) A new row answers 'success'.
+ */
+export const createUser = async (req: SessionRequest, res: Response) => {
+  const body = req.body ?? {};
   try {
-    console.log('createUser', { email, ...rest });
-    const isEmailExist = await Users.findOne({ where: { email } });
-    if (!isEmailExist) {
-      // Never the password-reset token from a request body (see updateUser).
-      await Users.create({ email, isActive: true, ...omit(rest, 'token') });
-      return responseSuccess(res, 'success');
+    const email = await sessionEmail(req.session?.getUserId());
+    if (!email || isChurchAccountEmail(email)) {
+      return responseError({ res, code: 403, message: 'Your account was not found. Sign out and sign in again.' });
     }
-    res.status(500).json({ error: 'Email exist' });
+    if (
+      body.email !== undefined &&
+      (typeof body.email !== 'string' || body.email.trim().toLowerCase() !== email.toLowerCase())
+    ) {
+      return responseError({ res, code: 403, message: 'You can only create your own account.' });
+    }
+
+    const fields: Record<string, unknown> = { email, isActive: true };
+    for (const key of NEW_USER_TEXT) {
+      const value = body[key];
+      if (value === undefined || value === null) continue;
+      if (typeof value !== 'string') return responseError({ res, code: 400, message: `${key} must be text.` });
+      fields[key] = value.trim();
+    }
+    if (body.role !== undefined && body.role !== null) {
+      if (!NEW_USER_ROLES.includes(body.role)) {
+        return responseError({ res, code: 400, message: 'role must be client or bookkeeper.' });
+      }
+      fields.role = body.role;
+    }
+    if (body.isSubscribe !== undefined && body.isSubscribe !== null) {
+      if (body.isSubscribe !== '0' && body.isSubscribe !== '1') {
+        return responseError({ res, code: 400, message: 'isSubscribe must be 0 or 1.' });
+      }
+      fields.isSubscribe = body.isSubscribe;
+    }
+
+    // Any case: a second row differing only in case would leave the person with no actor at all.
+    const existing = await Users.findAll({ where: lowerEq('email', email) as any, attributes: ['id', 'email'] });
+    if (existing.length === 1 && existing[0].email !== email) {
+      logger.info('createUser: the login matches an existing Users row only in case; using that row', {
+        userId: existing[0].id,
+      });
+      return responseSuccess(res, { email: existing[0].email });
+    }
+    if (existing.length > 1 && !existing.some((u) => u.email === email)) {
+      logger.error('createUser: the login matches several Users rows in case only; using none', {
+        ids: existing.map((u) => u.id),
+      });
+    }
+    if (existing.length) {
+      return responseError({ res, code: 409, message: 'An account with this email already exists.' });
+    }
+    await Users.create(fields as any);
+    return responseSuccess(res, 'success');
   } catch (e) {
-    console.log('ERROR: ', e);
-    res.status(500).json({ error: e.message });
+    // The error's kind only: a database message can quote the values, and those include the address.
+    logger.error('createUser failed', { error: e instanceof Error ? e.name : 'unknown' });
+    return responseError({ res, code: 500, message: 'Could not create your account. Try again.' });
   }
 };
 
@@ -327,6 +398,8 @@ export const isUserHaveTokens = async (req: Request, res: Response) => {
       const tokenData = await tokenEntity.findAll({
         where: { email: email as string },
         include: tokens,
+        // The first enabled one below is then the entity updateUserToken saves to.
+        order: [['id', 'ASC']],
       });
 
       if (tokenData.length === 0) {
@@ -367,11 +440,11 @@ export const getTokenList = async (req: Request, res: Response) => {
     if (email) {
       const data = await tokenEntity.findAll({
         where: { email: email as string },
-        include: [{ model: tokens, attributes: { exclude: OAUTH_SECRET_COLUMNS } }],
+        include: [{ model: tokens, attributes: { exclude: TOKEN_SECRETS } }],
       });
 
       if (!isEmpty(data)) {
-        const user = data;
+        const user = data.map((row) => withoutTokenSecrets(plain(row)));
         if (user) {
           return responseSuccess(res, user);
         }
@@ -385,52 +458,58 @@ export const getTokenList = async (req: Request, res: Response) => {
   }
 };
 
-export const updateUserTokens = async (req: Request, res: Response) => {
-  const data = req.body;
-  const { email, enableEntity, tokenEntityId } = req.body;
+export const updateUserToken = async (req: Request, res: Response) => {
+  const { token_type, access_token, refresh_token, realm_id } = req.body;
   try {
-    let tokenId = 0;
-    if (Array.isArray(data.tokens) && data.tokens.length > 0) {
-      tokenId = data.tokens[0].id;
+    // Behind requireAccountAccess(fromBody, 'integrations'): the church's account, not whoever clicked Connect.
+    const account = res.locals?.churchAccess?.account;
+    if (!account) {
+      // Only reachable if the route is wired without its guard; refuse rather than guess a church.
+      logger.error('updateUserToken reached without a church access check', { path: req.path });
+      return responseError({ res, code: 403, message: "You don't have access to this church." });
     }
-
-    const isTokenExist = await tokens.findOne({ where: { id: tokenId } });
-
-    // enable tokenEntity
-    if (enableEntity) {
-      // req body should be email, enableEntity, id
-      await tokenEntity.update({ isEnabled: false }, { where: { email } });
-      await tokenEntity.update({ isEnabled: true }, { where: { id: tokenEntityId } });
-      return responseSuccess(res, 'success');
+    if (!['qbo', 'pco', 'stripe'].includes(token_type)) {
+      return responseError({ res, code: 400, message: 'Unknown connection type' });
     }
-
-    if (isTokenExist) {
-      // rename orgization name
-      if (data.organization_name) {
-        await Promise.all(
-          data.tokens.map(
-            async (a) => await tokens.update({ organization_name: data.organization_name }, { where: { id: a.id } }),
-          ),
-        );
-      } else {
-        // update tokens
-        await Promise.all(data.tokens.map(async (a) => await tokens.update({ ...a }, { where: { id: a.id } })));
-      }
-    } else {
-      // delete
-      if (data.isDeleted) {
-        await tokenEntity.destroy({ where: { id: tokenEntityId } });
-        return responseSuccess(res, 'success');
-      }
-      // create
-      const userCreated = await tokenEntity.create({ email: data.email });
-      await Promise.all(
-        ['pco', 'qbo', 'stripe'].map(
-          async (a) => await tokens.create({ ...data, tokenEntityId: userCreated.id, token_type: a }),
-        ),
-      );
+    // A reconnect overwrites the saved connection, so a call without a usable token must not wipe one that works.
+    if (!isNonEmptyString(access_token)) {
+      return responseError({
+        res,
+        code: 400,
+        message: 'The connection did not return an access token. Try connecting again.',
+      });
     }
-
+    // QuickBooks and Planning Center connections live on their refresh token: saving one without it
+    // (or keeping the old one next to a new access token) leaves a connection that dies within hours.
+    if ((token_type === 'qbo' || token_type === 'pco') && !isNonEmptyString(refresh_token)) {
+      return responseError({
+        res,
+        code: 400,
+        message: 'The connection did not return a refresh token. Try connecting again.',
+      });
+    }
+    if (token_type === 'qbo' && !isNonEmptyString(realm_id)) {
+      return responseError({
+        res,
+        code: 400,
+        message: 'QuickBooks did not say which company was connected. Try connecting again.',
+      });
+    }
+    const fields = { access_token, refresh_token, realm_id: realm_id ?? null, userId: account.id };
+    // A church can have several entities (organisations); the enabled one is the live one, else the oldest.
+    let entity: any = await tokenEntity.findOne({
+      where: { email: account.email },
+      order: [
+        ['isEnabled', 'DESC'],
+        ['id', 'ASC'],
+      ],
+    });
+    if (!entity) entity = await tokenEntity.create({ email: account.email, isEnabled: true });
+    else if (!entity.isEnabled) await entity.update({ isEnabled: true });
+    const existing: any = await tokens.findOne({ where: { tokenEntityId: entity.id, token_type } });
+    // Connecting again replaces the old connection (it used to be ignored, keeping a dead token).
+    if (existing) await existing.update(fields);
+    else await tokens.create({ ...fields, tokenEntityId: entity.id, token_type } as any);
     return responseSuccess(res, 'success');
   } catch (e) {
     console.log('ERROR: ', e);
@@ -438,37 +517,42 @@ export const updateUserTokens = async (req: Request, res: Response) => {
   }
 };
 
-export const updateUserToken = async (req: Request, res: Response) => {
-  const data = req.body;
-  const { email, token_type } = req.body;
+/**
+ * The pending ChurchMembers row an invitation link points at. The address is compared without
+ * case: the link carries it as typed by whoever sent the invite, and the token is what matters.
+ */
+const findInvite = (email: string, token: string) =>
+  ChurchMember.findOne({
+    where: { [Op.and]: [{ invitationToken: token }, lowerEq('invitedEmail', email)] } as any,
+  });
 
-  try {
-    const tokenEntityData = await tokenEntity.findOne({ where: { email } });
+/**
+ * An invitation link's email and token, if they are usable: two non-empty strings (an array would
+ * become `IN (...)`), and never a church account's address, which no person can be invited as.
+ */
+const inviteParams = (body: any): { email: string; token: string } | null => {
+  const { email, invitationToken } = body ?? {};
+  if (!isNonEmptyString(email) || !isNonEmptyString(invitationToken)) return null;
+  if (isChurchAccountEmail(email)) return null;
+  return { email, token: invitationToken };
+};
 
-    if (!isEmpty(tokenEntityData)) {
-      // update tokens
-      const token = await tokens.findAll({ where: { tokenEntityId: tokenEntityData.id } });
-      const isExist = token.find((a) => a.token_type === token_type);
-      if (!isExist) {
-        await tokens.create({ ...data, tokenEntityId: tokenEntityData.id, token_type });
-      }
-    } else {
-      // create
-      const userCreated = await tokenEntity.create({ email: data.email, isEnabled: true });
-      await tokens.create({ ...data, tokenEntityId: userCreated.id, token_type });
-    }
-
-    return responseSuccess(res, 'success');
-  } catch (e) {
-    console.log('ERROR: ', e);
-    return responseError({ res, code: 400, message: e });
+/**
+ * The one login with this address, in any case. Users.email is not unique; when two rows share an
+ * address nobody can say which one the invite meant, so neither is used. Logs ids, never the address.
+ */
+const onlyLoginWithEmail = async (email: string): Promise<Users | null> => {
+  const rows = await Users.findAll({ where: lowerEq('email', email) as any, limit: 2 });
+  if (rows.length > 1) {
+    logger.error('invite: more than one login for the invited address; linking none', { ids: rows.map((r) => r.id) });
   }
+  return rows.length === 1 ? rows[0] : null;
 };
 
 export const checkValidInvitation = async (req: Request, res: Response) => {
-  const { email, invitationToken } = req.body;
   try {
-    const invitation = await bookkeeper.findOne({ where: { email, invitationToken } });
+    const params = inviteParams(req.body);
+    const invitation = params ? await findInvite(params.email, params.token) : null;
 
     if (invitation) {
       return responseSuccess(res, 'exist');
@@ -498,21 +582,24 @@ export const bookkeeperList = async (req: Request, res: Response) => {
           as: 'User',
           // The password-reset token: a bookkeeper must not read the church's (or vice versa).
           attributes: { exclude: ['token'] },
-          // Then include tokens that belong to this user (which integrations are connected - the
-          // OAuth secrets themselves stay on the server).
-          include: [{ model: tokens, as: 'tokens', attributes: { exclude: OAUTH_SECRET_COLUMNS } }],
+          // Then include tokens that belong to this user
+          include: [{ model: tokens, as: 'tokens', attributes: { exclude: TOKEN_SECRETS } }],
         },
         {
           model: User,
           as: 'Client',
           attributes: { exclude: ['token'] },
-          include: [{ model: tokens, as: 'tokens', attributes: { exclude: OAUTH_SECRET_COLUMNS } }],
+          include: [{ model: tokens, as: 'tokens', attributes: { exclude: TOKEN_SECRETS } }],
         },
       ],
     });
 
     if (bookkeeperData) {
-      return responseSuccess(res, bookkeeperData);
+      const rows = bookkeeperData.map((row) => {
+        const json = plain(row);
+        return { ...json, User: withoutTokenSecrets(json.User), Client: withoutTokenSecrets(json.Client) };
+      });
+      return responseSuccess(res, rows);
     }
     return responseError({ res, code: 400, message: 'not found !' });
   } catch (e) {
@@ -521,7 +608,7 @@ export const bookkeeperList = async (req: Request, res: Response) => {
 };
 
 export const updateInvitationStatus = async (req: Request, res: Response) => {
-  const { email, invitationToken } = req.body;
+  const { invitationToken } = req.body ?? {};
 
   try {
     // This runs before the invitee has a session, so the invitation token IS the
@@ -530,8 +617,12 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
     if (!invitationToken) {
       return responseError({ res, code: 401, message: 'Invitation token required' });
     }
+    const params = inviteParams(req.body);
+    if (!params) {
+      return responseError({ res, code: 400, message: 'Error in invitation' });
+    }
 
-    const invite = await bookkeeper.findOne({ where: { email, invitationToken } });
+    const invite: any = await findInvite(params.email, params.token);
     if (!invite) {
       return responseError({ res, code: 400, message: 'Error in invitation' });
     }
@@ -539,17 +630,45 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
     // The token was mailed to this address, so accepting it proves the inbox is theirs -
     // the same proof a verification link gives. Otherwise REQUIRED mode would stop the
     // invitee at "check your inbox" for a mail that was never sent.
-    await markEmailVerified(email);
+    await markEmailVerified(params.email);
 
-    // Derive the user from the email rather than trusting an id from the body.
-    const user = await Users.findOne({ where: { email } });
-    const updateData: { inviteAccepted: boolean; userId?: number } = { inviteAccepted: true };
-    if (user) {
-      updateData.userId = user.id;
+    // Derive the user from the address the invite was sent to, never from an id or email in the body.
+    const user = await onlyLoginWithEmail(invite.invitedEmail ?? params.email);
+
+    // No login yet: the row stays pending, and the invite page calls this again once the
+    // sign-up has made one. Accepted means accepted BY a login: the first backfill wrote some
+    // rows as accepted with no userId, and those still need linking. Already linked: nothing
+    // to do (the page calls this twice).
+    if (user && !(invite.inviteAccepted && invite.userId)) {
+      // One row per person per church: a login already on this church (on another row) keeps
+      // that row and its role, and the invite is spent.
+      const already = await ChurchMember.findOne({
+        where: { churchId: invite.churchId, userId: user.id, id: { [Op.ne]: invite.id } },
+      });
+      if (already) {
+        await invite.destroy();
+      } else {
+        await invite.update({ userId: user.id, inviteAccepted: true });
+      }
     }
 
-    const bookkeeperData = await bookkeeper.update(updateData, { where: { email, invitationToken } });
-    return responseSuccess(res, bookkeeperData);
+    // Mirror to the legacy bookkeeper table while the old screens still read it. Access reads
+    // ChurchMembers only, so a failure here must not undo or hide the acceptance above.
+    try {
+      await bookkeeper.update(
+        { inviteAccepted: true, ...(user ? { userId: user.id } : {}) },
+        { where: { [Op.and]: [{ invitationToken: params.token }, lowerEq('email', params.email)] } as any },
+      );
+    } catch (mirrorError) {
+      logger.warn('invite accepted, but the legacy bookkeeper row was not updated', {
+        memberId: invite.id,
+        churchId: invite.churchId,
+        userId: user?.id ?? null,
+        // The error's kind only: a database message can quote the values, and those include the address.
+        error: mirrorError instanceof Error ? mirrorError.name : 'unknown',
+      });
+    }
+    return responseSuccess(res, 'accepted');
   } catch (e) {
     return responseError({ res, code: 400, message: e });
   }
@@ -561,16 +680,21 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
  * session with the new client's. The address is synthetic (nobody reads it) and the
  * password random (nobody is meant to log in as it): the bookkeeper works on the
  * church through their own login.
+ *
+ * Access reads ChurchMembers only, so the church is filed as a Church owned by the bookkeeper
+ * who added it - what the resync migration made of the churches added this way before.
  */
 export const createClientChurch = async (req: Request, res: Response) => {
   const { churchName, bookkeeperId } = req.body;
   try {
+    // The guard (requireAccountAccess on bookkeeperId) lets any member of that account through;
+    // only the person themselves may add a church they will own.
+    const bk = res.locals?.actor;
+    if (!bk || bk.id !== Number(bookkeeperId)) {
+      return responseError({ res, code: 403, message: 'You can only add a church for yourself.' });
+    }
     if (!churchName || typeof churchName !== 'string' || !churchName.trim()) {
       return responseError({ res, code: 400, message: 'Church name is required' });
-    }
-    const bk = await Users.findOne({ where: { id: bookkeeperId } });
-    if (!bk) {
-      return responseError({ res, code: 400, message: 'Bookkeeper not found' });
     }
 
     const email = `${churchName.trim().toLowerCase().replace(/ /g, '-')}-${bk.email}`;
@@ -586,32 +710,63 @@ export const createClientChurch = async (req: Request, res: Response) => {
     }
 
     try {
-      const client = await Users.create({
-        email,
-        churchName: churchName.trim(),
-        firstName: 'N/A',
-        lastName: 'N/A',
-        role: 'client',
-        isSubscribe: '0',
-        isActive: true,
-      } as any);
+      const name = churchName.trim();
+      const clientId = await sequelize.transaction(async (transaction) => {
+        const client = await Users.create(
+          {
+            email,
+            churchName: name,
+            firstName: 'N/A',
+            lastName: 'N/A',
+            role: 'client',
+            isSubscribe: '0',
+            isActive: true,
+          } as any,
+          { transaction },
+        );
 
-      // Same row sendEmailInvitation writes on its createdByBk branch.
-      await bookkeeper.create({
-        email,
-        inviteSent: true,
-        invitationToken: crypto.randomBytes(16).toString('hex'),
-        inviteAccepted: true,
-        clientId: client.id,
-        userId: bk.id,
-        bookkeeperIntegrationAccessEnabled: false,
-      } as any);
+        // The legacy row the Clients page still lists.
+        await bookkeeper.create(
+          {
+            email,
+            inviteSent: true,
+            invitationToken: crypto.randomBytes(16).toString('hex'),
+            inviteAccepted: true,
+            clientId: client.id,
+            userId: bk.id,
+            bookkeeperIntegrationAccessEnabled: false,
+          } as any,
+          { transaction },
+        );
 
-      return responseSuccess(res, { clientId: client.id, email });
+        const church = await Church.create({ name, ownerUserId: client.id as number, isActive: true }, { transaction });
+        await ChurchMember.create(
+          {
+            churchId: church.id,
+            userId: bk.id,
+            role: 'owner',
+            integrationAccessEnabled: true,
+            invitedEmail: null,
+            invitationToken: null,
+            inviteAccepted: true,
+          },
+          { transaction },
+        );
+        return client.id;
+      });
+
+      return responseSuccess(res, { clientId, email });
     } catch (dbError) {
       // The login exists but the church does not: remove the login again, otherwise a
       // retry is refused as "already exists" for a church nobody can see.
-      await supertokens.deleteUser(signUp.user.id).catch(() => undefined);
+      await supertokens.deleteUser(signUp.user.id).catch((deleteError: unknown) => {
+        // Left behind, the login makes a retry answer "already exists" for a church nobody can see.
+        // The error's kind only: its message can quote the synthetic address, which holds the bookkeeper's.
+        logger.error('createClientChurch: could not remove the SuperTokens login after the church failed', {
+          superTokensUserId: signUp.user.id,
+          error: deleteError instanceof Error ? deleteError.name : 'unknown',
+        });
+      });
       throw dbError;
     }
   } catch (e) {
@@ -620,10 +775,12 @@ export const createClientChurch = async (req: Request, res: Response) => {
 };
 
 export const updateUserData = async (req: Request, res: Response) => {
-  const { email, firstName, lastName, churchName, userId, file, file_name } = req.body;
+  // `email` in the body is ignored. SuperTokens owns the login address; changing only Users.email
+  // would lock the person out of every guarded route and orphan the connections filed under it.
+  const { firstName, lastName, churchName, userId, file, file_name } = req.body;
 
   try {
-    const userData = await User.update({ email, firstName, lastName, churchName }, { where: { id: userId } });
+    const userData = await User.update({ firstName, lastName, churchName }, { where: { id: userId } });
     let fileName = '';
     let imageUrl = '';
 
@@ -634,7 +791,7 @@ export const updateUserData = async (req: Request, res: Response) => {
       imageUrl = imageUploadData.imageUrl;
       await User.update({ img_url: imageUrl }, { where: { id: userId } });
     } else {
-      await User.update({ email, firstName, lastName, churchName }, { where: { id: userId } });
+      await User.update({ firstName, lastName, churchName }, { where: { id: userId } });
     }
 
     const data = { ...userData, fileName, imageUrl };

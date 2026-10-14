@@ -20,6 +20,9 @@ jest.mock('../../db/models/tokenEntity', mockModel);
 jest.mock('../../db/models/bookkeeper', mockModel);
 jest.mock('../../db/models/userEmailPreferences', mockModel);
 jest.mock('../../db/models/billing', mockModel);
+jest.mock('../../db/models/churchMember', mockModel);
+jest.mock('../../db/models/church', mockModel);
+jest.mock('../../db', () => ({ __esModule: true, default: {} }));
 jest.mock('../../utils/storage', () => ({ uploadImage: jest.fn() }));
 jest.mock('../../utils/quickBookApi', () => ({ __esModule: true, default: {} }));
 jest.mock('../../services/clearingSnapshot', () => ({ captureClearingSnapshot: jest.fn() }));
@@ -35,7 +38,7 @@ import EmailPassword from 'supertokens-node/recipe/emailpassword';
 import Users from '../../db/models/user';
 import bookkeeper from '../../db/models/bookkeeper';
 import { resetPassword, sendPasswordReset } from '../index';
-import { bookkeeperList, createUser, getUserRelated, updateUser } from '../user';
+import { bookkeeperList, getUserRelated } from '../user';
 import { addTokenInUser } from '../db';
 
 const users = Users as unknown as { findOne: jest.Mock; update: jest.Mock; create: jest.Mock };
@@ -240,38 +243,18 @@ describe('the reset token is never sent to the browser', () => {
 });
 
 describe('a request body cannot write the reset token', () => {
-  const quiet = () => jest.spyOn(console, 'log').mockImplementation(() => undefined);
-
-  test('updateUser drops token and keeps the rest', async () => {
-    await updateUser({ body: { email: 'church@b.test', firstName: 'Ann', token: TOKEN } } as any, makeRes());
-    expect(users.update).toHaveBeenCalledWith({ email: 'church@b.test', firstName: 'Ann' }, { where: { email: 'church@b.test' } });
-  });
-
-  test('createUser drops token and keeps the rest', async () => {
-    const log = quiet();
-    users.findOne.mockResolvedValue(null);
-    await createUser({ body: { email: 'new@b.test', firstName: 'Ann', token: TOKEN } } as any, makeRes());
-    log.mockRestore();
-    expect(users.create).toHaveBeenCalledWith({ email: 'new@b.test', isActive: true, firstName: 'Ann' });
-  });
-
-  test('addTokenInUser drops token and keeps the rest', async () => {
-    const log = quiet();
-    await addTokenInUser({ body: { email: 'church@b.test', access_token_qbo: 'qbo', token: TOKEN } } as any, makeRes());
-    log.mockRestore();
-    expect(users.update).toHaveBeenCalledWith({ access_token_qbo: 'qbo' }, { where: { email: 'church@b.test' } });
-  });
-
-  test('addTokenInUser logs the field names, never the OAuth token values', async () => {
-    const log = quiet();
+  // On this branch updateUser is gone and createUser takes only an allow-list of profile fields
+  // (see createUser.test.ts); addTokenInUser writes nothing at all.
+  test('addTokenInUser writes nothing and logs no OAuth token values', async () => {
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
     await addTokenInUser(
-      { body: { email: 'church@b.test', access_token_qbo: 'QBO-ACCESS-SECRET', refresh_token_qbo: 'QBO-REFRESH-SECRET' } } as any,
+      { body: { email: 'church@b.test', access_token_qbo: 'QBO-ACCESS-SECRET', refresh_token_qbo: 'QBO-REFRESH-SECRET', token: TOKEN } } as any,
       makeRes(),
     );
     const logged = JSON.stringify(log.mock.calls);
     log.mockRestore();
+    expect(users.update).not.toHaveBeenCalled();
     expect(logged).not.toContain('QBO-ACCESS-SECRET');
     expect(logged).not.toContain('QBO-REFRESH-SECRET');
-    expect(logged).toContain('access_token_qbo');
   });
 });

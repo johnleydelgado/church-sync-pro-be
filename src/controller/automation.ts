@@ -26,6 +26,7 @@ import { withRetry } from '../utils/httpRetry';
 import { id } from 'date-fns/locale';
 import EmailLog from '../db/models/emailLog';
 import SyncRun from '../db/models/SyncRun';
+import Church from '../db/models/church';
 import { getQboTokensForUser, refreshQboToken } from '../services/qboClient';
 import { legacyRegistrationList } from '../services/payoutReport/registrationMapping';
 
@@ -337,6 +338,8 @@ export const generatePcToken = async (email: string) => {
     const data = await tokenEntity.findOne({
       where: { email: email as string, isEnabled: true },
       include: tokens,
+      // The entity updateUserToken saves to: the oldest enabled one.
+      order: [['id', 'ASC']],
     });
 
     const arr = data.tokens.find((item) => item.token_type === 'pco');
@@ -945,7 +948,29 @@ function formatFundList(events) {
  * touched nobody used to report `processed: 0, completed`, which read exactly like a quiet
  * night with no giving.
  */
+/** A real calendar day written YYYY-MM-DD. */
+const isDay = (value: unknown): value is string => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [y, m, d] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+};
+
 export const dailyJournalSync = async (req: Request, res: Response) => {
+  // Optional operator overrides. The scheduler sends neither.
+  //   days:  ["2026-09-08"]  settle these exact days instead of yesterday
+  //   email: "a@b.c"          only this church
+  // Sent but unusable, they are refused rather than ignored: an empty email used to mean every church.
+  const body = req.body ?? {};
+  if (body.email !== undefined && !(typeof body.email === 'string' && body.email.trim())) {
+    return responseError({ res, code: 400, message: 'email, when sent, must name one church.' });
+  }
+  if (body.days !== undefined && !(Array.isArray(body.days) && body.days.length && body.days.every(isDay))) {
+    return responseError({ res, code: 400, message: 'days, when sent, must be a list of days written YYYY-MM-DD.' });
+  }
+  const onlyEmail: string | undefined = body.email?.trim();
+  const days: string[] | undefined = body.days;
+
   // Opening the run record is itself fallible - a missing column, a connection blip - and
   // outside a try it took the whole process down rather than failing this one request.
   let run: SyncRun;
@@ -958,16 +983,17 @@ export const dailyJournalSync = async (req: Request, res: Response) => {
   }
 
   const now = new Date();
-  // Optional operator overrides. The scheduler sends neither.
-  //   days:  ["2026-09-08"]  settle these exact days instead of yesterday
-  //   email: "a@b.c"          only this church
-  const days: string[] | undefined = Array.isArray(req.body?.days) && req.body.days.length ? req.body.days : undefined;
-  const onlyEmail: string | undefined = typeof req.body?.email === 'string' ? req.body.email : undefined;
 
   try {
     const users = await User.findAll({
       where: onlyEmail ? { role: 'client', email: onlyEmail } : { role: 'client' },
     });
+    // A church its owner has deactivated stops posting; its members can still read it.
+    const inactive = new Set(
+      (await Church.findAll({ where: { isActive: false }, attributes: ['ownerUserId'] })).map(
+        (c: any) => c.ownerUserId,
+      ),
+    );
 
     const failures: { email: string; error: string }[] = [];
     const skips: { email: string; reason: string }[] = [];
@@ -975,6 +1001,10 @@ export const dailyJournalSync = async (req: Request, res: Response) => {
     let succeeded = 0;
 
     for (const user of users) {
+      if (inactive.has(user.id)) {
+        skips.push({ email: String(user.email), reason: 'church_inactive' });
+        continue;
+      }
       try {
         const result = await runDailyDonationSync(user, { now, days });
         if (result.status === 'skipped') {

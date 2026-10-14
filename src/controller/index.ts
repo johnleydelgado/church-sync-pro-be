@@ -16,61 +16,90 @@ import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
 import ThirdParty from 'supertokens-node/recipe/thirdparty';
 import EmailPassword from 'supertokens-node/recipe/emailpassword';
 import { syncBatchToJournalEntries } from '../services/syncEngine';
+import { recordPendingChurchInvite } from '../services/pendingInvite';
+import { removeLegacyBookkeeper } from '../services/legacyBookkeeper';
+import { ensureOwnChurch } from '../services/churches';
+import { NO_CLICK_TRACKING, inviteLinkFor, sendInviteEmail } from '../services/inviteEmail';
+import sequelize from '../db';
+import { Op } from 'sequelize';
+import { createLogger } from '../utils/logger';
+
+const logger = createLogger('invite');
 
 const sgMail = require('@sendgrid/mail');
-const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
-
-/**
- * Send transactional links exactly as written.
- *
- * SendGrid's account-wide click tracking rewrites every URL in an email to
- * `https://url3979.churchsyncpro.com/ls/click?upn=<300 opaque characters>` so it can count
- * clicks. For a newsletter that is harmless; for an invitation or a password reset it is not.
- * The recipient is being asked to trust a link that no longer shows where it goes, which is the
- * exact shape of a phishing email - and spam filters score it that way too. The invite also
- * carries a one-time token, so a rewritten URL is an extra hop that can break it.
- *
- * Disabled per message rather than on the account, so anything else the account sends keeps its
- * tracking.
- */
-const NO_CLICK_TRACKING = { trackingSettings: { clickTracking: { enable: false, enableText: false } } };
+const { SENDGRID_API_KEY, RESET_PASSWORD_URL } = process.env;
 
 export const sendEmailInvitation = async (req: Request, res: Response) => {
-  const { name, emailTo, clientId, createdByBk, bookkeeperId } = req.body;
+  // Always a pending invite with a mail. `createdByBk` / `bookkeeperId` in the body are ignored: they
+  // wrote an already-accepted row for whatever user id was sent, and no screen sends them any more
+  // (createClientChurch writes its own row).
+  const { emailTo } = req.body;
+  if (typeof emailTo !== 'string' || !emailTo.trim()) {
+    return responseError({ res, code: 400, message: 'emailTo is required' });
+  }
+  const email = emailTo.trim();
+  // Behind requireAccountAccess(fromBodyClientId, 'owner'): the church inviting is the account it checked.
+  const account = res.locals?.churchAccess?.account;
+  if (!account) {
+    // Only reachable if the route is wired without its guard; refuse rather than guess a church.
+    logger.error('sendEmailInvitation reached without a church access check', { path: req.path });
+    return responseError({ res, code: 403, message: "You don't have access to this church." });
+  }
   const rand = crypto.randomBytes(16).toString('hex');
 
-  sgMail.setApiKey(SENDGRID_API_KEY);
-  // Encoded: a '+' in the address would otherwise be read back as a space by the page.
-  const inviteLink = INVITATION_URL + `?bookkeeperEmail=${encodeURIComponent(emailTo)}&invitationToken=${rand}`;
-
   try {
-    // Create bookkeeper in the database
-    await bookkeeper.create({
-      email: emailTo,
-      inviteSent: true,
-      invitationToken: rand,
-      inviteAccepted: !!createdByBk,
-      clientId,
-      bookkeeperIntegrationAccessEnabled: false,
-      ...(createdByBk ? { userId: bookkeeperId } : {}), // Conditionally add userId
-    });
+    // Built before anything is written: with no INVITATION_URL this refuses rather than mail a broken link.
+    const inviteLink = inviteLinkFor(email, rand);
 
-    // Send email only if createdByBk is not true
-    if (!createdByBk) {
-      const msg = {
-        to: emailTo,
-        from: 'support@churchsyncpro.com',
-        subject: 'You have been invited to take on the role of a bookkeeper.',
-        templateId: 'd-4529481214ab4c4e85018b4dfb3b6f20',
-        dynamicTemplateData: {
-          inviteLink,
+    // A client who signed up after the churches migration has no church until /church/mine runs,
+    // and an invite to no church can never be accepted. Does nothing for a church that has one.
+    await ensureOwnChurch(account);
+
+    const outcome = await sequelize.transaction(async (transaction) => {
+      // Accepting reads ChurchMembers only, so the pending row there carries the same token.
+      const recorded = await recordPendingChurchInvite({ clientId: account.id, email, token: rand, transaction });
+      // Neither wrote anything: the person is on the church already, or there is no church (an
+      // account that isn't a client's, which ensureOwnChurch leaves alone).
+      if (recorded === 'already-member' || recorded === 'no-church') return recorded;
+      // An invite sent again: the legacy row(s) still pending for this address take the new token,
+      // rather than the Bookkeepers tab listing the person once per mail.
+      const [refreshed] = await bookkeeper.update(
+        { invitationToken: rand, inviteSent: true },
+        {
+          where: {
+            [Op.and]: [
+              { clientId: account.id, userId: null, inviteAccepted: { [Op.not]: true } },
+              sequelize.where(sequelize.fn('lower', sequelize.col('email')), email.toLowerCase()),
+            ],
+          } as any,
+          transaction,
         },
-        ...NO_CLICK_TRACKING,
-      };
-      await sgMail.send(msg);
+      );
+      if (!refreshed) {
+        await bookkeeper.create(
+          {
+            email,
+            inviteSent: true,
+            invitationToken: rand,
+            inviteAccepted: false,
+            clientId: account.id,
+            bookkeeperIntegrationAccessEnabled: false,
+          } as any,
+          { transaction },
+        );
+      }
+      return recorded;
+    });
+    if (outcome === 'already-member') {
+      return responseError({ res, code: 409, message: `${email} is already on this church.` });
+    }
+    if (outcome === 'no-church') {
+      return responseError({ res, code: 400, message: 'This account has no church to invite people to.' });
     }
 
-    return responseSuccess(res, createdByBk ? 'Bookkeeper created without email' : 'Email sent');
+    await sendInviteEmail(email, inviteLink);
+
+    return responseSuccess(res, 'Email sent');
   } catch (e) {
     return responseError({ res, code: 500, data: e });
   }
@@ -178,10 +207,23 @@ export const resetPassword = async (req: Request, res: Response) => {
 };
 
 export const deleteBookeeper = async (req: Request, res: Response) => {
-  const { id } = req.body;
+  // One plain row id (the guard, fromBookkeeperRowId, reads it the same way). An array would
+  // become `IN (...)` and delete rows the guard never checked.
+  const raw = req.body?.id;
+  const id = typeof raw === 'number' || (typeof raw === 'string' && /^\d+$/.test(raw)) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return responseError({ res, code: 400, message: 'Bookkeeper id is required' });
+  }
   try {
-    await bookkeeper.destroy({ where: { id } });
-
+    // The person's ChurchMembers row goes too: access reads ChurchMembers only.
+    const removed = await removeLegacyBookkeeper(id);
+    if (!removed) {
+      return responseError({ res, code: 404, message: 'Bookkeeper not found' });
+    }
+    if (removed === 'owner') {
+      // Nothing was deleted. The People tab removes owners, and keeps a church from losing its last.
+      return responseError({ res, code: 409, message: 'Remove owners from the People tab.' });
+    }
     return responseSuccess(res, 'deleted');
   } catch (e) {
     return responseError({ res, code: 500, data: e });
