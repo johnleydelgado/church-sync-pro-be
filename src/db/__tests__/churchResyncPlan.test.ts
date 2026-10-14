@@ -11,7 +11,7 @@ const churches = [{ id: 100, ownerUserId: 10 }];
 // `<church-slug>-<user 2's own email>`.
 const accounts = [{ id: 10, email: 'grace-bk@example.test' }];
 const users = [{ id: 2, email: 'bk@example.test' }];
-const nothing = { insert: [], accept: [], promote: [], dropMembers: [], unaccept: [] };
+const nothing = { insert: [], accept: [], promote: [], dropMembers: [], unaccept: [], unmatched: [] };
 
 it('adds a member for a bookkeeper row written after the backfill', () => {
   const plan = planResync(churches, [], [{ userId: 2, clientId: 10, email: 'bk@example.test', invitationToken: 't', inviteAccepted: true, bookkeeperIntegrationAccessEnabled: false }], accounts, users);
@@ -136,8 +136,9 @@ it("never promotes a different user who merely has the account's address, nor dr
   const plan = planResync(realChurch, members, [row], [{ id: 1, email: 'matt@church.test' }], [{ id: 4, email: 'Matt@church.test' }]);
   expect(plan.promote).toEqual([]);
   expect(plan.dropMembers).toEqual([]);
-  // It is still a bookkeeper row like any other.
+  // It is still a bookkeeper row like any other - and listed, so someone can look at it.
   expect(plan.insert).toEqual([expect.objectContaining({ churchId: 1, userId: 4, role: 'bookkeeper' })]);
+  expect(plan.unmatched).toEqual([{ churchId: 1, userId: 4 }]);
 });
 
 it("never promotes when the bookkeeper's own address is not the account address's suffix, or is unknown", () => {
@@ -148,8 +149,35 @@ it("never promotes when the bookkeeper's own address is not the account address'
   const row = { userId: 3, clientId: 10, email: 'grace-bk@example.test', inviteAccepted: true };
   for (const known of [[{ id: 3, email: 'someone-else@example.test' }], []]) {
     const plan = planResync(churches, members, [row], accounts, known);
-    expect(plan).toEqual(nothing);
+    expect(plan).toEqual({ ...nothing, unmatched: [{ memberId: 9, churchId: 100, userId: 3 }] });
   }
+});
+
+it("lists, for fixing by hand, a creator whose own address changed after adding the church", () => {
+  // User 2 added Grace as bk@example.test, so its account is grace-bk@example.test; they have
+  // since changed their login's address. The owner can't be worked out, so nothing is promoted
+  // or dropped - but the run says which church and user to look at.
+  const members = [
+    { id: 8, churchId: 100, userId: 10, invitedEmail: null, role: 'owner', inviteAccepted: true },
+    { id: 9, churchId: 100, userId: 2, invitedEmail: 'grace-bk@example.test', role: 'bookkeeper', inviteAccepted: true },
+  ];
+  const row = { userId: 2, clientId: 10, email: 'grace-bk@example.test', inviteAccepted: true };
+  const plan = planResync(churches, members, [row], accounts, [{ id: 2, email: 'bea@new-domain.test' }]);
+
+  expect(plan).toEqual({ ...nothing, unmatched: [{ memberId: 9, churchId: 100, userId: 2 }] });
+  const lines = describePlan(plan, members);
+  expect(lines).toEqual([
+    'insert 0, accept 0, promote 0, drop 0, unaccept 0, unmatched 1',
+    "unmatched: church 100, user 2, member 9 - a bookkeeper row with the church account's address whose user no longer matches it; set the owner by hand",
+  ]);
+  expect(lines.join('\n')).not.toContain('@');
+
+  // Without a member yet: the row is planned as an ordinary bookkeeper, and still listed.
+  const fresh = planResync(churches, [members[0]], [row], accounts, [{ id: 2, email: 'bea@new-domain.test' }]);
+  expect(fresh.unmatched).toEqual([{ churchId: 100, userId: 2 }]);
+  expect(describePlan(fresh, [members[0]])[1]).toBe(
+    "unmatched: church 100, user 2, no member yet - a bookkeeper row with the church account's address whose user no longer matches it; set the owner by hand",
+  );
 });
 
 it('inserts the creator as owner when the church has no member for them yet', () => {
@@ -215,7 +243,7 @@ it('describes a plan by counts and ids, never by address', () => {
   );
   const lines = describePlan(plan, members);
   expect(lines).toEqual([
-    'insert 1, accept 0, promote 1, drop 1, unaccept 0',
+    'insert 1, accept 0, promote 1, drop 1, unaccept 0, unmatched 0',
     'promote to owner: member 9 (church 100, user 2)',
     'drop: member 8 (church 100, user 10)',
   ]);

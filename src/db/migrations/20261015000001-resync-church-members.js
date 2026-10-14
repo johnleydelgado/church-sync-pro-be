@@ -63,7 +63,9 @@ const dropDuplicateInvites = async (sequelize, transaction) => {
   );
   if (dropped.length) {
     const ids = dropped.map((r) => r.id).sort((a, b) => a - b);
-    console.log(`${LOG} dropped ${ids.length} duplicate outstanding invite(s), kept the oldest: members ${ids.join(', ')}`);
+    console.log(
+      `${LOG} dropped ${ids.length} duplicate outstanding invite(s), kept the oldest: members ${ids.join(', ')}`,
+    );
   }
 };
 

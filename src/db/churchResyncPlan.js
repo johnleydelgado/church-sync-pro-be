@@ -17,8 +17,13 @@
  *   bookkeeper's row. Users.email is not unique, so an address match alone is not enough;
  *   anything else is treated as an ordinary bookkeeper row.
  *
+ * - A row that carries the church account's own address but fails that check (say the creator
+ *   has since changed their login's address) is handled as an ordinary bookkeeper row and listed
+ *   in `unmatched`, so someone can set the owner by hand.
+ *
  * That deletion is the only one: a legacy row deleted since the backfill leaves its member
- * in place. Running it again on its own result plans nothing.
+ * in place. Running it again on its own result plans nothing (`unmatched` is a report, not a
+ * change, and lists the same rows every run until they are fixed).
  *
  * @typedef {{ id: number, ownerUserId: number | null }} ChurchRow
  * @typedef {{ id: number, churchId: number, userId: number | null, invitedEmail?: string | null,
@@ -59,7 +64,7 @@ const planResync = (churches, members, bookkeepers, accounts, bookkeeperUsers = 
     return !!account && !!own && email === account && account.length > own.length + 1 && account.endsWith(`-${own}`);
   };
 
-  const plan = { insert: [], accept: [], promote: [], dropMembers: [], unaccept: [] };
+  const plan = { insert: [], accept: [], promote: [], dropMembers: [], unaccept: [], unmatched: [] };
   const insert = (member) => {
     plan.insert.push(member);
     if (member.invitedEmail) invited.add(`${member.churchId}:${lower(member.invitedEmail)}`);
@@ -111,6 +116,9 @@ const planResync = (churches, members, bookkeepers, accounts, bookkeeperUsers = 
       if (accountMember && !plan.dropMembers.includes(accountMember.id)) plan.dropMembers.push(accountMember.id);
       continue;
     }
+    if (email && email === accountEmail.get(b.clientId)) {
+      plan.unmatched.push({ ...(member ? { memberId: member.id } : {}), churchId, userId: b.userId });
+    }
 
     if (member) {
       if (!member.inviteAccepted && b.inviteAccepted) plan.accept.push({ id: member.id, userId: b.userId });
@@ -156,10 +164,16 @@ const describePlan = (plan, members) => {
   };
   const lines = [
     `insert ${plan.insert.length}, accept ${plan.accept.length}, promote ${plan.promote.length}, ` +
-      `drop ${plan.dropMembers.length}, unaccept ${plan.unaccept.length}`,
+      `drop ${plan.dropMembers.length}, unaccept ${plan.unaccept.length}, unmatched ${plan.unmatched.length}`,
   ];
   for (const id of plan.promote) lines.push(`promote to owner: ${who(id)}`);
   for (const id of plan.dropMembers) lines.push(`drop: ${who(id)}`);
+  for (const u of plan.unmatched) {
+    lines.push(
+      `unmatched: church ${u.churchId}, user ${u.userId}, ${u.memberId != null ? `member ${u.memberId}` : 'no member yet'}` +
+        " - a bookkeeper row with the church account's address whose user no longer matches it; set the owner by hand",
+    );
+  }
   return lines;
 };
 

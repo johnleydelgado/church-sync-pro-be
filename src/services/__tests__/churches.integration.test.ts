@@ -505,6 +505,22 @@ describe('listPeople', () => {
     ]);
     expect(people[1].memberId).toBe(pending.memberId);
   });
+
+  it('still lists everyone, without links and logging once, when the server has no invitation URL', async () => {
+    const { id } = await setUp();
+    await invitePerson(await accessAs(BK, id), 'pending-two-it@example.test');
+    delete process.env.INVITATION_URL;
+
+    const people = await listPeople(await accessAs(BK, id), await user(BK));
+
+    expect(people.map((p) => [p.status, p.inviteLink])).toEqual([
+      ['active', null],
+      ['active', null],
+      ['invited', null],
+      ['invited', null],
+    ]);
+    expect(log.error).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('setIntegrationAccess', () => {
@@ -612,10 +628,39 @@ describe('removePerson', () => {
     const results = await Promise.allSettled([removePerson(asFirst, second.id), removePerson(asSecond, first.id)]);
 
     expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+    // Whoever goes second has just been removed, so is no longer an owner.
     expect((results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason).toMatchObject({
-      status: 409,
+      status: 403,
     });
     expect(await ownersOf(id)).toBe(1);
+  });
+
+  it('lets only one of two owners remove the other at the same moment, even with a third owner left', async () => {
+    const id = await graceFor();
+    const second = await addOwner(id, EXISTING);
+    await addOwner(id, BK_ONLY);
+    const first = await memberRow(id, BK);
+    const [asFirst, asSecond] = [await accessAs(BK, id), await accessAs(EXISTING, id)];
+
+    const results = await Promise.allSettled([removePerson(asFirst, second.id), removePerson(asSecond, first.id)]);
+
+    expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect((results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason).toMatchObject({
+      status: 403,
+      message: 'Only an owner of this church can do that.',
+    });
+    expect(await ownersOf(id)).toBe(2);
+  });
+
+  it('refuses an owner who was removed after their access was checked', async () => {
+    const id = await graceFor();
+    const second = await addOwner(id, EXISTING);
+    const third = await addOwner(id, BK_ONLY);
+    const asSecond = await accessAs(EXISTING, id); // checked by the route ...
+    await removePerson(await accessAs(BK, id), second.id); // ... then removed by another owner
+
+    await expect(removePerson(asSecond, third.id)).rejects.toMatchObject({ status: 403 });
+    expect(await ChurchMember.findOne({ where: { id: third.id } })).not.toBeNull();
   });
 
   it("refuses to remove the church's own login, even with another owner", async () => {

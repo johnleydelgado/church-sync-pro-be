@@ -300,6 +300,19 @@ export const listPeople = async (access: ChurchAccess, actor: Users): Promise<Ch
     include: [{ model: Users, as: 'User' }],
   });
   const rank = (p: ChurchPerson) => (p.role === 'owner' ? 0 : p.status === 'active' ? 1 : 2);
+  // A link that can't be built (no INVITATION_URL) leaves that row without one rather than the
+  // whole list failing. inviteLinkFor logs the cause; after one failure the rest aren't tried, so
+  // it is logged once per request, not once per invite.
+  let linksFailed = false;
+  const linkFor = (email: string, token: string): string | null => {
+    if (linksFailed) return null;
+    try {
+      return inviteLinkFor(email, token);
+    } catch {
+      linksFailed = true;
+      return null;
+    }
+  };
   return rows
     .map((m): ChurchPerson => {
       const invited = !(m.inviteAccepted && m.userId);
@@ -313,7 +326,7 @@ export const listPeople = async (access: ChurchAccess, actor: Users): Promise<Ch
         isYou: m.userId === actor.id,
         inviteLink:
           canManage && invited && m.invitationToken && m.invitedEmail
-            ? inviteLinkFor(m.invitedEmail, m.invitationToken)
+            ? linkFor(m.invitedEmail, m.invitationToken)
             : null,
       };
     })
@@ -435,15 +448,23 @@ export const setIntegrationAccess = async (
 export const removePerson = async (access: ChurchAccess, memberId: unknown): Promise<void> => {
   assertManager(access);
   const target = await memberOf(access, memberId);
-  if (target.userId != null && target.userId === access.account.id) {
-    throw new ChurchServiceError("This is the church's own login; it can't be removed.", 409);
-  }
   const churchId = target.churchId;
   await sequelize.transaction(async (transaction) => {
-    // One removal at a time per church, so two owners can't remove each other at once.
+    // One removal at a time per church, and both sides read again under the lock: the caller's
+    // own membership may have been removed since the route checked it (two owners removing each
+    // other at once), and the target row may have changed or gone.
     await lockFor(LOCK_CHURCH_PEOPLE, churchId, transaction);
+    if (access.membership) {
+      const caller = await ChurchMember.findOne({ where: { id: access.membership.id, churchId }, transaction });
+      if (!caller || caller.role !== 'owner' || !caller.inviteAccepted) {
+        throw new ChurchServiceError('Only an owner of this church can do that.', 403);
+      }
+    }
     const m = await ChurchMember.findOne({ where: { id: target.id, churchId }, transaction });
     if (!m) return; // a double submit already removed them
+    if (m.userId != null && m.userId === access.account.id) {
+      throw new ChurchServiceError("This is the church's own login; it can't be removed.", 409);
+    }
     if (m.role === 'owner') {
       const otherOwners = await ChurchMember.count({
         where: { churchId, role: 'owner', inviteAccepted: true, userId: { [Op.ne]: null }, id: { [Op.ne]: m.id } },
