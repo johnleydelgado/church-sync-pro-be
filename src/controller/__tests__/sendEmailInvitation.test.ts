@@ -16,6 +16,7 @@ jest.mock('supertokens-node/recipe/thirdparty', () => ({ __esModule: true, defau
 jest.mock('supertokens-node/recipe/emailpassword', () => ({ __esModule: true, default: {} }));
 jest.mock('../../services/syncEngine', () => ({ syncBatchToJournalEntries: jest.fn() }));
 jest.mock('../../services/pendingInvite', () => ({ recordPendingChurchInvite: jest.fn() }));
+jest.mock('../../services/legacyBookkeeper', () => ({ removeLegacyBookkeeper: jest.fn() }));
 jest.mock('@sendgrid/mail', () => ({ setApiKey: jest.fn(), send: jest.fn() }));
 
 import bookkeeper from '../../db/models/bookkeeper';

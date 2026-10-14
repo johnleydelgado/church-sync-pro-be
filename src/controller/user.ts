@@ -29,6 +29,23 @@ const logger = createLogger('user');
 
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '';
 
+/**
+ * OAuth secrets stay on the server. The screens that list connections use each token's id and type,
+ * and whether one exists; never the access or refresh token.
+ */
+const TOKEN_SECRETS = ['access_token', 'refresh_token'];
+const plain = (row: any) => (row && typeof row.toJSON === 'function' ? row.toJSON() : row);
+/** `holder` with its `tokens` stripped of secrets, should a query ever select them again. */
+const withoutTokenSecrets = (holder: any) => {
+  if (!holder || !Array.isArray(holder.tokens)) return holder;
+  return {
+    ...holder,
+    tokens: holder.tokens.map((t: any) =>
+      Object.fromEntries(Object.entries(plain(t) ?? {}).filter(([key]) => !TOKEN_SECRETS.includes(key))),
+    ),
+  };
+};
+
 /** `lower(col) = value`, with the value trimmed and lowercased. */
 const lowerEq = (col: string, value: string) =>
   sequelize.where(sequelize.fn('lower', sequelize.col(col)), value.trim().toLowerCase());
@@ -361,11 +378,11 @@ export const getTokenList = async (req: Request, res: Response) => {
     if (email) {
       const data = await tokenEntity.findAll({
         where: { email: email as string },
-        include: tokens,
+        include: [{ model: tokens, attributes: { exclude: TOKEN_SECRETS } }],
       });
 
       if (!isEmpty(data)) {
-        const user = data;
+        const user = data.map((row) => withoutTokenSecrets(plain(row)));
         if (user) {
           return responseSuccess(res, user);
         }
@@ -545,18 +562,22 @@ export const bookkeeperList = async (req: Request, res: Response) => {
           model: User,
           as: 'User',
           // Then include tokens that belong to this user
-          include: [{ model: tokens, as: 'tokens' }],
+          include: [{ model: tokens, as: 'tokens', attributes: { exclude: TOKEN_SECRETS } }],
         },
         {
           model: User,
           as: 'Client',
-          include: [{ model: tokens, as: 'tokens' }],
+          include: [{ model: tokens, as: 'tokens', attributes: { exclude: TOKEN_SECRETS } }],
         },
       ],
     });
 
     if (bookkeeperData) {
-      return responseSuccess(res, bookkeeperData);
+      const rows = bookkeeperData.map((row) => {
+        const json = plain(row);
+        return { ...json, User: withoutTokenSecrets(json.User), Client: withoutTokenSecrets(json.Client) };
+      });
+      return responseSuccess(res, rows);
     }
     return responseError({ res, code: 400, message: 'not found !' });
   } catch (e) {

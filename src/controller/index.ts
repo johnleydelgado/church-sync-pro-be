@@ -17,6 +17,7 @@ import ThirdParty from 'supertokens-node/recipe/thirdparty';
 import EmailPassword from 'supertokens-node/recipe/emailpassword';
 import { syncBatchToJournalEntries } from '../services/syncEngine';
 import { recordPendingChurchInvite } from '../services/pendingInvite';
+import { removeLegacyBookkeeper } from '../services/legacyBookkeeper';
 
 const sgMail = require('@sendgrid/mail');
 const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
@@ -147,10 +148,19 @@ export const resetPassword = async (req: Request, res: Response) => {
 };
 
 export const deleteBookeeper = async (req: Request, res: Response) => {
-  const { id } = req.body;
+  // One plain row id (the guard, fromBookkeeperRowId, reads it the same way). An array would
+  // become `IN (...)` and delete rows the guard never checked.
+  const raw = req.body?.id;
+  const id = typeof raw === 'number' || (typeof raw === 'string' && /^\d+$/.test(raw)) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return responseError({ res, code: 400, message: 'Bookkeeper id is required' });
+  }
   try {
-    await bookkeeper.destroy({ where: { id } });
-
+    // The person's ChurchMembers row goes too: access reads ChurchMembers only.
+    const removed = await removeLegacyBookkeeper(id);
+    if (!removed) {
+      return responseError({ res, code: 404, message: 'Bookkeeper not found' });
+    }
     return responseSuccess(res, 'deleted');
   } catch (e) {
     return responseError({ res, code: 500, data: e });
