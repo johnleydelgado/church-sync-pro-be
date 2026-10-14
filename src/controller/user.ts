@@ -16,6 +16,14 @@ import userEmailPreferences from '../db/models/userEmailPreferences';
 import Billing from '../db/models/billing';
 import { captureClearingSnapshot } from '../services/clearingSnapshot';
 
+/**
+ * Columns that never go to a browser. The OAuth secrets reach the browser only once, from the
+ * callBack* exchange; after that the browser needs a token row's id and token_type, never the
+ * secret. An invitation token belongs only in the invite link it was emailed in.
+ */
+const OAUTH_SECRET_COLUMNS = ['access_token', 'refresh_token'];
+const INVITATION_SECRET_COLUMNS = ['invitationToken'];
+
 export const updateUser = async (req: Request, res: Response) => {
   // `token` is the password-reset credential; only sendPasswordReset may write it. Taking it from
   // the body let any signed-in account plant a known token on someone else's row, then reset
@@ -289,12 +297,16 @@ export const getUserRelated = async (req: Request, res: Response) => {
       where: { email: email as string },
       // `token` is the password-reset token: never send it to a browser.
       attributes: { exclude: ['token'] },
-      include: [{ model: bookkeeper, as: 'UserBookkeepers' }, { model: UserSettings }],
+      include: [
+        { model: bookkeeper, as: 'UserBookkeepers', attributes: { exclude: INVITATION_SECRET_COLUMNS } },
+        { model: UserSettings },
+      ],
     });
     console.log('userData', userData);
     if (userData !== null) {
       const user = userData.toJSON();
       delete user.token;
+      ((user as any).UserBookkeepers || []).forEach((b: any) => delete b.invitationToken);
       return responseSuccess(res, user);
     }
     res.status(500).json({ error: 'Email not exist' });
@@ -351,7 +363,7 @@ export const getTokenList = async (req: Request, res: Response) => {
     if (email) {
       const data = await tokenEntity.findAll({
         where: { email: email as string },
-        include: tokens,
+        include: [{ model: tokens, attributes: { exclude: OAUTH_SECRET_COLUMNS } }],
       });
 
       if (!isEmpty(data)) {
@@ -475,20 +487,22 @@ export const bookkeeperList = async (req: Request, res: Response) => {
 
     const bookkeeperData = await bookkeeper.findAll({
       where: condition,
+      attributes: { exclude: INVITATION_SECRET_COLUMNS },
       include: [
         {
           model: User,
           as: 'User',
           // The password-reset token: a bookkeeper must not read the church's (or vice versa).
           attributes: { exclude: ['token'] },
-          // Then include tokens that belong to this user
-          include: [{ model: tokens, as: 'tokens' }],
+          // Then include tokens that belong to this user (which integrations are connected - the
+          // OAuth secrets themselves stay on the server).
+          include: [{ model: tokens, as: 'tokens', attributes: { exclude: OAUTH_SECRET_COLUMNS } }],
         },
         {
           model: User,
           as: 'Client',
           attributes: { exclude: ['token'] },
-          include: [{ model: tokens, as: 'tokens' }],
+          include: [{ model: tokens, as: 'tokens', attributes: { exclude: OAUTH_SECRET_COLUMNS } }],
         },
       ],
     });
