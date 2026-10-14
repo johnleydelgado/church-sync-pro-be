@@ -10,8 +10,13 @@
  *    page, since it last ran. Its churchId stamp is harmless.
  * 3. In one transaction: checks (1) again, logs what the plan will do (counts and ids, no
  *    addresses), applies it, and adds the partial unique index on Churches.ownerUserId.
+ * 4. In the same transaction, after the plan: one outstanding invite per address per church, as
+ *    a partial unique index on ("churchId", lower("invitedEmail")) for members with no user yet,
+ *    so a double-clicked Invite can't write two. Neither the backfill nor the plan writes such
+ *    duplicates (both key invites by church + lower-cased address), so the clean-up before it
+ *    should find none; if some exist anyway, it keeps the oldest and logs how many it dropped.
  *
- * Safe to re-run. `down` only drops the index: the membership corrections are data fixes and
+ * Safe to re-run. `down` only drops the indexes: the membership corrections are data fixes and
  * stay.
  */
 const { Op } = require('sequelize');
@@ -19,6 +24,8 @@ const backfill = require('./20260925000003-backfill-churches');
 const { planResync, describePlan } = require('../churchResyncPlan');
 
 const OWNER_INDEX = 'churches_owner_user_unique';
+const INVITE_INDEX = 'church_members_church_invite_unique';
+const LOG = '[resync-church-members]';
 
 const refuseSharedAccounts = async (sequelize, transaction) => {
   const [dupes] = await sequelize.query(
@@ -42,9 +49,38 @@ const addOwnerIndex = async (queryInterface, transaction) => {
   });
 };
 
+/** Outstanding invites for the same church and address, beyond the oldest. Logs ids, never addresses. */
+const dropDuplicateInvites = async (sequelize, transaction) => {
+  const [dropped] = await sequelize.query(
+    `DELETE FROM "ChurchMembers" m
+     USING "ChurchMembers" k
+     WHERE m."userId" IS NULL AND k."userId" IS NULL
+       AND m."invitedEmail" IS NOT NULL AND k."invitedEmail" IS NOT NULL
+       AND m."churchId" = k."churchId" AND lower(m."invitedEmail") = lower(k."invitedEmail")
+       AND m.id > k.id
+     RETURNING m.id`,
+    { transaction },
+  );
+  if (dropped.length) {
+    const ids = dropped.map((r) => r.id).sort((a, b) => a - b);
+    console.log(`${LOG} dropped ${ids.length} duplicate outstanding invite(s), kept the oldest: members ${ids.join(', ')}`);
+  }
+};
+
+/** One outstanding invite per address per church. */
+const addInviteIndex = async (queryInterface, transaction) => {
+  await queryInterface.sequelize.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS "${INVITE_INDEX}" ON "ChurchMembers" ("churchId", lower("invitedEmail"))
+     WHERE "userId" IS NULL AND "invitedEmail" IS NOT NULL`,
+    { transaction },
+  );
+};
+
 module.exports = {
   OWNER_INDEX,
+  INVITE_INDEX,
   addOwnerIndex,
+  addInviteIndex,
 
   async up(queryInterface) {
     const { sequelize } = queryInterface;
@@ -68,7 +104,7 @@ module.exports = {
       );
 
       const plan = planResync(churches, members, bookkeepers, accounts, bookkeeperUsers);
-      for (const line of describePlan(plan, members)) console.log(`[resync-church-members] ${line}`);
+      for (const line of describePlan(plan, members)) console.log(`${LOG} ${line}`);
       const now = new Date();
       if (plan.insert.length) {
         await queryInterface.bulkInsert(
@@ -105,10 +141,13 @@ module.exports = {
         });
       }
       await addOwnerIndex(queryInterface, transaction);
+      await dropDuplicateInvites(sequelize, transaction);
+      await addInviteIndex(queryInterface, transaction);
     });
   },
 
   async down(queryInterface) {
+    await queryInterface.sequelize.query(`DROP INDEX IF EXISTS "${INVITE_INDEX}"`);
     await queryInterface.removeIndex('Churches', OWNER_INDEX);
   },
 };

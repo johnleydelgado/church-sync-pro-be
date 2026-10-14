@@ -25,9 +25,10 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
   const { name, emailTo, clientId, createdByBk, bookkeeperId } = req.body;
   const rand = crypto.randomBytes(16).toString('hex');
 
-  const inviteLink = inviteLinkFor(emailTo, rand);
-
   try {
+    // Built before anything is written: with no INVITATION_URL this refuses rather than mail a broken link.
+    const inviteLink = createdByBk ? null : inviteLinkFor(emailTo, rand);
+
     // Create bookkeeper in the database
     await bookkeeper.create({
       email: emailTo,
@@ -40,7 +41,7 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
     });
 
     // Send email only if createdByBk is not true
-    if (!createdByBk) {
+    if (inviteLink) {
       await sendInviteEmail(emailTo, inviteLink);
     }
 

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import crypto from 'crypto';
-import { Op, UniqueConstraintError } from 'sequelize';
+import { Op, Transaction, UniqueConstraintError } from 'sequelize';
 import sequelize from '../db';
 import Church from '../db/models/church';
 import ChurchMember from '../db/models/churchMember';
@@ -19,8 +19,9 @@ const logger = createLogger('churches');
  * The Churches page and the People tab.
  *
  * A church's data is filed under one Users row, its account (Churches.ownerUserId). People reach
- * it through ChurchMembers. The caller's access has already been checked by requireChurch
- * (churchAccess.ts); these functions take its result and only do the work.
+ * it through ChurchMembers. The routes check access first (requireChurch in churchAccess.ts); the
+ * owner-only functions here check the role again, so a route wired with the wrong need can't
+ * hand a bookkeeper an owner's powers.
  */
 
 export class ChurchServiceError extends Error {
@@ -79,12 +80,23 @@ const ACCOUNT_DOMAIN = 'accounts.churchsyncpro.invalid';
 const MAX_NAME = 200;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * Advisory-lock namespaces (first key of pg_advisory_xact_lock; the second is the id named).
+ * 74010 is the payout report import (payoutReport/importPayoutReport.ts).
+ */
+const LOCK_CREATE_CHURCH = 74020; // second key: the person adding the church
+const LOCK_CHURCH_PEOPLE = 74021; // second key: the church
+
+const lockFor = (namespace: number, id: number, transaction: Transaction) =>
+  sequelize.query('SELECT pg_advisory_xact_lock(:namespace, :id)', { replacements: { namespace, id }, transaction });
+
 const cleanName = (name: unknown): string => {
   const n = typeof name === 'string' ? name.trim() : '';
   if (!n) throw new ChurchServiceError('Enter the church name.');
   if (n.length > MAX_NAME) throw new ChurchServiceError(`Church names can be up to ${MAX_NAME} characters.`);
   return n;
 };
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 const lowerEq = (column: string, value: string) =>
   sequelize.where(sequelize.fn('lower', sequelize.col(column)), value.toLowerCase());
@@ -100,6 +112,23 @@ const churchOf = (access: ChurchAccess): Church => {
   return access.church;
 };
 
+/** Owner actions: an owner member, or the church's own login (no membership needed). */
+const assertManager = (access: ChurchAccess) => {
+  if (access.membership && access.membership.role !== 'owner') {
+    throw new ChurchServiceError('Only an owner of this church can do that.', 403);
+  }
+};
+
+/** The churches a person is an accepted member of and can see listed (filed under an account). */
+const churchesOf = async (userId: number, transaction?: Transaction): Promise<Church[]> => {
+  const rows: any[] = await ChurchMember.findAll({
+    where: { userId, inviteAccepted: true },
+    include: [{ model: Church, as: 'Church' }],
+    transaction,
+  });
+  return rows.map((m) => m.Church).filter((c) => c?.ownerUserId);
+};
+
 /** A client login - from before churches, or signed up since - owns the church its data is filed under. */
 export const ensureOwnChurch = async (actor: Users): Promise<void> => {
   if (actor.role !== 'client') return;
@@ -107,7 +136,11 @@ export const ensureOwnChurch = async (actor: Users): Promise<void> => {
   try {
     await sequelize.transaction(async (transaction) => {
       const church = await Church.create(
-        { name: (actor.churchName || '').trim() || `Church #${actor.id}`, ownerUserId: actor.id as number, isActive: true },
+        {
+          name: (actor.churchName || '').trim() || `Church #${actor.id}`,
+          ownerUserId: actor.id as number,
+          isActive: true,
+        },
         { transaction },
       );
       await ChurchMember.create(
@@ -124,8 +157,9 @@ export const ensureOwnChurch = async (actor: Users): Promise<void> => {
       );
     });
   } catch (e) {
-    // A parallel request made it first (churches_owner_user_unique).
+    // A parallel request made it first (churches_owner_user_unique) - as long as it is there now.
     if (!(e instanceof UniqueConstraintError)) throw e;
+    if (!(await Church.findOne({ where: { ownerUserId: actor.id } }))) throw e;
   }
 };
 
@@ -136,6 +170,15 @@ export const listMyChurches = async (actor: Users): Promise<MyChurch[]> => {
     where: { userId: actor.id, inviteAccepted: true },
     include: [{ model: Church, as: 'Church' }],
   });
+  for (const m of memberships) {
+    if (m.Church && !m.Church.ownerUserId) {
+      logger.warn('membership of a church with no account row; not listed', {
+        actorId: actor.id,
+        memberId: m.id,
+        churchId: m.churchId,
+      });
+    }
+  }
   const filed = memberships.filter((m) => m.Church?.ownerUserId);
   if (!filed.length) return [];
 
@@ -176,10 +219,14 @@ export const listMyChurches = async (actor: Users): Promise<MyChurch[]> => {
 /** Whoever adds a church owns it. Its data goes under a new account row nobody signs in as. */
 export const createChurch = async (actor: Users, rawName: unknown): Promise<MyChurch> => {
   const name = cleanName(rawName);
-  if ((await listMyChurches(actor)).some((c) => c.name.trim().toLowerCase() === name.toLowerCase())) {
-    throw new ChurchServiceError(`You already have a church called ${name}.`, 409);
-  }
+  // A client login's own church first, so its name counts as taken.
+  await ensureOwnChurch(actor);
   const churchId = await sequelize.transaction(async (transaction) => {
+    // One add at a time per person, so a double submit can't get past the name check twice.
+    await lockFor(LOCK_CREATE_CHURCH, actor.id as number, transaction);
+    if ((await churchesOf(actor.id as number, transaction)).some((c) => sameName(c.name, name))) {
+      throw new ChurchServiceError(`You already have a church called ${name}.`, 409);
+    }
     const account = await Users.create(
       {
         email: `church-${crypto.randomBytes(8).toString('hex')}@${ACCOUNT_DOMAIN}`,
@@ -212,15 +259,23 @@ export const createChurch = async (actor: Users, rawName: unknown): Promise<MyCh
   return created;
 };
 
-/** Rename and/or (de)activate. Owner only (checked by the route). */
+/** Rename and/or (de)activate. */
 export const updateChurch = async (
   access: ChurchAccess,
+  actor: Users,
   changes: { name?: unknown; isActive?: unknown },
 ): Promise<void> => {
+  assertManager(access);
   const church = churchOf(access);
   const name = changes.name !== undefined ? cleanName(changes.name) : undefined;
   if (changes.isActive !== undefined && typeof changes.isActive !== 'boolean') {
     throw new ChurchServiceError('Choose whether the church is active.');
+  }
+  if (
+    name !== undefined &&
+    (await churchesOf(actor.id as number)).some((c) => c.id !== church.id && sameName(c.name, name))
+  ) {
+    throw new ChurchServiceError(`You already have a church called ${name}.`, 409);
   }
   await sequelize.transaction(async (transaction) => {
     await church.update(
@@ -269,52 +324,80 @@ export const listPeople = async (access: ChurchAccess, actor: Users): Promise<Ch
 };
 
 /**
+ * The login an address belongs to. Users.email is not unique: prefer the row spelled exactly as
+ * typed, else the oldest, so the same address always finds the same person.
+ */
+const loginFor = async (typed: string): Promise<Users | null> => {
+  const rows = await Users.findAll({ where: lowerEq('email', typed), order: [['id', 'ASC']] });
+  return rows.find((u) => u.email === typed) ?? rows[0] ?? null;
+};
+
+/**
  * Invite someone as a bookkeeper. Someone who already has a login is added straight away; anyone
  * else gets a link, which is returned as well as emailed because email does not always arrive.
  */
 export const invitePerson = async (access: ChurchAccess, rawEmail: unknown): Promise<InviteResult> => {
+  assertManager(access);
   const churchId = churchOf(access).id;
-  const email = typeof rawEmail === 'string' ? rawEmail.trim().toLowerCase() : '';
+  const typed = typeof rawEmail === 'string' ? rawEmail.trim() : '';
+  const email = typed.toLowerCase();
   if (!EMAIL_RE.test(email) || email.endsWith(`@${ACCOUNT_DOMAIN}`)) {
     throw new ChurchServiceError('Enter a valid email address.');
   }
+  const alreadyOn = () => new ChurchServiceError(`${email} is already on this church.`, 409);
+  const alreadyInvited = () =>
+    new ChurchServiceError(`${email} has already been invited. Copy their invite link from the list.`, 409);
 
-  const login: any = await Users.findOne({ where: lowerEq('email', email) });
+  const login = await loginFor(typed);
   if (
     login &&
     (login.id === access.account.id || (await ChurchMember.findOne({ where: { churchId, userId: login.id } })))
   ) {
-    throw new ChurchServiceError(`${email} is already on this church.`, 409);
+    throw alreadyOn();
   }
   if (await ChurchMember.findOne({ where: { [Op.and]: [{ churchId }, lowerEq('invitedEmail', email)] } as any })) {
-    throw new ChurchServiceError(`${email} has already been invited. Copy their invite link from the list.`, 409);
+    throw alreadyInvited();
   }
 
   if (login) {
     // Already has a Church Sync Pro login: add them now rather than send a link they'd have to accept.
-    const member = await ChurchMember.create({
-      churchId,
-      userId: login.id,
-      role: 'bookkeeper',
-      integrationAccessEnabled: false,
-      invitedEmail: email,
-      invitationToken: null,
-      inviteAccepted: true,
-    });
-    return { memberId: member.id, addedExisting: true, inviteLink: null, emailSent: false };
+    try {
+      const member = await ChurchMember.create({
+        churchId,
+        userId: login.id as number,
+        role: 'bookkeeper',
+        integrationAccessEnabled: false,
+        invitedEmail: email,
+        invitationToken: null,
+        inviteAccepted: true,
+      });
+      return { memberId: member.id, addedExisting: true, inviteLink: null, emailSent: false };
+    } catch (e) {
+      // A double submit got past the check: church_members_church_user_unique.
+      if (e instanceof UniqueConstraintError) throw alreadyOn();
+      throw e;
+    }
   }
 
   const token = crypto.randomBytes(16).toString('hex');
-  const member = await ChurchMember.create({
-    churchId,
-    userId: null,
-    role: 'bookkeeper',
-    integrationAccessEnabled: false,
-    invitedEmail: email,
-    invitationToken: token,
-    inviteAccepted: false,
-  });
+  // Built before the invite is written, so a server with no INVITATION_URL leaves nothing half-made.
   const inviteLink = inviteLinkFor(email, token);
+  let member: ChurchMember;
+  try {
+    member = await ChurchMember.create({
+      churchId,
+      userId: null,
+      role: 'bookkeeper',
+      integrationAccessEnabled: false,
+      invitedEmail: email,
+      invitationToken: token,
+      inviteAccepted: false,
+    });
+  } catch (e) {
+    // A double submit got past the check: church_members_church_invite_unique.
+    if (e instanceof UniqueConstraintError) throw alreadyInvited();
+    throw e;
+  }
   let emailSent = true;
   try {
     await sendInviteEmail(email, inviteLink);
@@ -339,7 +422,12 @@ const memberOf = async (access: ChurchAccess, memberId: unknown): Promise<Church
 };
 
 /** Whether a bookkeeper may connect QuickBooks / Planning Center. Owners always may. */
-export const setIntegrationAccess = async (access: ChurchAccess, memberId: unknown, enabled: unknown): Promise<void> => {
+export const setIntegrationAccess = async (
+  access: ChurchAccess,
+  memberId: unknown,
+  enabled: unknown,
+): Promise<void> => {
+  assertManager(access);
   const m = await memberOf(access, memberId);
   if (m.role === 'owner') throw new ChurchServiceError('Owners can always connect QuickBooks and Planning Center.');
   if (typeof enabled !== 'boolean') throw new ChurchServiceError('Choose whether they can connect integrations.');
@@ -348,15 +436,24 @@ export const setIntegrationAccess = async (access: ChurchAccess, memberId: unkno
 
 /** Take someone off the church, or withdraw their invite. A church keeps at least one owner. */
 export const removePerson = async (access: ChurchAccess, memberId: unknown): Promise<void> => {
-  const m = await memberOf(access, memberId);
-  const churchId = m.churchId;
-  if (
-    m.role === 'owner' &&
-    (await ChurchMember.count({ where: { churchId, role: 'owner', inviteAccepted: true } })) <= 1
-  ) {
-    throw new ChurchServiceError('A church needs at least one owner.', 409);
+  assertManager(access);
+  const target = await memberOf(access, memberId);
+  if (target.userId != null && target.userId === access.account.id) {
+    throw new ChurchServiceError("This is the church's own login; it can't be removed.", 409);
   }
+  const churchId = target.churchId;
   await sequelize.transaction(async (transaction) => {
+    // One removal at a time per church, so two owners can't remove each other at once.
+    await lockFor(LOCK_CHURCH_PEOPLE, churchId, transaction);
+    const m = await ChurchMember.findOne({ where: { id: target.id, churchId }, transaction });
+    if (!m) return; // a double submit already removed them
+    if (m.role === 'owner') {
+      const otherOwners = await ChurchMember.count({
+        where: { churchId, role: 'owner', inviteAccepted: true, userId: { [Op.ne]: null }, id: { [Op.ne]: m.id } },
+        transaction,
+      });
+      if (otherOwners === 0) throw new ChurchServiceError('A church needs at least one owner.', 409);
+    }
     await m.destroy({ transaction });
     // Keep the legacy table in step until its endpoints are retired.
     const who: any[] = [

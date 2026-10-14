@@ -87,6 +87,7 @@ afterAll(async () => {
   await wipe();
   // Leave the schema as the migrations left it, for whichever suite runs next.
   await resync.addOwnerIndex(qi);
+  await resync.addInviteIndex(qi);
   await sequelize.close();
 });
 
@@ -101,6 +102,15 @@ const everything = async () => ({
 });
 const ownerIndex = async () =>
   (await q(`SELECT indexdef FROM pg_indexes WHERE tablename = 'Churches' AND indexname = '${resync.OWNER_INDEX}'`))[0]?.indexdef ?? null;
+const inviteIndex = async () =>
+  (await q(`SELECT indexdef FROM pg_indexes WHERE tablename = 'ChurchMembers' AND indexname = '${resync.INVITE_INDEX}'`))[0]?.indexdef ?? null;
+const churchOf = async (account: number): Promise<number> =>
+  (await q(`SELECT id FROM "Churches" WHERE "ownerUserId" = ${account}`))[0].id;
+const addPending = async (churchId: number, email: string, token: string): Promise<number> =>
+  (
+    await q(`INSERT INTO "ChurchMembers" ("churchId", "userId", role, "integrationAccessEnabled", "invitedEmail", "invitationToken", "inviteAccepted", "createdAt", "updatedAt")
+             VALUES (${churchId}, NULL, 'bookkeeper', false, '${email}', '${token}', false, now(), now()) RETURNING id`)
+  )[0].id;
 const addChurch = (name: string, owner: number | null) =>
   q(`INSERT INTO "Churches" (name, "ownerUserId", "isActive", "createdAt", "updatedAt") VALUES ('${name}', ${owner ?? 'NULL'}, true, now(), now())`);
 
@@ -141,6 +151,46 @@ it('catches memberships up with the bookkeeper table and gives each new church i
     owner(LATE_CC, BK_CREATOR),
   ]);
   expect(await ownerIndex()).toMatch(/^CREATE UNIQUE INDEX .*\("ownerUserId"\) WHERE \("ownerUserId" IS NOT NULL\)$/);
+  expect(await inviteIndex()).toMatch(
+    /^CREATE UNIQUE INDEX .*\("churchId", lower\(\("invitedEmail"\)::text\)\) WHERE \(\("userId" IS NULL\) AND \("invitedEmail" IS NOT NULL\)\)$/,
+  );
+});
+
+it('refuses a second outstanding invite for the same address on one church', async () => {
+  await resync.up(qi);
+  const active = await churchOf(ACTIVE);
+  await addPending(active, 'Twice-it@example.test', 'tok-a');
+
+  const err: any = await addPending(active, 'twice-it@example.test', 'tok-b').catch((e) => e);
+  expect(err).toBeInstanceOf(Error);
+  expect(err?.original?.constraint).toBe('church_members_church_invite_unique');
+
+  // Another church may invite the same address, and an accepted member is not an outstanding invite.
+  await addPending(await churchOf(GRACE), 'twice-it@example.test', 'tok-c');
+  await q(`UPDATE "ChurchMembers" SET "userId" = ${LATE_CLIENT}, "inviteAccepted" = true WHERE "invitationToken" = 'tok-a'`);
+  await addPending(active, 'twice-it@example.test', 'tok-d');
+});
+
+it('drops duplicate outstanding invites, keeping the first, before adding the index', async () => {
+  const active = await churchOf(ACTIVE);
+  const first = await addPending(active, 'Twice-it@example.test', 'tok-a');
+  await addPending(active, 'twice-it@example.test', 'tok-b');
+  await addPending(active, 'TWICE-it@example.test', 'tok-c');
+  const elsewhere = await addPending(await churchOf(GRACE), 'twice-it@example.test', 'tok-d');
+  const logged = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  let lines: string[];
+  try {
+    await resync.up(qi);
+  } finally {
+    lines = logged.mock.calls.map((c) => String(c[0]));
+    logged.mockRestore();
+  }
+
+  const left = await q(`SELECT id FROM "ChurchMembers" WHERE lower("invitedEmail") = 'twice-it@example.test' ORDER BY id`);
+  expect(left.map((r) => r.id)).toEqual([first, elsewhere]);
+  expect(lines.some((l) => /2 duplicate outstanding invite/.test(l))).toBe(true);
+  expect(lines.join('\n')).not.toMatch(/twice-it/i);
+  expect(await inviteIndex()).not.toBeNull();
 });
 
 it('changes nothing when run again', async () => {
@@ -172,12 +222,14 @@ it('refuses to run, and writes nothing, while an account owns two churches', asy
   expect(await everything()).toEqual(before);
   expect((await churchesOf()).map((c) => c.ownerUserId)).toEqual([ACTIVE, ACTIVE, GRACE]);
   expect(await ownerIndex()).toBeNull();
+  expect(await inviteIndex()).toBeNull();
 });
 
-it('down drops the index and keeps the membership corrections', async () => {
+it('down drops the indexes and keeps the membership corrections', async () => {
   await resync.up(qi);
   const members = await membersOf();
   await resync.down(qi);
   expect(await ownerIndex()).toBeNull();
+  expect(await inviteIndex()).toBeNull();
   expect(await membersOf()).toEqual(members);
 });
