@@ -14,6 +14,7 @@ jest.mock('../../db/models/church', () => ({ __esModule: true, default: { findOn
 jest.mock('../../db/models/churchMember', () => ({ __esModule: true, default: { findOne: jest.fn() } }));
 jest.mock('../../db/models/tokens', () => ({ __esModule: true, default: { findOne: jest.fn() } }));
 jest.mock('../../db/models/tokenEntity', () => ({ __esModule: true, default: { findOne: jest.fn() } }));
+jest.mock('../../db/models/bookkeeper', () => ({ __esModule: true, default: { findOne: jest.fn() } }));
 jest.mock('../../utils/logger', () => {
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
   return { createLogger: () => log };
@@ -26,6 +27,7 @@ import Church from '../../db/models/church';
 import ChurchMember from '../../db/models/churchMember';
 import tokens from '../../db/models/tokens';
 import tokenEntity from '../../db/models/tokenEntity';
+import bookkeeper from '../../db/models/bookkeeper';
 import { createLogger } from '../../utils/logger';
 import {
   ACCOUNT_EMAIL_DOMAIN,
@@ -33,9 +35,14 @@ import {
   checkAccountAccess,
   clearSessionEmailCache,
   fromBody,
+  fromBodyBookkeeperId,
+  fromBodyClientId,
+  fromBodyClientOrBookkeeperId,
   fromBodyItems,
+  fromBookkeeperRowId,
   fromTokenId,
   isChurchAccountEmail,
+  isChurchGuard,
   requireAccountAccess,
   requireChurch,
   sessionEmailCacheSize,
@@ -47,6 +54,7 @@ const churches = (Church as any).findOne as jest.Mock;
 const members = (ChurchMember as any).findOne as jest.Mock;
 const tokenRows = (tokens as any).findOne as jest.Mock;
 const tokenEntities = (tokenEntity as any).findOne as jest.Mock;
+const bookkeeperRows = (bookkeeper as any).findOne as jest.Mock;
 const tpep = (ThirdPartyEmailPassword as any).getUserById as jest.Mock;
 const ep = (EmailPassword as any).getUserById as jest.Mock;
 const log = createLogger('test') as any;
@@ -189,6 +197,62 @@ describe('fromTokenId', () => {
   ])('names no church for %s', async (_label, id) => {
     await expect(fromTokenId(body(id))).resolves.toEqual({});
     expect(tokenRows).not.toHaveBeenCalled();
+  });
+});
+
+describe('fromBookkeeperRowId', () => {
+  const body = (id: unknown) => ({ body: { id } }) as any;
+
+  it('follows a legacy bookkeeper row to the church that invited', async () => {
+    bookkeeperRows.mockResolvedValue({ id: 7, clientId: ACCOUNT.id, userId: BK.id });
+    await expect(fromBookkeeperRowId(body(7))).resolves.toEqual({ userId: ACCOUNT.id });
+    await expect(fromBookkeeperRowId(body('7'))).resolves.toEqual({ userId: ACCOUNT.id });
+    expect(bookkeeperRows).toHaveBeenCalledWith({ where: { id: 7 } });
+  });
+  it('names no church for a row that does not exist', async () => {
+    bookkeeperRows.mockResolvedValue(null);
+    await expect(fromBookkeeperRowId(body(7))).resolves.toEqual({});
+  });
+  it.each([
+    ['an array', [7, 9]],
+    ['a one-item array', [7]],
+    ['nothing', undefined],
+    ['zero', 0],
+    ['a non-numeric string', '7 OR 1=1'],
+    ['an object', { gt: 0 }],
+  ])('names no church for %s', async (_label, id) => {
+    await expect(fromBookkeeperRowId(body(id))).resolves.toEqual({});
+    expect(bookkeeperRows).not.toHaveBeenCalled();
+  });
+});
+
+describe('legacy bookkeeper-screen locators', () => {
+  it('sendEmailInvitation names the church by clientId', () => {
+    expect(fromBodyClientId({ body: { clientId: 10, bookkeeperId: 2 } } as any)).toEqual({ userId: 10 });
+  });
+  it('createClientChurch names the account by bookkeeperId', () => {
+    expect(fromBodyBookkeeperId({ body: { bookkeeperId: 2 } } as any)).toEqual({ userId: 2 });
+  });
+  it('bookkeeperList names clientId when it is given, as the handler reads it, else bookkeeperId', () => {
+    expect(fromBodyClientOrBookkeeperId({ body: { clientId: 10, bookkeeperId: 2 } } as any)).toEqual({ userId: 10 });
+    expect(fromBodyClientOrBookkeeperId({ body: { bookkeeperId: 2 } } as any)).toEqual({ userId: 2 });
+    expect(fromBodyClientOrBookkeeperId({ body: { clientId: 0, bookkeeperId: 2 } } as any)).toEqual({ userId: 2 });
+    expect(fromBodyClientOrBookkeeperId({ body: {} } as any)).toEqual({ userId: undefined });
+  });
+});
+
+describe('isChurchGuard', () => {
+  it('recognises the guards and says what each needs', () => {
+    const owner = requireAccountAccess(fromBody, 'owner');
+    expect(isChurchGuard(owner)).toBe(true);
+    expect(owner.need).toBe('owner');
+    expect(requireAccountAccess(fromBody).need).toBe('member');
+    expect(isChurchGuard(requireChurch('integrations'))).toBe(true);
+    expect(requireChurch('integrations').need).toBe('integrations');
+  });
+  it('does not mistake any other function for a guard', () => {
+    expect(isChurchGuard(() => undefined)).toBe(false);
+    expect(isChurchGuard(undefined)).toBe(false);
   });
 });
 

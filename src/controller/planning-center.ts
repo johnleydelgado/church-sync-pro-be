@@ -481,15 +481,24 @@ export const handleRegistrationEvents = async (req: Request, res: Response) => {
         }
         break;
 
-      case 'update':
-        results = await registration.findByPk(Number(registrationId));
+      case 'update': {
+        // Only a row filed under the church the route guard checked, and an edit never moves a row
+        // to another account: found by id alone, any church's row could be renamed or taken.
+        const accountId = res.locals?.churchAccess?.account?.id;
+        if (!accountId) {
+          logger.error('handleRegistrationEvents reached without its church guard', { path: req.path });
+          return res.status(403).json({ success: false, message: "You don't have access to this church." });
+        }
+        const id = typeof registrationId === 'object' ? NaN : Number(registrationId);
+        results =
+          Number.isSafeInteger(id) && id > 0 ? await registration.findOne({ where: { id, userId: accountId } }) : null;
         if (!results) {
           return res.status(404).json({ error: 'Registration not found' });
         }
         if (name) results.name = String(name);
-        if (userId) results.userId = Number(userId);
         await results.save();
         break;
+      }
 
       default:
         return res.status(400).json({ error: 'Invalid action' });

@@ -4,6 +4,9 @@ import { getQboClientForUser } from '../services/qboClient';
 import { isEmpty } from 'lodash';
 import UserSync from '../db/models/UserSync';
 import { CustomerProps, projectPayload } from '../utils/mapping';
+import { createLogger } from '../utils/logger';
+
+const logger = createLogger('qbo');
 
 export interface QBODataProps {
   accessToken: string;
@@ -107,10 +110,24 @@ export const getAllQboData = async (req: Request, res: Response) => {
   // return responseSuccess(res, '');
 };
 
+/** A UserSync id as the request sent it. An array or object is no id (Sequelize would read it as IN / an operator). */
+const syncRowId = (value: unknown): number | null => {
+  const n = typeof value === 'number' ? value : typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+};
+
 export const deleteQboDeposit = async (req: Request, res: Response) => {
-  const { email, synchData } = req.body;
+  const { synchData } = req.body;
+  // The church the route guard checked. Every row read or destroyed below is filed under it, and the
+  // deposit id comes from the stored row: ids from the request alone would reach any church's rows.
+  const account = res.locals?.churchAccess?.account;
+  if (!account?.id) {
+    logger.error('deleteQboDeposit reached without its church guard', { path: req.path });
+    return res.status(403).json({ success: false, message: "You don't have access to this church." });
+  }
   try {
-    const qbo = await getQboClientForUser(email);
+    const qbo = await getQboClientForUser(account.email);
+    const requested: any[] = Array.isArray(synchData) ? synchData : [];
 
     // Delete in QuickBooks FIRST, and only forget the local record for the ones that
     // actually succeeded. The previous version never returned the inner promise, so
@@ -119,30 +136,38 @@ export const deleteQboDeposit = async (req: Request, res: Response) => {
     // QuickBooks with nothing recording that it had ever been synced, so the next run
     // posted it again.
     const results = await Promise.all(
-      synchData.map(
-        (a) =>
-          new Promise<{ row: any; ok: boolean; error?: string }>((resolve) => {
-            qbo.deleteDeposit(a.donationId, (err: any) => {
-              if (err) {
-                resolve({ row: a, ok: false, error: err?.Fault?.Error?.[0]?.Message ?? String(err?.message ?? err) });
-                return;
-              }
-              resolve({ row: a, ok: true });
-            });
-          }),
-      ),
+      requested.map(async (a) => {
+        const id = syncRowId(a?.id);
+        const row: any = id ? await UserSync.findOne({ where: { id, userId: account.id } }) : null;
+        if (!row) return { row: null, ok: false, error: 'not found for this church' };
+        return new Promise<{ row: any; ok: boolean; error?: string }>((resolve) => {
+          qbo.deleteDeposit(row.donationId, (err: any) => {
+            if (err) {
+              resolve({ row, ok: false, error: err?.Fault?.Error?.[0]?.Message ?? String(err?.message ?? err) });
+              return;
+            }
+            resolve({ row, ok: true });
+          });
+        });
+      }),
     );
 
     const deleted = results.filter((r) => r.ok);
     const failed = results.filter((r) => !r.ok);
 
-    await Promise.all(deleted.map((r) => UserSync.destroy({ where: { id: r.row.id } })));
+    await Promise.all(deleted.map((r) => UserSync.destroy({ where: { id: r.row.id, userId: account.id } })));
 
     if (failed.length) {
+      const notFound = failed.filter((r) => !r.row).length;
+      const rejected = failed.length - notFound;
+      const parts = [
+        rejected ? `QuickBooks rejected ${rejected}; those remain synced so they are not re-posted.` : '',
+        notFound ? `${notFound} not found for this church.` : '',
+      ];
       return responseError({
         res,
         code: 500,
-        message: `Deleted ${deleted.length} of ${results.length}. QuickBooks rejected ${failed.length}; those remain synced so they are not re-posted.`,
+        message: [`Deleted ${deleted.length} of ${results.length}.`, ...parts].filter(Boolean).join(' '),
       });
     }
 

@@ -8,6 +8,7 @@ import ChurchMember from '../db/models/churchMember';
 import Users from '../db/models/user';
 import tokens from '../db/models/tokens';
 import tokenEntity from '../db/models/tokenEntity';
+import bookkeeper from '../db/models/bookkeeper';
 import { canConnectIntegrations } from './churchContext';
 import { ACCOUNT_EMAIL_DOMAIN, isChurchAccountEmail } from './churchAccountEmail';
 import { createLogger } from '../utils/logger';
@@ -182,19 +183,35 @@ const guard =
     }
   };
 
+/**
+ * Marks a guard so routes/__tests__/routers.test.ts can tell a guarded route from an unguarded one
+ * by looking at the router, and check each route asks for the right need.
+ */
+const marked = <T extends (...args: any[]) => unknown>(fn: T, need: ChurchNeed) =>
+  Object.assign(fn, { churchGuard: true as const, need });
+
+export const isChurchGuard = (fn: unknown): boolean =>
+  typeof fn === 'function' && (fn as { churchGuard?: unknown }).churchGuard === true;
+
 /** For the existing endpoints, which name the church by its account's email or user id. */
 export const requireAccountAccess = (locate: (req: Request) => Named | Promise<Named>, need: ChurchNeed = 'member') =>
-  guard(async (req) => ({ account: await findAccount(await locate(req)) }), need);
+  marked(
+    guard(async (req) => ({ account: await findAccount(await locate(req)) }), need),
+    need,
+  );
 
 /** For /church endpoints, which name the church by churchId (body, or query string for GETs). */
 export const requireChurch = (need: ChurchNeed = 'member') =>
-  guard(async (req) => {
-    const churchId = positiveId(req.body?.churchId ?? req.query?.churchId);
-    if (churchId === null) return { account: null };
-    const church = await Church.findOne({ where: { id: churchId } });
-    const account = church?.ownerUserId ? await Users.findOne({ where: { id: church.ownerUserId } }) : null;
-    return { account, churchId };
-  }, need);
+  marked(
+    guard(async (req) => {
+      const churchId = positiveId(req.body?.churchId ?? req.query?.churchId);
+      if (churchId === null) return { account: null };
+      const church = await Church.findOne({ where: { id: churchId } });
+      const account = church?.ownerUserId ? await Users.findOne({ where: { id: church.ownerUserId } }) : null;
+      return { account, churchId };
+    }, need),
+    need,
+  );
 
 // Where each existing endpoint names its church.
 export const fromQuery = (req: Request): Named => ({ email: req.query?.email });
@@ -223,4 +240,24 @@ export const fromTokenId = async (req: Request): Promise<Named> => {
   const token: any = await tokens.findOne({ where: { id } });
   const entity: any = token ? await tokenEntity.findOne({ where: { id: token.tokenEntityId } }) : null;
   return { email: entity?.email };
+};
+
+// The legacy Bookkeepers / Clients screens (retired in Task 22).
+/** sendEmailInvitation: the church inviting is clientId. */
+export const fromBodyClientId = (req: Request): Named => ({ userId: req.body?.clientId });
+/** createClientChurch: the bookkeeper adding a church names their own row. */
+export const fromBodyBookkeeperId = (req: Request): Named => ({ userId: req.body?.bookkeeperId });
+/** bookkeeperList: clientId when it is given (truthy, as the handler reads it), else bookkeeperId. */
+export const fromBodyClientOrBookkeeperId = (req: Request): Named => ({
+  userId: req.body?.clientId || req.body?.bookkeeperId,
+});
+/**
+ * deleteBookeeper names a legacy bookkeeper row; its church is the row's clientId. The handler
+ * deletes WHERE id = body.id, so only a single plain id names a church.
+ */
+export const fromBookkeeperRowId = async (req: Request): Promise<Named> => {
+  const id = positiveId(req.body?.id);
+  if (id === null) return {};
+  const row: any = await bookkeeper.findOne({ where: { id } });
+  return row ? { userId: row.clientId } : {};
 };

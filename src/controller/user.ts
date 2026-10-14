@@ -622,10 +622,12 @@ export const createClientChurch = async (req: Request, res: Response) => {
 };
 
 export const updateUserData = async (req: Request, res: Response) => {
-  const { email, firstName, lastName, churchName, userId, file, file_name } = req.body;
+  // `email` in the body is ignored. SuperTokens owns the login address; changing only Users.email
+  // would lock the person out of every guarded route and orphan the connections filed under it.
+  const { firstName, lastName, churchName, userId, file, file_name } = req.body;
 
   try {
-    const userData = await User.update({ email, firstName, lastName, churchName }, { where: { id: userId } });
+    const userData = await User.update({ firstName, lastName, churchName }, { where: { id: userId } });
     let fileName = '';
     let imageUrl = '';
 
@@ -636,7 +638,7 @@ export const updateUserData = async (req: Request, res: Response) => {
       imageUrl = imageUploadData.imageUrl;
       await User.update({ img_url: imageUrl }, { where: { id: userId } });
     } else {
-      await User.update({ email, firstName, lastName, churchName }, { where: { id: userId } });
+      await User.update({ firstName, lastName, churchName }, { where: { id: userId } });
     }
 
     const data = { ...userData, fileName, imageUrl };

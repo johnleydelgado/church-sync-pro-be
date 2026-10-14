@@ -39,7 +39,6 @@ import {
   toggleUserActiveStatus,
   updateInvitationStatus,
   updateRegisterSettings,
-  updateUser,
   updateUserData,
   updateUserToken,
   viewBilling,
@@ -90,23 +89,37 @@ import {
 import {
   fromBillingData,
   fromBody,
+  fromBodyBookkeeperId,
+  fromBodyClientId,
+  fromBodyClientOrBookkeeperId,
   fromBodyItems,
   fromBodyUserId,
+  fromBookkeeperRowId,
   fromQuery,
   fromTokenId,
   requireAccountAccess,
 } from '../services/churchAccess';
 
 // Every route that names a church checks the signed-in person may work on it (services/churchAccess.ts),
-// between verifySession() and the handler. A route with no guard is unguarded on purpose: no church
-// (sign-up, OAuth), public, legacy bookkeeper routes, or the scheduler's requireAutomationKey routes.
+// between verifySession() and the handler. The routes left without a guard, and why, are the
+// UNGUARDED list in routes/__tests__/routers.test.ts, which fails if any other route has none:
+// no church yet (createUser, createPaymentIntent), the OAuth hops (authQB/authPC/authStripe,
+// callBack*: the token is filed by the guarded updateUserToken), healthCheck, the public `/`,
+// password and invitation routes, and the scheduler's requireAutomationKey routes.
 const q = requireAccountAccess(fromQuery);
 const b = requireAccountAccess(fromBody);
 const bUser = requireAccountAccess(fromBodyUserId);
 // Connecting or removing QuickBooks / Planning Center: an owner, or a member the owner allowed to.
 const bIntegrations = requireAccountAccess(fromBody, 'integrations');
 const tokenIntegrations = requireAccountAccess(fromTokenId, 'integrations');
+// Changing the account row itself, or who may reach the church: owners only (or the row's own login).
+const bOwner = requireAccountAccess(fromBody, 'owner');
 const bUserOwner = requireAccountAccess(fromBodyUserId, 'owner');
+// The legacy Bookkeepers / Clients screens (retired in Task 22).
+const inviteFromClient = requireAccountAccess(fromBodyClientId, 'owner');
+const bookkeeperRowOwner = requireAccountAccess(fromBookkeeperRowId, 'owner');
+const clientOrBookkeeper = requireAccountAccess(fromBodyClientOrBookkeeperId);
+const addingBookkeeper = requireAccountAccess(fromBodyBookkeeperId);
 
 const routers = Router();
 // routers.post("/start", authorized, startTask);
@@ -120,7 +133,7 @@ routers.post('/callBackStripe', callBackStripe);
 routers.get('/healthCheck', verifySession(), healthCheck);
 
 // routers.get('/getBatches', verifySession(), getBatches);
-routers.post('/deleteBookeeper', verifySession(), deleteBookeeper);
+routers.post('/deleteBookeeper', verifySession(), bookkeeperRowOwner, deleteBookeeper);
 
 routers.get(pcRoutes.getFunds, verifySession(), q, getFunds);
 routers.post(pcRoutes.getBatches, verifySession(), b, getBatches);
@@ -141,10 +154,9 @@ routers.post(qboRoutes.addProject, verifySession(), b, addProject);
 routers.post(qboRoutes.updateProject, verifySession(), b, updateProject);
 routers.post(qboRoutes.findCustomer, verifySession(), b, findCustomer);
 
-routers.post(userRoutes.updateUser, verifySession(), updateUser);
 routers.post(userRoutes.createUser, verifySession(), createUser);
-routers.post(userRoutes.createClientChurch, verifySession(), createClientChurch);
-routers.post(userRoutes.addTokenInUser, verifySession(), b, addTokenInUser);
+routers.post(userRoutes.createClientChurch, verifySession(), addingBookkeeper, createClientChurch);
+routers.post(userRoutes.addTokenInUser, verifySession(), bOwner, addTokenInUser);
 routers.post(userRoutes.createSettings, verifySession(), b, createSettings);
 routers.post(userRoutes.updateRegisterSettings, verifySession(), b, updateRegisterSettings);
 routers.post(userRoutes.enableAutoSyncSetting, verifySession(), b, enableAutoSyncSetting);
@@ -168,13 +180,13 @@ routers.post(userRoutes.isUserHaveTokens, verifySession(), b, isUserHaveTokens);
 routers.post(userRoutes.getTokenList, verifySession(), b, getTokenList);
 routers.post(userRoutes.updateUserToken, verifySession(), bIntegrations, updateUserToken);
 routers.post(userRoutes.deleteUserToken, verifySession(), tokenIntegrations, deleteUserToken);
-routers.post(userRoutes.sendEmailInvitation, verifySession(), sendEmailInvitation);
+routers.post(userRoutes.sendEmailInvitation, verifySession(), inviteFromClient, sendEmailInvitation);
 routers.post(userRoutes.sendPasswordReset, sendPasswordReset);
 routers.post(userRoutes.resetPassword, resetPassword);
 routers.post(userRoutes.checkValidInvitation, checkValidInvitation);
 routers.post(userRoutes.updateInvitationStatus, updateInvitationStatus);
-routers.post(userRoutes.bookkeeperList, verifySession(), bookkeeperList);
-routers.post(userRoutes.userUpdate, verifySession(), bUser, updateUserData);
+routers.post(userRoutes.bookkeeperList, verifySession(), clientOrBookkeeper, bookkeeperList);
+routers.post(userRoutes.userUpdate, verifySession(), bUserOwner, updateUserData);
 routers.post(userRoutes.toggleUserActiveStatus, verifySession(), bUserOwner, toggleUserActiveStatus);
 routers.post(userRoutes.addUpdateBankSettings, verifySession(), b, addUpdateBankSettings);
 routers.post(userRoutes.addUpdateBilling, verifySession(), requireAccountAccess(fromBillingData), addUpdateBilling);

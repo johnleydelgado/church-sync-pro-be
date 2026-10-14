@@ -16,6 +16,7 @@ import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
 import ThirdParty from 'supertokens-node/recipe/thirdparty';
 import EmailPassword from 'supertokens-node/recipe/emailpassword';
 import { syncBatchToJournalEntries } from '../services/syncEngine';
+import { recordPendingChurchInvite } from '../services/pendingInvite';
 
 const sgMail = require('@sendgrid/mail');
 const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
@@ -36,7 +37,13 @@ const { SENDGRID_API_KEY, INVITATION_URL, RESET_PASSWORD_URL } = process.env;
 const NO_CLICK_TRACKING = { trackingSettings: { clickTracking: { enable: false, enableText: false } } };
 
 export const sendEmailInvitation = async (req: Request, res: Response) => {
-  const { name, emailTo, clientId, createdByBk, bookkeeperId } = req.body;
+  // Always a pending invite with a mail. `createdByBk` / `bookkeeperId` in the body are ignored: they
+  // wrote an already-accepted row for whatever user id was sent, and no screen sends them any more
+  // (createClientChurch writes its own row).
+  const { emailTo, clientId } = req.body;
+  if (typeof emailTo !== 'string' || !emailTo.trim()) {
+    return responseError({ res, code: 400, message: 'emailTo is required' });
+  }
   const rand = crypto.randomBytes(16).toString('hex');
 
   sgMail.setApiKey(SENDGRID_API_KEY);
@@ -49,28 +56,26 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
       email: emailTo,
       inviteSent: true,
       invitationToken: rand,
-      inviteAccepted: !!createdByBk,
+      inviteAccepted: false,
       clientId,
       bookkeeperIntegrationAccessEnabled: false,
-      ...(createdByBk ? { userId: bookkeeperId } : {}), // Conditionally add userId
     });
+    // Accepting reads ChurchMembers only, so the pending row there carries the same token.
+    await recordPendingChurchInvite({ clientId: Number(clientId), email: emailTo, token: rand });
 
-    // Send email only if createdByBk is not true
-    if (!createdByBk) {
-      const msg = {
-        to: emailTo,
-        from: 'support@churchsyncpro.com',
-        subject: 'You have been invited to take on the role of a bookkeeper.',
-        templateId: 'd-4529481214ab4c4e85018b4dfb3b6f20',
-        dynamicTemplateData: {
-          inviteLink,
-        },
-        ...NO_CLICK_TRACKING,
-      };
-      await sgMail.send(msg);
-    }
+    const msg = {
+      to: emailTo,
+      from: 'support@churchsyncpro.com',
+      subject: 'You have been invited to take on the role of a bookkeeper.',
+      templateId: 'd-4529481214ab4c4e85018b4dfb3b6f20',
+      dynamicTemplateData: {
+        inviteLink,
+      },
+      ...NO_CLICK_TRACKING,
+    };
+    await sgMail.send(msg);
 
-    return responseSuccess(res, createdByBk ? 'Bookkeeper created without email' : 'Email sent');
+    return responseSuccess(res, 'Email sent');
   } catch (e) {
     return responseError({ res, code: 500, data: e });
   }
