@@ -64,4 +64,15 @@ const userRoutes = {
   payoutReportSignups: '/user/payoutReport/signups',
 };
 
-export { pcRoutes, userRoutes, qboRoutes, stripeRoutes };
+// The Churches page and the People tab (controller/church.ts).
+const churchRoutes = {
+  mine: '/church/mine',
+  create: '/church/create',
+  update: '/church/update',
+  people: '/church/people',
+  invite: '/church/people/invite',
+  access: '/church/people/access',
+  remove: '/church/people/remove',
+};
+
+export { pcRoutes, userRoutes, qboRoutes, stripeRoutes, churchRoutes };

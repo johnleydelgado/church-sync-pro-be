@@ -18,7 +18,7 @@ import {
 } from '../controller/auth';
 // import { authorized } from '../utils/authorization';
 import { verifySession } from 'supertokens-node/recipe/session/framework/express';
-import { pcRoutes, qboRoutes, stripeRoutes, userRoutes } from '../constant/routes';
+import { churchRoutes, pcRoutes, qboRoutes, stripeRoutes, userRoutes } from '../constant/routes';
 import { getBatches, getFunds, handleRegistrationEvents } from '../controller/planning-center';
 import {
   addUpdateBankCharges,
@@ -87,6 +87,15 @@ import {
   markTransitionTruedUp,
 } from '../controller/journalEntry';
 import {
+  addChurch,
+  churchPeople,
+  editChurch,
+  invite,
+  myChurches,
+  personAccess,
+  removeFromChurch,
+} from '../controller/church';
+import {
   fromBillingData,
   fromBody,
   fromBodyBookkeeperId,
@@ -98,12 +107,14 @@ import {
   fromQuery,
   fromTokenId,
   requireAccountAccess,
+  requireChurch,
 } from '../services/churchAccess';
 
 // Every route that names a church checks the signed-in person may work on it (services/churchAccess.ts),
 // between verifySession() and the handler. The routes left without a guard, and why, are the
 // UNGUARDED list in routes/__tests__/routers.test.ts, which fails if any other route has none:
-// no church yet (createUser, createPaymentIntent), the OAuth hops (authQB/authPC/authStripe,
+// no church yet (createUser, createPaymentIntent), the signed-in person's own churches
+// (/church/mine, /church/create), the OAuth hops (authQB/authPC/authStripe,
 // callBack*: the token is filed by the guarded updateUserToken), healthCheck, the public `/`,
 // password and invitation routes, and the scheduler's requireAutomationKey routes.
 const q = requireAccountAccess(fromQuery);
@@ -194,6 +205,16 @@ routers.post(userRoutes.viewBilling, verifySession(), bUser, viewBilling);
 routers.post(userRoutes.addUpdateBankCharges, verifySession(), b, addUpdateBankCharges);
 routers.post(userRoutes.crudUserEmailPreferences, verifySession(), bUser, crudUserEmailPreferences);
 routers.post(userRoutes.setStartDataAutomation, verifySession(), b, setStartDataAutomation);
+
+// The Churches page and the People tab. mine and create name no church - they work from the
+// signed-in person alone; the rest name it by churchId, which requireChurch checks.
+routers.get(churchRoutes.mine, verifySession(), myChurches);
+routers.post(churchRoutes.create, verifySession(), addChurch);
+routers.post(churchRoutes.update, verifySession(), requireChurch('owner'), editChurch);
+routers.get(churchRoutes.people, verifySession(), requireChurch('member'), churchPeople);
+routers.post(churchRoutes.invite, verifySession(), requireChurch('owner'), invite);
+routers.post(churchRoutes.access, verifySession(), requireChurch('owner'), personAccess);
+routers.post(churchRoutes.remove, verifySession(), requireChurch('owner'), removeFromChurch);
 
 routers.post('/automationScheduler', requireAutomationKey, automationScheduler);
 // The nightly journal entry. Sweeps each church's recent days from the donations endpoint;

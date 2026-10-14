@@ -29,6 +29,7 @@ jest.mock('../../controller/stripe', mockController);
 jest.mock('../../controller/automation', mockController);
 jest.mock('../../controller/payoutReport', mockController);
 jest.mock('../../controller/journalEntry', mockController);
+jest.mock('../../controller/church', mockController);
 jest.mock('supertokens-node/recipe/session/framework/express', () => ({
   verifySession: () => Object.assign(() => undefined, { mockVerifySession: true }),
 }));
@@ -57,6 +58,8 @@ const UNGUARDED: Record<string, string> = {
   healthCheck: 'answers whether the session exists, nothing else',
   createPaymentIntent: "the email is the subscription form's, not a church's",
   createUser: 'Google sign-up: no Users row exists yet to check against',
+  myChurches: "lists the signed-in person's own churches, found from the session; names no church",
+  addChurch: 'creates a church the signed-in person will own, found from the session; names no church',
 };
 
 /** With no session at all. Keyed by handler. */
@@ -79,15 +82,20 @@ const NEEDS: Record<string, 'integrations' | 'owner'> = {
   toggleUserActiveStatus: 'owner',
   sendEmailInvitation: 'owner',
   deleteBookeeper: 'owner',
+  editChurch: 'owner',
+  invite: 'owner',
+  personAccess: 'owner',
+  removeFromChurch: 'owner',
 };
 
-type Mounted = { path: string; handler: string; chain: any[] };
+type Mounted = { path: string; method: string; handler: string; chain: any[] };
 
 const mounted: Mounted[] = (routers as any).stack
   .filter((layer: any) => layer.route)
   .map((layer: any) => {
     const chain = layer.route.stack.map((l: any) => l.handle);
-    return { path: layer.route.path, handler: chain[chain.length - 1].name, chain };
+    const method = Object.keys(layer.route.methods).join(',').toUpperCase();
+    return { path: layer.route.path, method, handler: chain[chain.length - 1].name, chain };
   });
 
 const hasSession = (r: Mounted) => r.chain.some((fn) => fn.mockVerifySession === true);
@@ -135,6 +143,27 @@ it('asks each guarded route for the right need', () => {
   const others = Object.entries(needs).filter(([handler]) => !(handler in NEEDS));
   expect(others.filter(([, need]) => need !== 'member')).toEqual([]);
   expect(others.length).toBeGreaterThan(30);
+});
+
+it('mounts the /church routes as the API contract gives them', () => {
+  const church = mounted
+    .filter((r) => r.path.startsWith('/church/'))
+    .map((r) => ({
+      route: `${r.method} ${r.path}`,
+      handler: r.handler,
+      session: hasSession(r),
+      need: guardsOf(r)[0]?.need ?? null,
+    }));
+  // mine and create name no church: they work from the session alone (UNGUARDED above).
+  expect(church).toEqual([
+    { route: 'GET /church/mine', handler: 'myChurches', session: true, need: null },
+    { route: 'POST /church/create', handler: 'addChurch', session: true, need: null },
+    { route: 'POST /church/update', handler: 'editChurch', session: true, need: 'owner' },
+    { route: 'GET /church/people', handler: 'churchPeople', session: true, need: 'member' },
+    { route: 'POST /church/people/invite', handler: 'invite', session: true, need: 'owner' },
+    { route: 'POST /church/people/access', handler: 'personAccess', session: true, need: 'owner' },
+    { route: 'POST /church/people/remove', handler: 'removeFromChurch', session: true, need: 'owner' },
+  ]);
 });
 
 it('no longer mounts updateUser', () => {

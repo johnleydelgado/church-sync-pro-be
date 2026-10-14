@@ -10,6 +10,7 @@ import tokens from '../db/models/tokens';
 import tokenEntity from '../db/models/tokenEntity';
 import { canConnectIntegrations } from './churchContext';
 import type { ChurchAccess } from './churchAccess';
+import { ACCOUNT_EMAIL_DOMAIN, isChurchAccountEmail } from './churchAccountEmail';
 import { inviteLinkFor, sendInviteEmail } from './inviteEmail';
 import { createLogger } from '../utils/logger';
 
@@ -72,11 +73,6 @@ export interface InviteResult {
   emailSent: boolean;
 }
 
-/**
- * A church added from the Churches page files its data under a row nobody can sign in as: no
- * SuperTokens user, and .invalid never receives mail.
- */
-const ACCOUNT_DOMAIN = 'accounts.churchsyncpro.invalid';
 const MAX_NAME = 200;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -227,9 +223,10 @@ export const createChurch = async (actor: Users, rawName: unknown): Promise<MyCh
     if ((await churchesOf(actor.id as number, transaction)).some((c) => sameName(c.name, name))) {
       throw new ChurchServiceError(`You already have a church called ${name}.`, 409);
     }
+    // A row nobody can sign in as: no SuperTokens user, and .invalid never receives mail (churchAccountEmail.ts).
     const account = await Users.create(
       {
-        email: `church-${crypto.randomBytes(8).toString('hex')}@${ACCOUNT_DOMAIN}`,
+        email: `church-${crypto.randomBytes(8).toString('hex')}@${ACCOUNT_EMAIL_DOMAIN}`,
         churchName: name,
         firstName: 'N/A',
         lastName: 'N/A',
@@ -341,7 +338,7 @@ export const invitePerson = async (access: ChurchAccess, rawEmail: unknown): Pro
   const churchId = churchOf(access).id;
   const typed = typeof rawEmail === 'string' ? rawEmail.trim() : '';
   const email = typed.toLowerCase();
-  if (!EMAIL_RE.test(email) || email.endsWith(`@${ACCOUNT_DOMAIN}`)) {
+  if (!EMAIL_RE.test(email) || isChurchAccountEmail(email)) {
     throw new ChurchServiceError('Enter a valid email address.');
   }
   const alreadyOn = () => new ChurchServiceError(`${email} is already on this church.`, 409);
