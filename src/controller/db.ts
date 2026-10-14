@@ -10,7 +10,8 @@ export const addTokenInUser = async (req: Request, res: Response) => {
     // Never the password-reset token from a request body: it would let any signed-in account plant
     // a known token on someone else's row and then reset their password.
     const test = await User.update(omit(rest, 'token'), { where: { email: email } });
-    console.log('...rest', test, email, rest);
+    // Field names only: the values are OAuth access and refresh tokens.
+    console.log('addTokenInUser', { updated: test, fields: Object.keys(rest) });
     return responseSuccess(res, 'success');
   } catch (e) {
     return responseError({ res, code: 204, data: e });

@@ -78,10 +78,16 @@ export const sendEmailInvitation = async (req: Request, res: Response) => {
 
 export const sendPasswordReset = async (req: Request, res: Response) => {
   const { email } = req.body;
+
+  // One address, as a string. An array became `IN (...)`: the victim's row got the token and
+  // SendGrid mailed the same link to every address in the array - the attacker's included.
+  if (typeof email !== 'string' || email.trim() === '') {
+    return responseError({ res, code: 400, data: 'Enter your email address' });
+  }
+
   const rand = crypto.randomBytes(16).toString('hex');
 
   sgMail.setApiKey(SENDGRID_API_KEY);
-  const gotoUrl = RESET_PASSWORD_URL + `?email=${encodeURIComponent(email)}&token=${rand}`;
   // const htmlFile = await fs.promises.readFile('src/template/msg.html', 'utf-8');
 
   try {
@@ -90,10 +96,12 @@ export const sendPasswordReset = async (req: Request, res: Response) => {
       return responseError({ res, code: 200, data: 'User not found !' });
     }
 
-    await User.update({ token: rand }, { where: { email } });
+    await User.update({ token: rand }, { where: { id: userDetails.id } });
 
+    // The stored address, not the request's, in both the link and the recipient.
+    const gotoUrl = RESET_PASSWORD_URL + `?email=${encodeURIComponent(userDetails.email)}&token=${rand}`;
     const msg = {
-      to: email, // Change to your recipient
+      to: userDetails.email,
       from: 'support@churchsyncpro.com', // Change to your verified sender
       subject: 'We have acknowledged your request to change your password.',
       // text: 'and easy to do anywhere, even with Node.js',
@@ -138,20 +146,30 @@ export const resetPassword = async (req: Request, res: Response) => {
       return responseError({ res, code: 500, data: 'User not found ! or invalid token' });
     }
 
-    let userInfo = await EmailPassword.getUserByEmail(email);
+    // Single use, claimed before it is used: clear the token where it still holds this value, and
+    // go on only if this request is the one that cleared it - two requests racing with the same
+    // link cannot both change the password. A null token can never be matched again, because the
+    // shape check above refuses anything that is not 32 hex characters. If the change below then
+    // fails, the link stays spent and the user asks for a new one.
+    const [claimed] = await User.update({ token: null }, { where: { id: userDetails.id, token } });
+    if (claimed !== 1) {
+      return responseError({ res, code: 500, data: 'User not found ! or invalid token' });
+    }
+
+    const userInfo = await EmailPassword.getUserByEmail(email);
 
     if (userInfo === undefined) {
       throw new Error('Should never come here');
     }
 
-    await EmailPassword.updateEmailOrPassword({
+    // supertokens-node 13: OK | UNKNOWN_USER_ID_ERROR | EMAIL_ALREADY_EXISTS_ERROR.
+    const changed = await EmailPassword.updateEmailOrPassword({
       userId: userInfo.id,
       password: password,
     });
-
-    // Single use: clear the token rather than rotate it. A null token can no longer be matched,
-    // because the shape check above refuses anything that is not 32 hex characters.
-    await User.update({ token: null }, { where: { id: userDetails.id } });
+    if (changed.status !== 'OK') {
+      return responseError({ res, code: 500, data: 'Could not change the password' });
+    }
 
     return responseSuccess(res, 'sucess');
   } catch (e) {

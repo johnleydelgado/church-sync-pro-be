@@ -58,6 +58,7 @@ describe('responseError', () => {
     expect(wire(res)).not.toContain(BEARER);
     expect(wire(res)).not.toContain(CLIENT_SECRET);
     expect(body.data).not.toHaveProperty('config');
+    expect(body.data).not.toHaveProperty('stack'); // server paths
     expect(body.data).toEqual(
       expect.objectContaining({ message: 'Request failed with status code 401', name: 'AxiosError', status: 401 }),
     );
@@ -69,6 +70,7 @@ describe('responseError', () => {
     responseError({ res, code: 400, message: (await failedRequest()) as any });
     expect(wire(res)).not.toContain(BEARER);
     expect(wire(res)).not.toContain(CLIENT_SECRET);
+    expect(JSON.parse(wire(res)).message).not.toHaveProperty('stack');
   });
 
   test('anything that is not an axios error is sent exactly as before', () => {

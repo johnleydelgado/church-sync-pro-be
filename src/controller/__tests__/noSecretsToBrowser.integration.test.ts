@@ -8,6 +8,7 @@ jest.mock('supertokens-node/recipe/emailpassword', () => ({
   __esModule: true,
   default: { getUserByEmail: jest.fn(), updateEmailOrPassword: jest.fn() },
 }));
+jest.mock('@sendgrid/mail', () => ({ setApiKey: jest.fn(), send: jest.fn() }));
 
 import EmailPassword from 'supertokens-node/recipe/emailpassword';
 import sequelize from '../../db';
@@ -16,10 +17,11 @@ import tokens from '../../db/models/tokens';
 import tokenEntity from '../../db/models/tokenEntity';
 import bookkeeper from '../../db/models/bookkeeper';
 import UserSettings from '../../db/models/userSettings';
-import { resetPassword } from '../index';
+import { resetPassword, sendPasswordReset } from '../index';
 import { bookkeeperList, getTokenList, getUserRelated } from '../user';
 
 const emailPassword = EmailPassword as unknown as { getUserByEmail: jest.Mock; updateEmailOrPassword: jest.Mock };
+const sgMail = jest.requireMock('@sendgrid/mail') as { send: jest.Mock };
 
 const CHURCH_ID = 90101;
 const CHURCH_EMAIL = 'secrets-church@example.test';
@@ -149,4 +151,40 @@ test('resetPassword: a null token is refused; the real token works once and is t
   await resetPassword({ body: { email: CHURCH_EMAIL, token: RESET_TOKEN, password: 'new-pass-2' } } as any, again);
   expect(again.status).toHaveBeenCalledWith(500);
   expect(emailPassword.updateEmailOrPassword).toHaveBeenCalledTimes(1);
+});
+
+test('resetPassword: two requests racing with one link change the password once', async () => {
+  emailPassword.getUserByEmail.mockResolvedValue({ id: 'st-church' });
+  emailPassword.updateEmailOrPassword.mockResolvedValue({ status: 'OK' });
+
+  const [a, b] = [makeRes(), makeRes()];
+  await Promise.all([
+    resetPassword({ body: { email: CHURCH_EMAIL, token: RESET_TOKEN, password: 'first-1' } } as any, a),
+    resetPassword({ body: { email: CHURCH_EMAIL, token: RESET_TOKEN, password: 'second-2' } } as any, b),
+  ]);
+
+  expect(emailPassword.updateEmailOrPassword).toHaveBeenCalledTimes(1);
+  const statuses = [a.status.mock.calls[0][0], b.status.mock.calls[0][0]].sort();
+  expect(statuses).toEqual([200, 500]);
+  const after: any = await User.findByPk(CHURCH_ID);
+  expect(after.token).toBeNull();
+});
+
+test('sendPasswordReset: an array of addresses writes no token and sends nothing; one address writes its own row', async () => {
+  const before: any = await User.findByPk(CHURCH_ID);
+  const refused = makeRes();
+  await sendPasswordReset({ body: { email: ['attacker@example.test', CHURCH_EMAIL] } } as any, refused);
+  expect(refused.status).toHaveBeenCalledWith(400);
+  expect(sgMail.send).not.toHaveBeenCalled();
+  expect(((await User.findByPk(CHURCH_ID)) as any).token).toBe(before.token);
+
+  const ok = makeRes();
+  await sendPasswordReset({ body: { email: BK_EMAIL } } as any, ok);
+  expect(ok.status).toHaveBeenCalledWith(200);
+  const bkRow: any = await User.findByPk(BK_ID);
+  expect(bkRow.token).toMatch(/^[0-9a-f]{32}$/);
+  expect(((await User.findByPk(CHURCH_ID)) as any).token).toBe(RESET_TOKEN); // nobody else's row
+  expect(sgMail.send).toHaveBeenCalledTimes(1);
+  expect(sgMail.send.mock.calls[0][0].to).toBe(BK_EMAIL);
+  expect(sgMail.send.mock.calls[0][0].dynamicTemplateData.gotoUrl).toContain(`token=${bkRow.token}`);
 });

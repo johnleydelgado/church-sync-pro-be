@@ -33,13 +33,14 @@ function responseData(res: Response, httpCode: number, apiResponse: resObject) {
  * <a church's Planning Center token>`) and the body (a refresh token, a client secret). Handlers
  * pass caught errors straight in as `data` or `message`, so a Planning Center hiccup on the
  * Mapping page sent the church's live token to the browser. Keep what the error says; drop the
- * request it was about.
+ * request it was about, and the stack (server paths).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `message` is typed string, but callers pass caught errors
 function withoutRequest(value: any): any {
   if (!axios.isAxiosError(value)) return value;
   const json = value.toJSON() as Record<string, unknown>;
   delete json.config;
+  delete json.stack;
   return json;
 }
 
