@@ -370,6 +370,8 @@ export const isUserHaveTokens = async (req: Request, res: Response) => {
       const tokenData = await tokenEntity.findAll({
         where: { email: email as string },
         include: tokens,
+        // The first enabled one below is then the entity updateUserToken saves to.
+        order: [['id', 'ASC']],
       });
 
       if (tokenData.length === 0) {
@@ -447,6 +449,15 @@ export const updateUserToken = async (req: Request, res: Response) => {
         res,
         code: 400,
         message: 'The connection did not return an access token. Try connecting again.',
+      });
+    }
+    // QuickBooks and Planning Center connections live on their refresh token: saving one without it
+    // (or keeping the old one next to a new access token) leaves a connection that dies within hours.
+    if ((token_type === 'qbo' || token_type === 'pco') && !isNonEmptyString(refresh_token)) {
+      return responseError({
+        res,
+        code: 400,
+        message: 'The connection did not return a refresh token. Try connecting again.',
       });
     }
     if (token_type === 'qbo' && !isNonEmptyString(realm_id)) {

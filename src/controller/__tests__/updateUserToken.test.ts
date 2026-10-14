@@ -8,7 +8,8 @@
  * Connecting again replaces the old connection. It used to be ignored when a token of that type
  * already existed, so a reconnect kept the dead token and the church stayed disconnected. Because
  * a reconnect now overwrites, a call without a usable token is refused rather than allowed to
- * wipe a working connection.
+ * wipe a working connection. QuickBooks and Planning Center need their refresh token too: a
+ * connection saved without one dies with its access token.
  */
 function mockModel() {
   return {
@@ -140,6 +141,18 @@ it('saves a Planning Center connection without a realm id', async () => {
   expect(res.status).toHaveBeenCalledWith(200);
 });
 
+it('still saves a Stripe connection without a refresh token', async () => {
+  mockedEntity.findOne.mockResolvedValue({ id: 77, isEnabled: true, update: jest.fn() });
+  mockedTokens.findOne.mockResolvedValue(null);
+
+  const res = await save({ ...body, token_type: 'stripe', realm_id: undefined, refresh_token: undefined });
+
+  expect(mockedTokens.create).toHaveBeenCalledWith(
+    expect.objectContaining({ token_type: 'stripe', access_token: 'new-access' }),
+  );
+  expect(res.status).toHaveBeenCalledWith(200);
+});
+
 it('refuses an unknown connection type', async () => {
   const res = await save({ ...body, token_type: 'xero' });
 
@@ -154,6 +167,17 @@ it.each([
   ['an access token that is not a string', { access_token: { a: 1 } }],
   ['a QuickBooks token without its realm id', { realm_id: undefined }],
   ['a QuickBooks token with a blank realm id', { realm_id: ' ' }],
+  ['a QuickBooks token without its refresh token', { refresh_token: undefined }],
+  ['a QuickBooks token with an empty refresh token', { refresh_token: '' }],
+  ['a QuickBooks refresh token that is not a string', { refresh_token: ['r'] }],
+  [
+    'a Planning Center token without its refresh token',
+    { token_type: 'pco', realm_id: undefined, refresh_token: undefined },
+  ],
+  [
+    'a Planning Center token with a blank refresh token',
+    { token_type: 'pco', realm_id: undefined, refresh_token: '  ' },
+  ],
 ])('refuses %s, leaving any working connection alone', async (_label, change) => {
   const existing = { id: 5, update: jest.fn() };
   mockedEntity.findOne.mockResolvedValue({ id: 77, isEnabled: true, update: jest.fn() });

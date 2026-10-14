@@ -72,6 +72,8 @@ export const getStripePayouts = async (req: Request, res: Response) => {
     const data = await tokenEntity.findOne({
       where: { email: email as string, isEnabled: true },
       include: tokens,
+      // The entity updateUserToken saves to: the oldest enabled one.
+      order: [['id', 'ASC']],
     });
 
     const arr = data?.tokens?.find((item) => item.token_type === 'stripe');
@@ -653,6 +655,8 @@ export const refreshAccessToken = async (email: string): Promise<RefreshTokenRes
     const data = await tokenEntity.findOne({
       where: { email: email as string, isEnabled: true },
       include: tokens,
+      // The entity updateUserToken saves to: the oldest enabled one.
+      order: [['id', 'ASC']],
     });
 
     if (!data || !data.tokens) {

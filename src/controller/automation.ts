@@ -338,6 +338,8 @@ export const generatePcToken = async (email: string) => {
     const data = await tokenEntity.findOne({
       where: { email: email as string, isEnabled: true },
       include: tokens,
+      // The entity updateUserToken saves to: the oldest enabled one.
+      order: [['id', 'ASC']],
     });
 
     const arr = data.tokens.find((item) => item.token_type === 'pco');

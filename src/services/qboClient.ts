@@ -23,6 +23,8 @@ export const refreshQboToken = async (refreshToken: string, email: string) => {
     const data = await tokenEntity.findOne({
       where: { email: email as string, isEnabled: true },
       include: tokens,
+      // The entity updateUserToken saves to: the oldest enabled one.
+      order: [['id', 'ASC']],
     });
 
     const arr = data.tokens.find((item) => item.token_type === 'qbo');
@@ -64,6 +66,8 @@ export const getQboTokensForUser = async (email: string): Promise<tokenProps> =>
   const data = await tokenEntity.findOne({
     where: { email: email as string, isEnabled: true },
     include: tokens,
+    // The entity updateUserToken saves to: the oldest enabled one.
+    order: [['id', 'ASC']],
   });
 
   if (!data) {
