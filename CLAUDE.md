@@ -47,7 +47,7 @@ The `development` DB config in `src/db/config/config.json` matches these (`127.0
 
 - **`auth.ts`** — OAuth connect + callback flows for the three integrations: `authQuickBook`/`callBackQBO`, `authPlanningCenter`/`callBackPC`, `authStripe`/`callBackStripe`. These exchange OAuth codes and persist tokens.
 - **`qbo.ts`** — QuickBooks reads/writes: `getAllQboData` (accounts/classes/customers), deposits (`deleteQboDeposit`, `getDepositRef`), projects/customers.
-- **`planning-center.ts`** — PCO reads: `getBatches`, `getFunds`, `handleRegistrationEvents`.
+- **`planning-center.ts`** — PCO reads: `getBatches`, `getFunds`, `handleRegistrationEvents`. `getFunds` keeps every fund except visibility `nowhere` (`isLiveFund`): Planning Center's "Link Only" label is API `hidden` and live, and dropping it hid Legacy Offering from the Mapping page (2026-10-13).
 - **`stripe.ts`** — the largest controller: payouts (`getStripePayouts`), the multi-step sync (`syncStripePayout`, `syncStripePayoutRegistration`, `finalSyncStripe`), `getStripeList`, and `createPaymentIntent` (the app's own subscription billing).
 - **`automation.ts`** — the **automated sync engine**: token refresh (`generateQBOToken`, `generatePcToken`), batch/donation traversal, `automationDeposit` (pushes PCO donations into QBO as deposits), and the scheduled-style entrypoints (`automationScheduler`, `latestFundAutomation`, `latestRegistrationAutomation`, `checkLatestFund`, `checkLatestRegistration`). These last endpoints are designed to be hit by an external cron/scheduler and send notification emails via SendGrid, logging each send to the `EmailLog` table to avoid duplicates.
 - **`user.ts`** — account/settings CRUD: users, settings (sync mappings), billing, bookkeeper invites, bank settings/charges, email preferences.
@@ -97,6 +97,9 @@ contract: `docs/plans/2026-10-08-registrations-import.md` in the frontend repo (
 - `controller/payoutReport.ts` checks that the signed-in user **is the church or a bookkeeper it
   invited who accepted** - unlike the older endpoints, which trust the `email` in the request -
   and records the session user, not the request, as the uploader.
+- `settingRegistrationData` now holds the v2 object. The Stripe-era code (`stripe.ts`,
+  `automation.ts`, `utils/automation-helper.ts`) reads it only through `legacyRegistrationList()`,
+  which returns [] for v2 - never call `.find`/`.filter` on the raw setting.
 
 ### Tests
 
@@ -312,6 +315,12 @@ make deploy-stg-be  # staging backend only
 make deploy-prd     # builds DockerfileBE → GCR → Cloud Run service "csp-be-prd" (port 8080)
 make migrate-prd    # migrations are MANUAL - deploy does not run them
 ```
+
+`make migrate-prd` runs `NODE_ENV=uat-prd` - the same database the `production` config (and any
+one-off production script) reads. For a release that touches money or clearing maths, snapshot
+`getClearingStatement` for recent months and `getDailyJournalEntries` with the OLD code (the
+`-prod` worktree before you pull) and again with the NEW code after migrating; deploy only if
+they match field for field (done for the registrations release, 2026-10-13).
 
 `deploy-supertoken` requires `SUPERTOKENS_DB_URI` and `SUPERTOKENS_API_KEY` exported;
 it fails fast if they are unset.
