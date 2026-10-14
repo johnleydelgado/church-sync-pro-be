@@ -8,15 +8,15 @@
  * 2. Re-runs the backfill (…000003, its own transaction). It is idempotent, and creates a
  *    church and owner for every client login that signed up, or was added from the Clients
  *    page, since it last ran. Its churchId stamp is harmless.
- * 3. In one transaction: checks (1) again, applies the resync plan, and adds the partial
- *    unique index on Churches.ownerUserId.
+ * 3. In one transaction: checks (1) again, logs what the plan will do (counts and ids, no
+ *    addresses), applies it, and adds the partial unique index on Churches.ownerUserId.
  *
  * Safe to re-run. `down` only drops the index: the membership corrections are data fixes and
  * stay.
  */
 const { Op } = require('sequelize');
 const backfill = require('./20260925000003-backfill-churches');
-const { planResync } = require('../churchResyncPlan');
+const { planResync, describePlan } = require('../churchResyncPlan');
 
 const OWNER_INDEX = 'churches_owner_user_unique';
 
@@ -63,8 +63,12 @@ module.exports = {
          FROM "bookkeeper" ORDER BY id`,
       );
       const accounts = await q(`SELECT u.id, u.email FROM "Users" u JOIN "Churches" c ON c."ownerUserId" = u.id`);
+      const bookkeeperUsers = await q(
+        `SELECT id, email FROM "Users" WHERE id IN (SELECT "userId" FROM "bookkeeper" WHERE "userId" IS NOT NULL)`,
+      );
 
-      const plan = planResync(churches, members, bookkeepers, accounts);
+      const plan = planResync(churches, members, bookkeepers, accounts, bookkeeperUsers);
+      for (const line of describePlan(plan, members)) console.log(`[resync-church-members] ${line}`);
       const now = new Date();
       if (plan.insert.length) {
         await queryInterface.bulkInsert(
@@ -86,6 +90,12 @@ module.exports = {
                "invitedEmail" = NULL, "invitationToken" = NULL, "updatedAt" = now()
            WHERE id IN (:ids)`,
           { replacements: { ids: plan.promote }, transaction },
+        );
+      }
+      if (plan.unaccept.length) {
+        await sequelize.query(
+          `UPDATE "ChurchMembers" SET "inviteAccepted" = false, "updatedAt" = now() WHERE id IN (:ids) AND "userId" IS NULL`,
+          { replacements: { ids: plan.unaccept }, transaction },
         );
       }
       if (plan.dropMembers.length) {

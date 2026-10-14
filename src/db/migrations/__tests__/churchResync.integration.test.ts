@@ -24,7 +24,8 @@ const BK_CREATOR = 9204; // adds churches from the Clients page
 const GRACE = 9205; // Clients-page church that existed at the backfill
 const LATE_CLIENT = 9206; // client login that signed up after the backfill
 const LATE_CC = 9207; // Clients-page church added after the backfill
-const USERS = [ACTIVE, BK_LATE, BK_INVITED, BK_CREATOR, GRACE, LATE_CLIENT, LATE_CC];
+const NAMESAKE = 9208; // a second Users row carrying ACTIVE's address (Users.email is not unique)
+const USERS = [ACTIVE, BK_LATE, BK_INVITED, BK_CREATOR, GRACE, LATE_CLIENT, LATE_CC, NAMESAKE];
 const IDS = USERS.join(', ');
 
 // createClientChurch's synthetic address: `<church-name>-<bookkeeper's email>`.
@@ -51,6 +52,8 @@ const seedAtBackfill = async () => {
 
   await bookkeeper.create({ ...legacy, userId: null, clientId: ACTIVE, email: 'bk-invited-it@example.test', invitationToken: 'tok-invited', inviteAccepted: false } as any);
   await bookkeeper.create({ ...legacy, userId: null, clientId: ACTIVE, email: 'still-pending-it@example.test', invitationToken: 'tok-pending', inviteAccepted: false } as any);
+  // Accepted before the invitee had a login: the backfill wrote a member with no user marked accepted.
+  await bookkeeper.create({ ...legacy, userId: null, clientId: ACTIVE, email: 'early-it@example.test', invitationToken: 'tok-early', inviteAccepted: true } as any);
   await bookkeeper.create({ ...legacy, userId: BK_CREATOR, clientId: GRACE, email: GRACE_EMAIL, invitationToken: 'tok-grace', inviteAccepted: true } as any);
 };
 
@@ -63,6 +66,10 @@ const writeSinceBackfill = async () => {
   // createClientChurch: a client login nobody signs in with, and a bookkeeper row carrying its email.
   await User.create({ ...person, id: LATE_CC, email: LATE_CC_EMAIL, role: 'client', churchName: 'Late Clients-page Church' } as any);
   await bookkeeper.create({ ...legacy, userId: BK_CREATOR, clientId: LATE_CC, email: LATE_CC_EMAIL, invitationToken: 'tok-late-cc', inviteAccepted: true } as any);
+  // Its row carries the church account's own address, but it did not add the church: it must
+  // not be promoted, and ACTIVE must keep its owner membership.
+  await User.create({ ...person, id: NAMESAKE, email: 'active-it@example.test', role: 'bookkeeper', churchName: '' } as any);
+  await bookkeeper.create({ ...legacy, userId: NAMESAKE, clientId: ACTIVE, email: 'active-it@example.test', invitationToken: 'tok-namesake', inviteAccepted: true } as any);
 };
 
 beforeAll(async () => {
@@ -87,7 +94,7 @@ const churchesOf = () => q(`SELECT "ownerUserId", name FROM "Churches" WHERE "ow
 const membersOf = () =>
   q(`SELECT c."ownerUserId" AS account, m."userId", m.role, m."integrationAccessEnabled", m."invitedEmail", m."invitationToken", m."inviteAccepted"
      FROM "ChurchMembers" m JOIN "Churches" c ON c.id = m."churchId"
-     WHERE c."ownerUserId" IN (${IDS}) ORDER BY c."ownerUserId", m.role::text, m."userId" NULLS LAST`);
+     WHERE c."ownerUserId" IN (${IDS}) ORDER BY c."ownerUserId", m.role::text, m."userId" NULLS LAST, m."invitedEmail"`);
 const everything = async () => ({
   churches: await q(`SELECT * FROM "Churches" ORDER BY id`),
   members: await q(`SELECT * FROM "ChurchMembers" ORDER BY id`),
@@ -121,6 +128,10 @@ it('catches memberships up with the bookkeeper table and gives each new church i
     { account: ACTIVE, userId: BK_LATE, role: 'bookkeeper', integrationAccessEnabled: true, invitedEmail: 'bk-late-it@example.test', invitationToken: 'tok-late', inviteAccepted: true },
     // Pending at the backfill, accepted since: the same member now has its user.
     { account: ACTIVE, userId: BK_INVITED, role: 'bookkeeper', integrationAccessEnabled: false, invitedEmail: 'bk-invited-it@example.test', invitationToken: 'tok-invited', inviteAccepted: true },
+    // Has the church account's address but did not add the church: an ordinary bookkeeper.
+    { account: ACTIVE, userId: NAMESAKE, role: 'bookkeeper', integrationAccessEnabled: false, invitedEmail: 'active-it@example.test', invitationToken: 'tok-namesake', inviteAccepted: true },
+    // No user, so not accepted, whatever the backfill wrote.
+    { account: ACTIVE, userId: null, role: 'bookkeeper', integrationAccessEnabled: false, invitedEmail: 'early-it@example.test', invitationToken: 'tok-early', inviteAccepted: false },
     // Still outstanding: unchanged, not duplicated.
     { account: ACTIVE, userId: null, role: 'bookkeeper', integrationAccessEnabled: false, invitedEmail: 'still-pending-it@example.test', invitationToken: 'tok-pending', inviteAccepted: false },
     owner(ACTIVE, ACTIVE),
