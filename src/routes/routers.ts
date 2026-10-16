@@ -8,14 +8,7 @@ import {
   sendPasswordReset,
   tesst,
 } from '../controller';
-import {
-  authPlanningCenter,
-  authQuickBook,
-  authStripe,
-  callBackPC,
-  callBackQBO,
-  callBackStripe,
-} from '../controller/auth';
+import { authPlanningCenter, authQuickBook, callBackPC, callBackQBO } from '../controller/auth';
 // import { authorized } from '../utils/authorization';
 import { verifySession } from 'supertokens-node/recipe/session/framework/express';
 import { churchRoutes, pcRoutes, qboRoutes, stripeRoutes, userRoutes } from '../constant/routes';
@@ -112,8 +105,8 @@ import {
 // between verifySession() and the handler. The routes left without a guard, and why, are the
 // UNGUARDED list in routes/__tests__/routers.test.ts, which fails if any other route has none:
 // no church yet (createUser, createPaymentIntent), the signed-in person's own churches
-// (/church/mine, /church/create), the OAuth hops (authQB/authPC/authStripe,
-// callBack*: the token is filed by the guarded updateUserToken), healthCheck, the public `/`,
+// (/church/mine, /church/create), the OAuth hops (authQB/authPC, callBackQBO/callBackPC: the
+// token is filed by the guarded updateUserToken), healthCheck, the public `/`,
 // password and invitation routes, and the scheduler's requireAutomationKey routes.
 const q = requireAccountAccess(fromQuery);
 const b = requireAccountAccess(fromBody);
@@ -132,12 +125,11 @@ const clientOrBookkeeper = requireAccountAccess(fromBodyClientOrBookkeeperId);
 const routers = Router();
 // routers.post("/start", authorized, startTask);
 routers.get('/', tesst);
+// The connect hops take ?state=<the browser's one-time hex> and pass it to the provider (controller/auth.ts).
 routers.get('/authQB', verifySession(), authQuickBook);
 routers.get('/authPC', verifySession(), authPlanningCenter);
-routers.get('/authStripe', authStripe);
 routers.post('/callBackQBO', verifySession(), callBackQBO);
 routers.post('/callBackPC', verifySession(), callBackPC);
-routers.post('/callBackStripe', callBackStripe);
 routers.get('/healthCheck', verifySession(), healthCheck);
 
 // routers.get('/getBatches', verifySession(), getBatches);
