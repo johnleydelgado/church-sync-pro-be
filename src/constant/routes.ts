@@ -38,7 +38,6 @@ const userRoutes = {
   resetPassword: '/user/resetPassword',
   checkValidInvitation: '/user/checkValidInvitation',
   updateInvitationStatus: '/user/updateInvitationStatus',
-  createClientChurch: '/user/createClientChurch',
   bookkeeperList: '/user/bookkeeperList',
   userUpdate: '/user/userUpdate',
   toggleUserActiveStatus: '/user/toggleUserActiveStatus',

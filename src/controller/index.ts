@@ -32,7 +32,7 @@ const { SENDGRID_API_KEY, RESET_PASSWORD_URL } = process.env;
 export const sendEmailInvitation = async (req: Request, res: Response) => {
   // Always a pending invite with a mail. `createdByBk` / `bookkeeperId` in the body are ignored: they
   // wrote an already-accepted row for whatever user id was sent, and no screen sends them any more
-  // (createClientChurch writes its own row).
+  // (a church is added with POST /church/create).
   const { emailTo } = req.body;
   if (typeof emailTo !== 'string' || !emailTo.trim()) {
     return responseError({ res, code: 400, message: 'emailTo is required' });
