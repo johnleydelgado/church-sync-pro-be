@@ -35,7 +35,6 @@ import {
   checkAccountAccess,
   clearSessionEmailCache,
   fromBody,
-  fromBodyBookkeeperId,
   fromBodyClientId,
   fromBodyClientOrBookkeeperId,
   fromBodyItems,
@@ -266,9 +265,6 @@ describe('fromBookkeeperRowId', () => {
 describe('legacy bookkeeper-screen locators', () => {
   it('sendEmailInvitation names the church by clientId', () => {
     expect(fromBodyClientId({ body: { clientId: 10, bookkeeperId: 2 } } as any)).toEqual({ userId: 10 });
-  });
-  it('createClientChurch names the account by bookkeeperId', () => {
-    expect(fromBodyBookkeeperId({ body: { bookkeeperId: 2 } } as any)).toEqual({ userId: 2 });
   });
   it('bookkeeperList names clientId when it is given, as the handler reads it, else bookkeeperId', () => {
     expect(fromBodyClientOrBookkeeperId({ body: { clientId: 10, bookkeeperId: 2 } } as any)).toEqual({ userId: 10 });

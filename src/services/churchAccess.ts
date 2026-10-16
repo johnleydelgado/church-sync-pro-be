@@ -246,8 +246,6 @@ export const fromTokenId = async (req: Request): Promise<Named> => {
 // The legacy Bookkeepers / Clients screens (retired in Task 22).
 /** sendEmailInvitation: the church inviting is clientId. */
 export const fromBodyClientId = (req: Request): Named => ({ userId: req.body?.clientId });
-/** createClientChurch: the bookkeeper adding a church names their own row. */
-export const fromBodyBookkeeperId = (req: Request): Named => ({ userId: req.body?.bookkeeperId });
 /** bookkeeperList: clientId when it is given (truthy, as the handler reads it), else bookkeeperId. */
 export const fromBodyClientOrBookkeeperId = (req: Request): Named => ({
   userId: req.body?.clientId || req.body?.bookkeeperId,

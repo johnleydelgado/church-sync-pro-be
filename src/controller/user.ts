@@ -17,16 +17,12 @@ import Billing from '../db/models/billing';
 import { captureClearingSnapshot } from '../services/clearingSnapshot';
 import { markEmailVerified } from '../services/emailVerification';
 import ChurchMember from '../db/models/churchMember';
-import Church from '../db/models/church';
 import sequelize from '../db';
 import { Op } from 'sequelize';
 import { isChurchAccountEmail } from '../services/churchAccountEmail';
 import { createLogger } from '../utils/logger';
 import { sessionEmail } from '../services/sessionEmail';
 import { SessionRequest } from 'supertokens-node/lib/build/framework/express';
-import crypto from 'crypto';
-const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
-const supertokens = require('supertokens-node');
 
 const logger = createLogger('user');
 /** Bookkeeper rows go to the browser without the invitation token: it belongs only in the invite link. */
@@ -671,106 +667,6 @@ export const updateInvitationStatus = async (req: Request, res: Response) => {
     return responseSuccess(res, 'accepted');
   } catch (e) {
     return responseError({ res, code: 400, message: e });
-  }
-};
-
-/**
- * A bookkeeper adding a church from the Clients page. Done here with the backend SDK
- * rather than the browser sign-up API because that API would replace the bookkeeper's
- * session with the new client's. The address is synthetic (nobody reads it) and the
- * password random (nobody is meant to log in as it): the bookkeeper works on the
- * church through their own login.
- *
- * Access reads ChurchMembers only, so the church is filed as a Church owned by the bookkeeper
- * who added it - what the resync migration made of the churches added this way before.
- */
-export const createClientChurch = async (req: Request, res: Response) => {
-  const { churchName, bookkeeperId } = req.body;
-  try {
-    // The guard (requireAccountAccess on bookkeeperId) lets any member of that account through;
-    // only the person themselves may add a church they will own.
-    const bk = res.locals?.actor;
-    if (!bk || bk.id !== Number(bookkeeperId)) {
-      return responseError({ res, code: 403, message: 'You can only add a church for yourself.' });
-    }
-    if (!churchName || typeof churchName !== 'string' || !churchName.trim()) {
-      return responseError({ res, code: 400, message: 'Church name is required' });
-    }
-
-    const email = `${churchName.trim().toLowerCase().replace(/ /g, '-')}-${bk.email}`;
-    const password = crypto.randomBytes(24).toString('base64url');
-
-    if (churchName.trim().length > 200) {
-      return responseError({ res, code: 400, message: 'Church name is too long (200 characters max)' });
-    }
-
-    const signUp = await ThirdPartyEmailPassword.emailPasswordSignUp(email, password);
-    if (signUp.status === 'EMAIL_ALREADY_EXISTS_ERROR') {
-      return responseError({ res, code: 409, message: 'A church with this name already exists' });
-    }
-
-    try {
-      const name = churchName.trim();
-      const clientId = await sequelize.transaction(async (transaction) => {
-        const client = await Users.create(
-          {
-            email,
-            churchName: name,
-            firstName: 'N/A',
-            lastName: 'N/A',
-            role: 'client',
-            isSubscribe: '0',
-            isActive: true,
-          } as any,
-          { transaction },
-        );
-
-        // The legacy row the Clients page still lists.
-        await bookkeeper.create(
-          {
-            email,
-            inviteSent: true,
-            invitationToken: crypto.randomBytes(16).toString('hex'),
-            inviteAccepted: true,
-            clientId: client.id,
-            userId: bk.id,
-            bookkeeperIntegrationAccessEnabled: false,
-          } as any,
-          { transaction },
-        );
-
-        const church = await Church.create({ name, ownerUserId: client.id as number, isActive: true }, { transaction });
-        await ChurchMember.create(
-          {
-            churchId: church.id,
-            userId: bk.id,
-            role: 'owner',
-            integrationAccessEnabled: true,
-            invitedEmail: null,
-            invitationToken: null,
-            inviteAccepted: true,
-          },
-          { transaction },
-        );
-        return client.id;
-      });
-
-      return responseSuccess(res, { clientId, email });
-    } catch (dbError) {
-      // The login exists but the church does not: remove the login again, otherwise a
-      // retry is refused as "already exists" for a church nobody can see.
-      await supertokens.deleteUser(signUp.user.id).catch((deleteError: unknown) => {
-        // Left behind, the login makes a retry answer "already exists" for a church nobody can see.
-        // The error's kind only: its message can quote the synthetic address, which holds the bookkeeper's.
-        logger.error('createClientChurch: could not remove the SuperTokens login after the church failed', {
-          superTokensUserId: signUp.user.id,
-          error: deleteError instanceof Error ? deleteError.name : 'unknown',
-        });
-      });
-      throw dbError;
-    }
-  } catch (e) {
-    return responseError({ res, code: 500, message: e?.message ?? e });
   }
 };
 

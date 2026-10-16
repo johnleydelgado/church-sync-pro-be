@@ -26,7 +26,6 @@ import {
   addUpdateBilling,
   bookkeeperList,
   checkValidInvitation,
-  createClientChurch,
   createSettings,
   createUser,
   crudUserEmailPreferences,
@@ -98,7 +97,6 @@ import {
 import {
   fromBillingData,
   fromBody,
-  fromBodyBookkeeperId,
   fromBodyClientId,
   fromBodyClientOrBookkeeperId,
   fromBodyItems,
@@ -130,7 +128,6 @@ const bUserOwner = requireAccountAccess(fromBodyUserId, 'owner');
 const inviteFromClient = requireAccountAccess(fromBodyClientId, 'owner');
 const bookkeeperRowOwner = requireAccountAccess(fromBookkeeperRowId, 'owner');
 const clientOrBookkeeper = requireAccountAccess(fromBodyClientOrBookkeeperId);
-const addingBookkeeper = requireAccountAccess(fromBodyBookkeeperId);
 
 const routers = Router();
 // routers.post("/start", authorized, startTask);
@@ -166,7 +163,6 @@ routers.post(qboRoutes.updateProject, verifySession(), b, updateProject);
 routers.post(qboRoutes.findCustomer, verifySession(), b, findCustomer);
 
 routers.post(userRoutes.createUser, verifySession(), createUser);
-routers.post(userRoutes.createClientChurch, verifySession(), addingBookkeeper, createClientChurch);
 routers.post(userRoutes.addTokenInUser, verifySession(), bOwner, addTokenInUser);
 routers.post(userRoutes.createSettings, verifySession(), b, createSettings);
 routers.post(userRoutes.updateRegisterSettings, verifySession(), b, updateRegisterSettings);
