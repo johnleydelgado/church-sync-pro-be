@@ -141,16 +141,12 @@ it('saves a Planning Center connection without a realm id', async () => {
   expect(res.status).toHaveBeenCalledWith(200);
 });
 
-it('still saves a Stripe connection without a refresh token', async () => {
-  mockedEntity.findOne.mockResolvedValue({ id: 77, isEnabled: true, update: jest.fn() });
-  mockedTokens.findOne.mockResolvedValue(null);
-
+it('refuses a Stripe connection now that Stripe Connect is gone', async () => {
   const res = await save({ ...body, token_type: 'stripe', realm_id: undefined, refresh_token: undefined });
 
-  expect(mockedTokens.create).toHaveBeenCalledWith(
-    expect.objectContaining({ token_type: 'stripe', access_token: 'new-access' }),
-  );
-  expect(res.status).toHaveBeenCalledWith(200);
+  expect(res.status).toHaveBeenCalledWith(400);
+  expect(mockedEntity.findOne).not.toHaveBeenCalled();
+  expect(mockedTokens.create).not.toHaveBeenCalled();
 });
 
 it('refuses an unknown connection type', async () => {

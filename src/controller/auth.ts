@@ -67,10 +67,8 @@ export const callBackQBO = async (req: Request, res: Response) => {
       });
     })
     .catch(function (e: any) {
-      console.log('json', {
-        e,
-      });
-
+      // Never log the whole error: it carries the request, and with it the app's credentials.
+      console.log('callBackQBO failed:', e?.error || e?.originalMessage || e?.message, e?.intuit_tid || '');
       res.status(500).json({ error: e.message });
     });
 };
@@ -118,7 +116,8 @@ export const callBackPC = async (req: Request, res: Response) => {
       tokenJwt,
     });
   } catch (e: any) {
-    console.log('ERROR: ', e);
+    // Never log the whole AxiosError: its config holds the client secret and the code.
+    console.log('callBackPC failed:', e?.response?.status, e?.response?.data?.error ?? e?.message);
     res.status(500).json({ error: e.message });
   }
 };
