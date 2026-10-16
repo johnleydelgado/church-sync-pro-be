@@ -62,6 +62,9 @@ deploy-prd: require-prod-branch
 	make deploy-backend GOOGLE_CLOUD_PROJECT=${STAGING_PROJECT} NODE_ENV=production PROJECT_NAME=csp-be-prd ENV_VAR=.env.production \
 	VPC_CONNECTOR="--vpc-connector projects/${STAGING_PROJECT}/locations/us-central1/connectors/csp-vpc"
 
+# The database server allows 50 connections, shared by staging and production, and every core
+# instance holds its whole pool open: 10 by default, with a new instance per 5 requests in flight.
+# Four prod instances held 38 on 2026-10-16 and the backend got none. 4 x 3 instances caps it at 12.
 deploy-supertoken:
 	docker build --platform linux/amd64 --cache-from gcr.io/${GOOGLE_CLOUD_PROJECT}/supertokens-postgresql:4.4 -t gcr.io/${GOOGLE_CLOUD_PROJECT}/supertokens-postgresql:4.4  -f DockerfileST .
 	docker push gcr.io/${GOOGLE_CLOUD_PROJECT}/supertokens-postgresql:4.4
@@ -71,13 +74,13 @@ deploy-supertoken:
 		--port 3567 \
 		--cpu 1 \
 		--memory 256Mi \
-		--concurrency 5 \
-		--max-instances 10 \
+		--concurrency 40 \
+		--max-instances 3 \
 		--timeout 1200 \
 		--ingress all \
 		--allow-unauthenticated \
 		${VPC_CONNECTOR} \
-		--set-env-vars POSTGRESQL_CONNECTION_URI='$(SUPERTOKENS_DB_URI)',SUPERTOKENS_PORT=3567,API_KEYS=$(SUPERTOKENS_API_KEY) \
+		--set-env-vars POSTGRESQL_CONNECTION_URI='$(SUPERTOKENS_DB_URI)',SUPERTOKENS_PORT=3567,API_KEYS=$(SUPERTOKENS_API_KEY),POSTGRESQL_CONNECTION_POOL_SIZE=4 \
 		--project ${GOOGLE_CLOUD_PROJECT}
 	gcloud run services update-traffic ${SUPER_TOKEN} --to-latest --project ${GOOGLE_CLOUD_PROJECT} --platform managed --region us-central1
 
