@@ -464,7 +464,7 @@ export const updateUserToken = async (req: Request, res: Response) => {
       logger.error('updateUserToken reached without a church access check', { path: req.path });
       return responseError({ res, code: 403, message: "You don't have access to this church." });
     }
-    if (!['qbo', 'pco', 'stripe'].includes(token_type)) {
+    if (!['qbo', 'pco'].includes(token_type)) {
       return responseError({ res, code: 400, message: 'Unknown connection type' });
     }
     // A reconnect overwrites the saved connection, so a call without a usable token must not wipe one that works.
