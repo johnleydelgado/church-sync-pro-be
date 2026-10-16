@@ -65,8 +65,6 @@ const UNGUARDED: Record<string, string> = {
 /** With no session at all. Keyed by handler. */
 const PUBLIC: Record<string, string> = {
   tesst: '`/` answers "working"',
-  authStripe: 'Stripe OAuth start (Stripe Connect is not in use)',
-  callBackStripe: 'Stripe OAuth callback',
   sendPasswordReset: 'before sign-in',
   resetPassword: 'before sign-in; the mailed token is the credential',
   checkValidInvitation: 'before sign-in; the invitation token is the credential',
@@ -179,4 +177,11 @@ it('checks the church by churchId on the /church/ routes, and by account on ever
 
 it('no longer mounts updateUser', () => {
   expect(mounted.map((r) => r.handler)).not.toContain('updateUser');
+});
+
+it('no longer mounts Stripe Connect (authStripe / callBackStripe): CSP cannot use it', () => {
+  const stripeConnect = mounted.filter(
+    (r) => ['/authStripe', '/callBackStripe'].includes(r.path) || ['authStripe', 'callBackStripe'].includes(r.handler),
+  );
+  expect(stripeConnect.map(label)).toEqual([]);
 });
