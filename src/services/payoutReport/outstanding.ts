@@ -67,6 +67,8 @@ export interface PcoGift {
   fund: string | null;
   /** None of its funds is mapped: the engine leaves such a gift out of the day's entry whole. */
   unmapped?: boolean;
+  /** Planning Center's person for the gift: null = no person ("Anonymous Donor"), undefined = not known. */
+  personId?: string | null;
 }
 
 /** A QuickBooks entry in the Clearing account (General Ledger detail), amount in the account's own sign. */

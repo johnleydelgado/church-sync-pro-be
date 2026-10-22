@@ -20,7 +20,12 @@ jest.mock('../../dailyDonationSync', () => ({
 jest.mock('../../donationSweep', () => ({ ...jest.requireActual('../../donationSweep'), fetchDonationsForRange: jest.fn() }));
 jest.mock('../../qboClient', () => ({ getQboTokensForUser: jest.fn() }));
 jest.mock('../../../utils/quickBookApi', () => ({ __esModule: true, default: jest.fn() }));
-jest.mock('../../../utils/logger', () => ({ createLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }) }));
+jest.mock('../../../utils/logger', () => {
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  return { createLogger: () => log };
+});
+// Planning Center's people endpoint (donor names); everything else that would use axios is faked above.
+jest.mock('axios', () => ({ __esModule: true, default: { get: jest.fn() } }));
 
 import Users from '../../../db/models/user';
 import UserSettings from '../../../db/models/userSettings';
@@ -32,6 +37,8 @@ import { getOrgTimeZone } from '../../dailyDonationSync';
 import { fetchDonationsForRange } from '../../donationSweep';
 import { getQboTokensForUser } from '../../qboClient';
 import quickBookApi from '../../../utils/quickBookApi';
+import axios from 'axios';
+import { createLogger } from '../../../utils/logger';
 import {
   getOutstandingDeposits,
   OutstandingRequestError,
@@ -50,7 +57,9 @@ const m = {
   sweep: fetchDonationsForRange as jest.Mock,
   qboTokens: getQboTokensForUser as jest.Mock,
   qbApi: quickBookApi as unknown as jest.Mock,
+  people: axios.get as jest.Mock,
 };
+const log = createLogger('test') as any;
 
 const EMAIL = 'church@example.test';
 const NOV_5 = new Date('2026-11-05T18:00:00Z');
@@ -72,7 +81,8 @@ const givingRow = (id: number, day: string, gross: number, fee: number, uploadId
   netCents: String(gross - fee),
   status: 'giving_covered',
 });
-const donation = (id: number, gross: number, fee: number, receivedAt: string, o: any = {}) => ({
+/** person: an id (default `p<id>`), null for "no person", or 'absent' when the payload has no relationship. */
+const donation = (id: number, gross: number, fee: number, receivedAt: string, o: any = {}, person: string | null = `p${id}`) => ({
   id: String(id),
   type: 'Donation',
   attributes: {
@@ -85,7 +95,10 @@ const donation = (id: number, gross: number, fee: number, receivedAt: string, o:
     completed_at: receivedAt,
     ...o,
   },
-  relationships: { designations: { data: [{ id: `des-${id}` }] } },
+  relationships: {
+    designations: { data: [{ id: `des-${id}` }] },
+    ...(person === 'absent' ? {} : { person: { data: person === null ? null : { type: 'Person', id: person } } }),
+  },
 });
 const included = (ids: number[], unmappedIds: number[] = []) => [
   { type: 'Fund', id: 'f1', attributes: { name: 'General' } },
@@ -137,6 +150,10 @@ beforeEach(() => {
   m.zone.mockResolvedValue('America/Denver');
   m.sweep.mockResolvedValue({ donations: [], included: [] });
   m.qboTokens.mockResolvedValue({});
+  m.people.mockImplementation(async (url: string) => {
+    const id = url.split('/').pop();
+    return { data: { data: { type: 'Person', id, attributes: { first_name: 'Given', last_name: `Family-${id}` } } } };
+  });
   account = { ...CLEARING, CurrentBalance: 0 };
   glReport = { Columns: { Column: [] }, Rows: {} };
   qbo();
@@ -342,5 +359,88 @@ describe('as of when', () => {
     expect(m.uploads).not.toHaveBeenCalled();
     expect(m.token).not.toHaveBeenCalled();
     expect(m.qbApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('donor names for gifts no payout report names', () => {
+  beforeEach(() => {
+    m.ledger.mockResolvedValue([ledger('2026-10-30', 21000, 700)]);
+    m.uploads.mockResolvedValue([
+      { id: 1, payoutFrom: '2026-10-01', payoutTo: '2026-10-31', lastDay: '2026-10-29' },
+      { id: 2, payoutFrom: '2026-11-01', payoutTo: '2026-11-30', lastDay: '2026-10-30' },
+    ]);
+    // Gift 2 is in November's file (named there); 3, 4, 5, 6 are in no file.
+    m.rows.mockResolvedValue([givingRow(2, '2026-10-30', 5000, 175, 2)]);
+  });
+  const day = (donations: any[]) => m.sweep.mockResolvedValue({ donations, included: included(donations.map((d) => Number(d.id))) });
+  const at = '2026-10-30T16:00:00Z';
+
+  test("named as Planning Center shows them, each person looked up once; a payout row's name is kept", async () => {
+    day([
+      donation(2, 5000, 175, at),
+      donation(3, 6000, 200, at, {}, 'p77'),
+      donation(4, 4000, 150, at, {}, 'p77'), // the same donor twice
+      donation(5, 3000, 100, at, {}, 'p88'),
+      donation(6, 3000, 75, at, {}, 'p99'),
+    ]);
+    const r = await getOutstandingDeposits({ email: EMAIL, month: '2026-10', now: NOV_5 });
+    expect(r.items.map((i) => [i.ref, i.name])).toEqual([
+      ['Donation #2', 'Donor 2'],
+      ['Donation #3', 'Given Family-p77'],
+      ['Donation #4', 'Given Family-p77'],
+      ['Donation #5', 'Given Family-p88'],
+      ['Donation #6', 'Given Family-p99'],
+    ]);
+    expect(m.people.mock.calls.map((c) => c[0]).sort()).toEqual([
+      'https://api.planningcenteronline.com/giving/v2/people/p77',
+      'https://api.planningcenteronline.com/giving/v2/people/p88',
+      'https://api.planningcenteronline.com/giving/v2/people/p99',
+    ]);
+    expect(m.people.mock.calls[0][1]).toEqual({ headers: { Authorization: 'Bearer pco' } });
+  });
+
+  test('no person on the gift: "Anonymous Donor", as Planning Center shows it; no person in the payload: blank', async () => {
+    day([donation(2, 5000, 175, at), donation(3, 6000, 200, at, {}, null), donation(4, 4000, 150, at, {}, 'absent'), donation(5, 6000, 175, at)]);
+    const r = await getOutstandingDeposits({ email: EMAIL, month: '2026-10', now: NOV_5 });
+    expect(r.items.map((i) => [i.ref, i.name])).toEqual([
+      ['Donation #2', 'Donor 2'],
+      ['Donation #3', 'Anonymous Donor'],
+      ['Donation #4', null],
+      ['Donation #5', 'Given Family-p5'],
+    ]);
+    expect(m.people).toHaveBeenCalledTimes(1);
+  });
+
+  test('a person Planning Center no longer has is left blank', async () => {
+    day([donation(2, 5000, 175, at), donation(3, 6000, 200, at), donation(4, 4000, 150, at), donation(5, 6000, 175, at)]);
+    m.people.mockImplementation(async (url: string) => {
+      const id = url.split('/').pop();
+      if (id === 'p3') throw Object.assign(new Error('Not Found'), { response: { status: 404 } });
+      return { data: { data: { type: 'Person', id, attributes: { first_name: 'Given', last_name: `Family-${id}` } } } };
+    });
+    const r = await getOutstandingDeposits({ email: EMAIL, month: '2026-10', now: NOV_5 });
+    expect(r.items.map((i) => i.name)).toEqual(['Donor 2', null, 'Given Family-p4', 'Given Family-p5']);
+  });
+
+  test('the lookup failing keeps the report, names blank, and is logged - nothing else', async () => {
+    day([donation(2, 5000, 175, at), donation(3, 6000, 200, at), donation(4, 4000, 150, at), donation(5, 6000, 175, at)]);
+    m.people.mockRejectedValue(Object.assign(new Error('Unauthorized'), { response: { status: 401 } }));
+    const r = await getOutstandingDeposits({ email: EMAIL, month: '2026-10', now: NOV_5 });
+    expect(r.items.map((i) => [i.ref, i.name])).toEqual([
+      ['Donation #2', 'Donor 2'],
+      ['Donation #3', null],
+      ['Donation #4', null],
+      ['Donation #5', null],
+    ]);
+    expect(r.inTransit.gifts.count).toBe(4);
+    expect(r).not.toHaveProperty('message');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/donor names stay blank/), expect.objectContaining({ status: 401 }));
+  });
+
+  test('every gift already named: no people lookups at all', async () => {
+    m.rows.mockResolvedValue([givingRow(2, '2026-10-30', 21000, 700, 2)]);
+    day([donation(2, 21000, 700, at)]);
+    await getOutstandingDeposits({ email: EMAIL, month: '2026-10', now: NOV_5 });
+    expect(m.people).not.toHaveBeenCalled();
   });
 });

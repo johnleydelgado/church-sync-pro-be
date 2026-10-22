@@ -25,7 +25,7 @@ yarn db:migrate:undo:all     # undo all
 ```
 
 There IS a test suite (the "no test suite" note here was stale): `npx jest` runs the unit
-suites — 716 tests / 64 suites as of 2026-10-22. Read the **`Test Suites:`** line, not just
+suites — 729 tests / 65 suites as of 2026-10-22. Read the **`Test Suites:`** line, not just
 `Tests:` — a suite that fails to LOAD reports 0 tests while the others still read green.
 
 Integration tests are a separate config and are EXCLUDED from `npx jest`
@@ -144,7 +144,12 @@ contract: `docs/plans/2026-10-08-registrations-import.md` in the frontend repo (
   comes from Planning Center only for posted days the files don't settle, plus days with
   `giving_not_posted` lines (same selection as the engine, and gifts in unmapped funds are never
   in the posted set; a Planning Center failure is a 502 with a sentence). A day whose posted total
-  two different sets of gifts would explain is one `day_unresolved` line, never a guess. QuickBooks' balance on D =
+  two different sets of gifts would explain is one `day_unresolved` line, never a guess. Gift
+  lines no payout report names get the donor's name from `GET /giving/v2/people/{id}`
+  (`donorNames.ts`: donations can't include their person and the people list can't be filtered
+  by id, so one request per person - 4 at a time, at most 100, `withRetry`, stopping and logging
+  at the first failure; names then stay blank). A null `person` is "Anonymous Donor", as
+  Planning Center shows it. Checked live on staging's Planning Center 2026-10-22. QuickBooks' balance on D =
   `CurrentBalance` less the General Ledger detail rows dated after D, read only from the section
   whose header names the clearing account; unreadable is `qbo.balance: null` + a message, not a
   500. Checked on Active's September files: 18 gifts / $4,689.62, 19 / $6,439.32 with the 9/30

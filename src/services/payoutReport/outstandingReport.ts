@@ -13,6 +13,7 @@ import { dayKey, wasStripeElectronic } from '../../utils/mapping';
 import { createLogger } from '../../utils/logger';
 import { addDays, monthEndOf, shortDay } from './days';
 import { openPlanningCenter, PlanningCenterSession, todayAnywhere } from './planningCenterSession';
+import { ANONYMOUS_DONOR, lookupPersonNames } from './donorNames';
 import {
   ClearingOnDay,
   computeOutstanding,
@@ -183,11 +184,60 @@ export const loadPlanningCenterGifts = async (
         fund: funds.length ? funds.join(', ') : null,
         // Funds unknown (designations not side-loaded): the engine looks them up, so assume mapped.
         unmapped: funds.length > 0 && funds.every((f) => !mappedFunds.has(f as string)),
+        personId: personOf(d),
       });
       out.set(day, list);
     }
   }
   return out;
+};
+
+/** The donation's person: an id, null when Planning Center says there is none, undefined when not given. */
+const personOf = (d: any): string | null | undefined => {
+  const rel = d?.relationships?.person;
+  if (!rel || !('data' in rel)) return undefined;
+  return rel.data?.id ? String(rel.data.id) : null;
+};
+
+/**
+ * Names for the gift lines no payout report names - the gifts not paid out yet, which are what the
+ * report exists to list. From Planning Center's people (`lookupPersonNames`: a few at a time, each
+ * person once); a gift with no person is "Anonymous Donor", as Planning Center shows it. If the
+ * lookup fails the lines stay blank and the report stands; the failure is logged, not shown.
+ */
+export const fillDonorNames = async (
+  report: OutstandingReport,
+  gifts: Map<string, PcoGift[]>,
+  pc: PlanningCenterSession,
+): Promise<void> => {
+  const personByGift = new Map<string, string | null | undefined>();
+  for (const list of gifts.values()) for (const g of list) personByGift.set(g.id, g.personId);
+  const unnamed = report.items.filter(
+    (i) => (i.kind === 'gift' || i.kind === 'gift_refund') && !i.name && i.ref?.startsWith('Donation #'),
+  );
+  const personFor = (ref: string) => personByGift.get(ref.slice('Donation #'.length));
+  const people: string[] = [];
+  for (const item of unnamed) {
+    const person = personFor(item.ref as string);
+    if (person === null) item.name = ANONYMOUS_DONOR;
+    else if (person) people.push(person);
+  }
+  if (!people.length) return;
+  try {
+    const config = await pc.config();
+    if (!config) {
+      logger.warn('fillDonorNames: no Planning Center connection; donor names stay blank', { lines: people.length });
+      return;
+    }
+    const names = await lookupPersonNames(config, people);
+    for (const item of unnamed) {
+      const person = item.name ? null : personFor(item.ref as string);
+      const name = person ? names.get(person) : null;
+      if (name) item.name = name;
+    }
+  } catch (e) {
+    logger.warn('fillDonorNames: donor names stay blank', { error: e instanceof Error ? e.message : String(e) });
+  }
 };
 
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -312,5 +362,7 @@ export const getOutstandingDeposits = async (p: { email: string; month: unknown;
         truedUpAt: settings?.transitionTruedUpAt ? new Date(settings.transitionTruedUpAt).toISOString() : null,
       }
     : null;
-  return computeOutstanding(input);
+  const report = computeOutstanding(input);
+  await fillDonorNames(report, input.gifts, pc);
+  return report;
 };
