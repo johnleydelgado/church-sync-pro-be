@@ -1,77 +1,100 @@
 /**
- * Backend-side helpers for the staging end-to-end run (scripts/staging-e2e/run.sh).
- * Each subcommand prints one JSON line. Everything here is read-only against staging
- * except `mint`, which creates an email-verification token - the same thing the
- * verification email carries - so the run does not have to wait on an inbox.
+ * Backend-side helpers for the end-to-end run (scripts/staging-e2e/run.sh). Each subcommand
+ * prints one JSON line. Everything here is read-only except `mint`, which creates an
+ * email-verification token - the same thing the verification email carries - so the run does
+ * not have to wait on an inbox.
  *
  *   NODE_ENV=staging DOTENV_CONFIG_PATH=.env.staging npx ts-node -r dotenv/config \
- *     scripts/staging-e2e/helper.ts <mint|invite-link|client-row|invitee-row> <arg>
+ *     scripts/staging-e2e/helper.ts <command> <args...>
+ *
+ *   mint <email>               a verification token for that login
+ *   churches <email>           the login's Users row and every church it is a member of
+ *   member <churchId> <email>  that address's ChurchMembers row on the church (joined or invited)
+ *   church <churchId>          one Churches row
+ *
+ * run.sh picks NODE_ENV and the env file (E2E_ENV / E2E_ENV_FILE), so a local stack works too.
  */
 /* eslint-disable @typescript-eslint/no-var-requires */
 const supertokens = require('supertokens-node');
 import EmailVerification from 'supertokens-node/recipe/emailverification';
-import { buildSupertokensConfig, websiteDomain } from '../../src/supertokensConfig';
+import { buildSupertokensConfig } from '../../src/supertokensConfig';
 import sequelize from '../../src/db';
 const ThirdPartyEmailPassword = require('supertokens-node/recipe/thirdpartyemailpassword');
 
-const { INVITATION_URL } = process.env;
 const out = (o: unknown) => console.log(JSON.stringify(o));
-const rows = async (sql: string, replacements: Record<string, unknown>) => (await sequelize.query(sql, { replacements }))[0] as any[];
+const rows = async (sql: string, replacements: Record<string, unknown>) =>
+  (await sequelize.query(sql, { replacements }))[0] as any[];
 
-const commands: Record<string, (arg: string) => Promise<void>> = {
-  async mint(email) {
-    supertokens.init(buildSupertokensConfig());
-    const users: Array<{ id: string }> = await ThirdPartyEmailPassword.getUsersByEmail(email);
-    if (!users.length) return out({ email, error: 'no SuperTokens user with this email' });
-    const verified = await EmailVerification.isEmailVerified(users[0].id, email);
-    const t = await EmailVerification.createEmailVerificationToken(users[0].id, email);
-    out({
-      email,
-      verified,
-      link: t.status === 'OK' ? `${websiteDomain}/auth/verify-email?token=${t.token}&rid=emailverification` : null,
-      status: t.status,
-    });
+const commands: Record<string, { args: number; run: (...args: string[]) => Promise<void> }> = {
+  mint: {
+    args: 1,
+    async run(email) {
+      supertokens.init(buildSupertokensConfig());
+      const users: Array<{ id: string }> = await ThirdPartyEmailPassword.getUsersByEmail(email);
+      if (!users.length) return out({ email, error: 'no SuperTokens user with this email' });
+      const verified = await EmailVerification.isEmailVerified(users[0].id, email);
+      const t = await EmailVerification.createEmailVerificationToken(users[0].id, email);
+      // The browser builds the link on the frontend under test: `${base}/auth/verify-email?token=...`,
+      // the same path the email carries.
+      out({ email, verified, status: t.status, token: t.status === 'OK' ? t.token : null });
+    },
   },
 
-  async 'invite-link'(email) {
-    const [r] = await rows(
-      'SELECT "invitationToken", "inviteSent", "inviteAccepted", "clientId" FROM "bookkeeper" WHERE email = :email ORDER BY id DESC LIMIT 1',
-      { email },
-    );
-    if (!r) return out({ email, error: 'no invitation row' });
-    // Built exactly as controller/index.ts builds the link in the email.
-    out({ ...r, link: `${INVITATION_URL}?bookkeeperEmail=${encodeURIComponent(email)}&invitationToken=${r.invitationToken}` });
+  churches: {
+    args: 1,
+    async run(email) {
+      const [user] = await rows('SELECT id, role FROM "Users" WHERE lower(email) = lower(:email) ORDER BY id LIMIT 1', {
+        email,
+      });
+      if (!user) return out({ email, error: 'no Users row' });
+      const churches = await rows(
+        `SELECT c.id, c.name, c."isActive", c."ownerUserId", a.email AS "accountEmail",
+                m.role AS "memberRole", m."inviteAccepted"
+         FROM "ChurchMembers" m
+         JOIN "Churches" c ON c.id = m."churchId"
+         LEFT JOIN "Users" a ON a.id = c."ownerUserId"
+         WHERE m."userId" = :userId ORDER BY c.id`,
+        { userId: user.id },
+      );
+      out({ userId: user.id, role: user.role, churches });
+    },
   },
 
-  async 'client-row'(churchName) {
-    out(
-      await rows(
-        `SELECT u.id, u.email, u.role, b."userId" AS "bookkeeperUserId", b."inviteAccepted"
-         FROM "Users" u LEFT JOIN "bookkeeper" b ON b."clientId" = u.id
-         WHERE u."churchName" = :churchName ORDER BY u.id`,
-        { churchName },
-      ),
-    );
+  member: {
+    args: 2,
+    async run(churchId, email) {
+      const [r] = await rows(
+        `SELECT m.id, m.role, m."userId", m."inviteAccepted", m."invitedEmail", m."invitationToken",
+                m."integrationAccessEnabled", u.email AS "userEmail", u.role AS "userRole"
+         FROM "ChurchMembers" m LEFT JOIN "Users" u ON u.id = m."userId"
+         WHERE m."churchId" = :churchId
+           AND (lower(u.email) = lower(:email) OR lower(m."invitedEmail") = lower(:email))
+         ORDER BY m.id DESC LIMIT 1`,
+        { churchId: Number(churchId), email },
+      );
+      out(r ?? { churchId: Number(churchId), email, none: true });
+    },
   },
 
-  async 'invitee-row'(email) {
-    const [r] = await rows(
-      `SELECT b."userId", b."inviteAccepted", u.role
-       FROM "bookkeeper" b LEFT JOIN "Users" u ON u.id = b."userId"
-       WHERE b.email = :email ORDER BY b.id DESC LIMIT 1`,
-      { email },
-    );
-    out(r ?? { email, error: 'no invitation row' });
+  church: {
+    args: 1,
+    async run(churchId) {
+      const [r] = await rows('SELECT id, name, "isActive", "ownerUserId" FROM "Churches" WHERE id = :id', {
+        id: Number(churchId),
+      });
+      out(r ?? { id: Number(churchId), none: true });
+    },
   },
 };
 
-const [cmd, arg] = process.argv.slice(2);
-const fn = commands[cmd];
-if (!fn || !arg) {
-  console.error(`usage: helper.ts <${Object.keys(commands).join('|')}> <arg>`);
+const [name, ...args] = process.argv.slice(2);
+const cmd = commands[name];
+if (!cmd || args.length !== cmd.args || args.some((a) => !a)) {
+  console.error(`usage: helper.ts <${Object.keys(commands).join('|')}> <args...>`);
   process.exit(2);
 }
-fn(arg)
+cmd
+  .run(...args)
   .then(() => process.exit(0))
   .catch((e) => {
     out({ error: e?.message ?? String(e) });
