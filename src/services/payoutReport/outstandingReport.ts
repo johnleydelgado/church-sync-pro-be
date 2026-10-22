@@ -86,6 +86,8 @@ export const readClearingOnDay = async (
       start_date: p.from,
       // Far enough ahead to catch anything dated after today, which CurrentBalance also includes.
       end_date: `${Number(p.today.slice(0, 4)) + 5}-12-31`,
+      // CurrentBalance is accrual; a cash-basis company's default report would not match it.
+      accounting_method: 'Accrual',
       columns: GL_COLUMNS,
     });
     if (!account.name && facts?.Name) account.name = String(facts.Name);
@@ -101,6 +103,10 @@ export const readClearingOnDay = async (
         accountId: account.id,
       });
       return unread(`QuickBooks answered with another account's figures, so the Clearing balance on ${longDay(p.asOf)} isn't shown.`);
+    }
+    if (gl === 'unreadable') {
+      logger.error('readClearingOnDay: the General Ledger report has rows CSP could not read', { email, accountId: account.id });
+      return unread(`QuickBooks' report for the Clearing account couldn't be read, so the balance on ${longDay(p.asOf)} isn't shown.`);
     }
     const current = Number(gl.withSubAccounts ? facts?.CurrentBalanceWithSubAccounts ?? facts?.CurrentBalance : facts?.CurrentBalance);
     if (!Number.isFinite(current)) {
@@ -121,11 +127,13 @@ export const readClearingOnDay = async (
 /**
  * Planning Center's gifts for the given windows, by the church's local day, selected exactly as the
  * posting engine selects them (`wasStripeElectronic`: card or ACH, succeeded, a Stripe fee - here
- * refunded or not, since a gift refunded after it was posted is still in that day's entry).
+ * refunded or not, since a gift refunded after it was posted is still in that day's entry). A gift
+ * none of whose funds is in `mappedFunds` is marked unmapped: the engine leaves it out whole.
  */
 export const loadPlanningCenterGifts = async (
   pc: PlanningCenterSession,
   windows: DayWindow[],
+  mappedFunds: Set<string>,
 ): Promise<Map<string, PcoGift[]>> => {
   const out = new Map<string, PcoGift[]>();
   if (!windows.length) return out;
@@ -173,6 +181,8 @@ export const loadPlanningCenterGifts = async (
         completedAt: a.completed_at ?? null,
         refunded: a.refunded === true,
         fund: funds.length ? funds.join(', ') : null,
+        // Funds unknown (designations not side-loaded): the engine looks them up, so assume mapped.
+        unmapped: funds.length > 0 && funds.every((f) => !mappedFunds.has(f as string)),
       });
       out.set(day, list);
     }
@@ -254,11 +264,25 @@ export const getOutstandingDeposits = async (p: { email: string; month: unknown;
   );
   input.rows = ((await PayoutTransaction.findAll({
     where: { userId },
-    attributes: ['rowKey', 'uploadId', 'day', 'type', 'source', 'name', 'fundOrSignup', 'grossCents', 'feeCents', 'netCents', 'status'],
+    attributes: [
+      'rowKey',
+      'uploadId',
+      'payoutUploadId',
+      'day',
+      'type',
+      'source',
+      'name',
+      'fundOrSignup',
+      'grossCents',
+      'feeCents',
+      'netCents',
+      'status',
+    ],
   })) as any[]).map(
     (r): StoredPayoutRow => ({
       rowKey: String(r.rowKey),
       uploadId: r.uploadId == null ? null : Number(r.uploadId),
+      payoutUploadId: r.payoutUploadId == null ? null : Number(r.payoutUploadId),
       day: String(r.day),
       type: String(r.type),
       source: String(r.source),
@@ -274,7 +298,11 @@ export const getOutstandingDeposits = async (p: { email: string; month: unknown;
 
   // Planning Center only for the days the payout files don't settle.
   input.examined = planningCenterWindows(daysNeedingPlanningCenter(input));
-  input.gifts = await loadPlanningCenterGifts(pc, input.examined);
+  // The funds the engine can post: a mapping row with an account (settingsData, Mapping -> Donation).
+  const mappedFunds = new Set<string>(
+    ((settings?.settingsData as any[]) ?? []).filter((m) => m?.fundName && m?.account?.value).map((m) => String(m.fundName)),
+  );
+  input.gifts = await loadPlanningCenterGifts(pc, input.examined, mappedFunds);
 
   input.clearing = await readClearingOnDay(p.email, slot, { from: startDay, asOf, today });
   input.switchOver = goLiveDay

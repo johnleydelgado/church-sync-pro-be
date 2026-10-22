@@ -31,6 +31,8 @@ export interface UploadRange {
 export interface StoredPayoutRow {
   rowKey: string;
   uploadId: number | null;
+  /** The upload with the earliest payout range the row has appeared in; null on older rows (use uploadId). */
+  payoutUploadId?: number | null;
   day: string; // charge or refund date
   type: string; // 'Charge' | 'Refund' | ...
   source: string; // 'Giving' | 'Registrations' | ...
@@ -63,6 +65,8 @@ export interface PcoGift {
   completedAt: string | null;
   refunded: boolean;
   fund: string | null;
+  /** None of its funds is mapped: the engine leaves such a gift out of the day's entry whole. */
+  unmapped?: boolean;
 }
 
 /** A QuickBooks entry in the Clearing account (General Ledger detail), amount in the account's own sign. */
@@ -177,7 +181,8 @@ const IN_CLEARING = ['posted', 'resolved'];
 const ID_IN_KEY = /^(donation|registration):(\d+):/;
 
 const paidOutOf = (row: StoredPayoutRow, uploads: Map<number, UploadRange>): PaidOut => {
-  const u = row.uploadId == null ? undefined : uploads.get(Number(row.uploadId));
+  const id = row.payoutUploadId ?? row.uploadId;
+  const u = id == null ? undefined : uploads.get(Number(id));
   if (u?.payoutFrom && u?.payoutTo) return { from: u.payoutFrom, to: u.payoutTo };
   // Range unknown (an upload from before the payout dates were asked for): treated as paid out by
   // the last charge date in its file. Coverage counts these uploads as gaps, so the report says
@@ -259,10 +264,13 @@ export const coverageOf = (from: string, to: string, uploads: UploadRange[]) => 
 const postedNet = (l: LedgerDay) => Number(l.postedGrossCents) - Number(l.postedFeeCents);
 
 /**
- * Posted days (start..D) whose giving is not all paid out by D, by the files alone: a day whose
- * posted net equals the net of its giving rows in files paid out by D is done, without asking
- * Planning Center. Every other posted day needs Planning Center's gift list to say which gifts are
- * still in transit.
+ * The days (start..D) the report must read from Planning Center.
+ *
+ * A posted day whose posted net equals the net of its giving rows in files paid out by D is done
+ * by the files alone. Every other posted day needs Planning Center's gift list to say which gifts
+ * are still in transit. So does any day with a giving line an upload found not (fully) posted: the
+ * files alone can't settle it (a paid gift that was never posted can match an unpaid one that was),
+ * and it is where giving "not in QuickBooks yet" is.
  */
 export const daysNeedingPlanningCenter = (p: {
   asOf: string;
@@ -271,16 +279,21 @@ export const daysNeedingPlanningCenter = (p: {
   rows: StoredPayoutRow[];
   uploads: UploadRange[];
 }): string[] => {
-  if (!p.startDay || p.asOf < p.startDay) return [];
+  const start = p.startDay;
+  if (!start || p.asOf < start) return [];
+  const inPeriod = (day: string) => day >= start && day <= p.asOf;
   const idx = indexRows(p.rows, p.uploads);
-  return p.ledgers
-    .filter((l) => l.day >= (p.startDay as string) && l.day <= p.asOf && Number(l.postedGrossCents) > 0)
+  const unsettled = p.ledgers
+    .filter((l) => inPeriod(l.day) && Number(l.postedGrossCents) > 0)
     .filter((l) => {
       const paid = (idx.givingByDay.get(l.day) ?? []).filter((x) => paidBy(x.paidOut, p.asOf));
       return sum(paid, (x) => Number(x.row.netCents)) !== postedNet(l);
     })
-    .map((l) => l.day)
-    .sort();
+    .map((l) => l.day);
+  const notPostedWhenUploaded = p.rows
+    .filter((r) => r.source === 'Giving' && r.type === 'Charge' && r.status === 'giving_not_posted' && inPeriod(r.day))
+    .map((r) => r.day);
+  return [...new Set([...unsettled, ...notPostedWhenUploaded])].sort();
 };
 
 /**
@@ -311,37 +324,50 @@ const byCompletedLatestFirst = (a: PcoGift, b: PcoGift) => {
 /**
  * Which of a day's gifts CSP's posted total is made of. CSP keeps day totals, not gift ids.
  *
+ * A gift in an unmapped fund is never part of it: the engine leaves such a gift out whole. Of the
+ * rest:
  *  - Planning Center's total equals what was posted: every gift is in Clearing (a gift refunded
  *    since stays in - its refund is a separate entry on the refund day).
  *  - Without the gifts refunded since, it equals what was posted: those were refunded before the
  *    day was posted, so never in it.
  *  - Planning Center has more (late ACH not added yet): the gifts that completed last were not
  *    there when the day was posted - drop them, latest first, until what is left equals the posted
- *    total. Those are "not in QuickBooks yet".
- *  - Nothing adds up exactly (a failed ACH after posting, a gift dropped for an unmapped fund that
- *    did not complete last): null - the day is shown as one line rather than guessed at.
+ *    total.
+ * Settled gifts left out are "not in QuickBooks yet". When nothing adds up exactly (a failed ACH
+ * after posting), or two different sets of gifts would, the answer is null: the day is shown as one
+ * line rather than guessed at.
  */
 export const resolvePostedGifts = (
   gifts: PcoGift[],
   postedGrossCents: number,
 ): { posted: PcoGift[]; notYet: PcoGift[] } | null => {
   const gross = (gs: PcoGift[]) => sum(gs, (g) => g.grossCents);
+  const postable = gifts.filter((g) => !g.unmapped);
   const live = gifts.filter((g) => !g.refunded);
-  if (postedGrossCents === 0) return { posted: [], notYet: live };
-  if (gross(gifts) === postedGrossCents) return { posted: gifts, notYet: [] };
-  if (gross(live) === postedGrossCents) return { posted: live, notYet: [] };
-  const latestFirst = [...live].sort(byCompletedLatestFirst);
-  for (const base of [gifts, live]) {
+  const answer = (posted: PcoGift[]) => ({ posted, notYet: live.filter((g) => !posted.includes(g)) });
+  if (postedGrossCents === 0) return answer([]);
+
+  const candidates: PcoGift[][] = [];
+  const livePostable = postable.filter((g) => !g.refunded);
+  if (gross(postable) === postedGrossCents) candidates.push(postable);
+  if (gross(livePostable) === postedGrossCents) candidates.push(livePostable);
+  const latestFirst = [...livePostable].sort(byCompletedLatestFirst);
+  for (const base of [postable, livePostable]) {
     let kept = base;
     let total = gross(base);
     for (const g of latestFirst) {
       if (total <= postedGrossCents) break;
       kept = kept.filter((k) => k !== g);
       total -= g.grossCents;
-      if (total === postedGrossCents) return { posted: kept, notYet: live.filter((x) => !kept.includes(x)) };
+      if (total === postedGrossCents) {
+        candidates.push(kept);
+        break;
+      }
     }
   }
-  return null;
+  const key = (gs: PcoGift[]) => gs.map((g) => g.id).sort().join(',');
+  const distinct = [...new Map(candidates.map((c) => [key(c), c])).values()];
+  return distinct.length === 1 ? answer(distinct[0]) : null;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -458,12 +484,13 @@ export const computeOutstanding = (input: OutstandingInput): OutstandingReport =
       } else {
         // Can't tell which gifts the posted total is made of: one line for whatever of it is not
         // known to be paid out by D.
-        const ids = gifts ? new Set(gifts.map((g) => g.id)) : null;
+        // Only gifts the engine could have posted count as paid, and never more than was posted.
+        const ids = gifts ? new Set(gifts.filter((g) => !g.unmapped).map((g) => g.id)) : null;
         const paid = ids
           ? [...ids].map((id) => idx.giftPaid.get(id)).filter((x): x is Placed => !!x && paidBy(x.paidOut, D))
           : (idx.givingByDay.get(day) ?? []).filter((x) => paidBy(x.paidOut, D));
-        const grossCents = postedGross - sum(paid, (x) => Number(x.row.grossCents));
-        const netCents = postedGross - postedFee - sum(paid, (x) => Number(x.row.netCents));
+        const grossCents = Math.max(0, postedGross - sum(paid, (x) => Number(x.row.grossCents)));
+        const netCents = Math.max(0, postedGross - postedFee - sum(paid, (x) => Number(x.row.netCents)));
         if (grossCents !== 0 || netCents !== 0) {
           items.push({
             day,
@@ -488,11 +515,13 @@ export const computeOutstanding = (input: OutstandingInput): OutstandingReport =
       const rows = idx.givingRefundsByDay.get(day) ?? [];
       const paid = rows.filter((x) => paidBy(x.paidOut, D));
       const paidNet = -sum(paid, (x) => Number(x.row.netCents));
-      if (paidNet !== reversedNet) {
+      // More taken from payouts than CSP reversed means refunds CSP never posted (an unmapped
+      // fund): nothing of CSP's is left in transit for the day.
+      if (paidNet < reversedNet) {
         if (-sum(rows, (x) => Number(x.row.netCents)) === reversedNet) {
           for (const r of rows) if (!paidBy(r.paidOut, D)) items.push(fromRow(r, 'gift_refund', r.paidOut));
         } else {
-          const grossCents = -(refundedGross + sum(paid, (x) => Number(x.row.grossCents)));
+          const grossCents = Math.min(0, -(refundedGross + sum(paid, (x) => Number(x.row.grossCents))));
           const netCents = -(reversedNet - paidNet);
           items.push({
             day,
@@ -649,7 +678,7 @@ export interface QboAccountFacts {
 export const readGeneralLedger = (
   report: any,
   account: QboAccountFacts,
-): { rows: GlEntry[]; withSubAccounts: boolean } | 'wrong_account' => {
+): { rows: GlEntry[]; withSubAccounts: boolean } | 'wrong_account' | 'unreadable' => {
   const cols: any[] = report?.Columns?.Column ?? [];
   const keyOf = (c: any) =>
     String((c?.MetaData ?? []).find((m: any) => m?.Name === 'ColKey')?.Value ?? c?.ColType ?? '').toLowerCase();
@@ -690,7 +719,12 @@ export const readGeneralLedger = (
   const section = find(report?.Rows?.Row ?? []);
   if (!section) return sawSection ? 'wrong_account' : { rows: [], withSubAccounts: false };
 
+  // Never a silent zero: a dated row whose date or amount is not where the columns say makes the
+  // whole report unreadable, rather than a balance that leaves that row out.
+  const DAY = /^\d{4}-\d{2}-\d{2}$/;
+  const AMOUNT = /^-?\d[\d,]*(\.\d+)?$|^-?\.\d+$/;
   let withSubAccounts = false;
+  let unreadable = false;
   const out: GlEntry[] = [];
   const walk = (rows: any[]) => {
     for (const r of rows ?? []) {
@@ -701,20 +735,29 @@ export const readGeneralLedger = (
       }
       const cells = r?.ColData;
       if (!Array.isArray(cells)) continue;
-      const date = String(cells[at.tx_date]?.value ?? '');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue; // "Beginning Balance" and the like
-      const amount = Number(String(cells[at.subt_nat_amount]?.value ?? '').replace(/,/g, ''));
+      const date = String(cells[at.tx_date]?.value ?? '').trim();
+      if (!DAY.test(date)) {
+        // "Beginning Balance" and the like carry no date anywhere; a date elsewhere means the
+        // columns are not what they seem.
+        if (cells.some((c: any) => DAY.test(String(c?.value ?? '').trim()))) unreadable = true;
+        continue;
+      }
+      const raw = String(cells[at.subt_nat_amount]?.value ?? '').trim();
+      if (!AMOUNT.test(raw)) {
+        unreadable = true;
+        continue;
+      }
       out.push({
         date,
         type: String(cells[at.txn_type]?.value ?? ''),
         docNumber: String(cells[at.doc_num]?.value ?? ''),
         memo: String(cells[at.memo]?.value ?? ''),
-        amountCents: Number.isFinite(amount) ? Math.round(amount * 100) : 0,
+        amountCents: Math.round(Number(raw.replace(/,/g, '')) * 100),
       });
     }
   };
   walk(section?.Rows?.Row ?? []);
-  return { rows: out, withSubAccounts };
+  return unreadable ? 'unreadable' : { rows: out, withSubAccounts };
 };
 
 /** CSP's own entries: CSP-<day>-<n>, CSP-R-, CSP-E-, CSP-ER-. */

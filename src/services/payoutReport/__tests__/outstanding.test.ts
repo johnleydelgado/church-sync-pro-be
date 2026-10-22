@@ -52,13 +52,14 @@ const regRow = (id: number, day: string, gross: number, fee: number, uploadId: n
   netCents: gross - fee,
   status,
 });
-const gift = (id: number, gross: number, fee: number, completedAt: string | null = null, refunded = false): PcoGift => ({
+const gift = (id: number, gross: number, fee: number, completedAt: string | null = null, refunded = false, unmapped = false): PcoGift => ({
   id: String(id),
   grossCents: gross,
   feeCents: fee,
   completedAt,
   refunded,
-  fund: 'General',
+  fund: unmapped ? 'Building Fund' : 'General',
+  unmapped,
 });
 const ledger = (day: string, gross: number, fee: number, refundedGross = 0, refundedFee = 0): LedgerDay => ({
   day,
@@ -286,6 +287,109 @@ describe('partial posting', () => {
     const input = base({ uploads: [OCT], ledgers: [ledger('2026-10-31', 10000, 300)], rows: [givingRow(1, '2026-10-31', 10000, 300, 1)] });
     expect(daysNeedingPlanningCenter(input)).toEqual([]);
     const r = computeOutstanding(input);
+    expect(r.items).toEqual([]);
+  });
+});
+
+describe('what the engine never posted', () => {
+  test('a gift in an unmapped fund was left out whole: never in Clearing, "not in QuickBooks yet", even if paid out', () => {
+    // A $100 and B $60 posted; U $40 (unmapped fund) completed first and was paid out in September.
+    const r = computeOutstanding(
+      withPco(
+        base({
+          uploads: [OCT],
+          ledgers: [ledger('2026-10-30', 16000, 500)],
+          rows: [givingRow(1, '2026-10-30', 10000, 300, 1), givingRow(3, '2026-10-30', 4000, 150, 1)],
+        }),
+        {
+          '2026-10-30': [
+            gift(3, 4000, 150, '2026-10-30T09:00:00Z', false, true),
+            gift(1, 10000, 300, '2026-10-30T10:00:00Z'),
+            gift(2, 6000, 200, '2026-10-30T11:00:00Z'),
+          ],
+        },
+      ),
+    );
+    expect(r.items.map((i) => [i.kind, i.ref, i.net])).toEqual([['gift', 'Donation #2', 58]]);
+    expect(r.notInQuickBooksYet).toEqual([{ day: '2026-10-30', count: 1, gross: 40, net: 38.5 }]);
+  });
+
+  test('two different sets of gifts would both explain the posted total: one line, not a guess', () => {
+    // p1, p2 posted; R refunded before posting; L late ACH. "p1 + R" and "p1 + p2" both make 100.
+    const gifts = [
+      gift(1, 5000, 100, '2026-10-30T09:00:00Z'),
+      gift(2, 5000, 100, '2026-10-30T10:00:00Z'),
+      gift(3, 5000, 100, '2026-10-30T08:00:00Z', true),
+      gift(4, 5000, 100, '2026-11-03T08:00:00Z'),
+    ];
+    expect(resolvePostedGifts(gifts, 10000)).toBeNull();
+    const r = computeOutstanding(withPco(base({ ledgers: [ledger('2026-10-30', 10000, 200)] }), { '2026-10-30': gifts }));
+    expect(r.items.map((i) => [i.kind, i.net])).toEqual([['day_unresolved', 98]]);
+  });
+
+  test("an unresolved day never takes off more than was posted (paid gifts CSP didn't post)", () => {
+    const r = computeOutstanding(
+      withPco(
+        base({
+          uploads: [OCT],
+          ledgers: [ledger('2026-10-30', 10000, 300)],
+          rows: [givingRow(1, '2026-10-30', 10000, 300, 1), givingRow(2, '2026-10-30', 7000, 200, 1)],
+        }),
+        // Planning Center has 1 and 2 (both paid in October) but only 1 was posted - and 2 did not complete last.
+        { '2026-10-30': [gift(1, 10000, 300, '2026-10-30T12:00:00Z'), gift(2, 7000, 200, '2026-10-30T09:00:00Z'), gift(5, 3000, 100, '2026-10-30T13:00:00Z')] },
+      ),
+    );
+    expect(r.items).toEqual([]);
+  });
+
+  test('a paid refund row CSP never reversed does not make a positive refund line', () => {
+    const r = computeOutstanding(
+      base({
+        uploads: [OCT],
+        ledgers: [ledger('2026-10-20', 0, 0, 5000, 0)],
+        rows: [givingRow(5, '2026-10-20', -5000, 0, 1, 'Refund'), givingRow(6, '2026-10-20', -2000, 0, 1, 'Refund')],
+      }),
+    );
+    expect(r.items).toEqual([]);
+  });
+});
+
+describe('days whose giving was not all posted when a file came in', () => {
+  test('a giving line the upload found not posted makes the day looked up, even when its net matches', () => {
+    // Posted: gift 1 ($50, unpaid). The October file has gift 2 ($50 late ACH, paid, never posted).
+    const input = base({
+      uploads: [OCT],
+      ledgers: [ledger('2026-10-29', 5000, 175)],
+      rows: [{ ...givingRow(2, '2026-10-29', 5000, 175, 1), status: 'giving_not_posted' }],
+    });
+    expect(daysNeedingPlanningCenter(input)).toEqual(['2026-10-29']);
+    const r = computeOutstanding(
+      withPco(input, { '2026-10-29': [gift(1, 5000, 175, '2026-10-29T10:00:00Z'), gift(2, 5000, 175, '2026-11-02T10:00:00Z')] }),
+    );
+    expect(r.items.map((i) => i.ref)).toEqual(['Donation #1']);
+    expect(r.notInQuickBooksYet).toEqual([{ day: '2026-10-29', count: 1, gross: 50, net: 48.25 }]);
+  });
+
+  test('also when the day was not posted at all', () => {
+    const input = base({ uploads: [OCT], rows: [{ ...givingRow(2, '2026-10-29', 5000, 175, 1), status: 'giving_not_posted' }] });
+    const r = computeOutstanding(withPco(input, { '2026-10-29': [gift(2, 5000, 175)] }));
+    expect(r.items).toEqual([]);
+    expect(r.notInQuickBooksYet).toEqual([{ day: '2026-10-29', count: 1, gross: 50, net: 48.25 }]);
+  });
+});
+
+describe('when a row was paid out', () => {
+  test('the upload with the earliest payout dates it appeared in, over the one that created it', () => {
+    const r = computeOutstanding(
+      withPco(
+        base({
+          uploads: [NOV, OCT],
+          ledgers: [ledger('2026-10-30', 5000, 175)],
+          rows: [{ ...givingRow(1, '2026-10-30', 5000, 175, 2), payoutUploadId: 1 }],
+        }),
+        { '2026-10-30': [gift(1, 5000, 175)] },
+      ),
+    );
     expect(r.items).toEqual([]);
   });
 });
@@ -540,6 +644,17 @@ describe('readGeneralLedger', () => {
 
   test('no sections at all: no activity in the range', () => {
     expect(readGeneralLedger({ Columns: columns, Rows: {} }, account)).toEqual({ rows: [], withSubAccounts: false });
+  });
+
+  test('an amount that is not a number: unreadable, never zero', () => {
+    const report = { Columns: columns, Rows: { Row: [section({ value: '175000 Clearing Account' }, [row('2026-10-01', 'Deposit', '', '', 'n/a')])] } };
+    expect(readGeneralLedger(report, account)).toBe('unreadable');
+  });
+
+  test('a dated row whose date is not where the columns say: unreadable', () => {
+    const shifted = { type: 'Data', ColData: [{ value: 'Deposit' }, { value: '2026-10-01' }, { value: '' }, { value: '' }, { value: '5.00' }] };
+    const report = { Columns: columns, Rows: { Row: [section({ value: '175000 Clearing Account' }, [shifted])] } };
+    expect(readGeneralLedger(report, account)).toBe('unreadable');
   });
 
   test('columns by position when the report does not label them', () => {

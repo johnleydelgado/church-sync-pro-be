@@ -14,7 +14,7 @@ import { readRegistrationMapping, RegistrationMappingV2 } from './registrationMa
 import { classifyRows, ClassifiedRow } from './classifyRows';
 import { givingCoverage, loadDayCoverage, CoverageResult } from './givingCoverage';
 import { registrationChargeEntry, registrationRefundEntry, registrationDocNumber } from './registrationEntries';
-import { assertPayoutRange, PayoutRange } from './payoutRange';
+import { assertPayoutRange, assertRowsWithinPayouts, PayoutRange } from './payoutRange';
 
 const logger = createLogger('payout-report');
 
@@ -127,8 +127,9 @@ interface Classified {
   stored: Map<string, { id: number; status: string }>; // rows of this file seen before, by rowKey
 }
 
-const classify = async (setup: PayoutSetup, email: string, csvText: string): Promise<Classified> => {
+const classify = async (setup: PayoutSetup, email: string, csvText: string, payouts: PayoutRange): Promise<Classified> => {
   const rows = parsePayoutReport(csvText);
+  assertRowsWithinPayouts(rows, payouts);
   const stored = new Map<string, { id: number; status: string }>();
   const keys = rows.map((r) => r.rowKey);
   for (let i = 0; i < keys.length; i += 1000) {
@@ -443,6 +444,27 @@ const storeOtherRows = async (c: Classified, uploadId: number, userId: number) =
   }
 };
 
+/**
+ * Every row of this file was paid out within its payout dates. A row that appears in several files
+ * takes the earliest range (the month-end report's rule), so point it at this upload unless it is
+ * already in one whose payouts ended no later. Re-uploading a file with corrected, earlier dates
+ * therefore corrects its rows.
+ */
+const markPaidOutIn = async (userId: number, uploadId: number, payouts: PayoutRange, rows: PayoutRow[]) => {
+  const keys = [...new Set(rows.map((r) => r.rowKey))];
+  for (let i = 0; i < keys.length; i += 1000) {
+    await sequelize.query(
+      `UPDATE "PayoutTransactions" t SET "payoutUploadId" = :uploadId
+        WHERE t."userId" = :userId AND t."rowKey" IN (:keys)
+          AND NOT EXISTS (
+            SELECT 1 FROM "PayoutReportUploads" u
+             WHERE u.id = t."payoutUploadId" AND u."payoutTo" IS NOT NULL AND u."payoutTo" <= :payoutTo
+          )`,
+      { replacements: { uploadId, userId, keys: keys.slice(i, i + 1000), payoutTo: payouts.to } },
+    );
+  }
+};
+
 // Namespace for this feature's advisory locks (the second key is the church's user id).
 const LOCK_NAMESPACE = 74010;
 
@@ -482,7 +504,7 @@ export const previewPayoutReport = async (
 ): Promise<PayoutSummary> => {
   const payouts = await assertPayoutRange(p.email, p.payoutFrom, p.payoutTo, p.now);
   const setup = await loadSetup(p.email);
-  const c = await classify(setup, p.email, p.csvText);
+  const c = await classify(setup, p.email, p.csvText, payouts);
   assertFeeAccount(c.classified, setup);
 
   const groups = groupForPosting(c.classified.filter((x) => x.status === 'to_post'));
@@ -523,7 +545,7 @@ export const importPayoutReport = async (
   const payouts = await assertPayoutRange(p.email, p.payoutFrom, p.payoutTo, p.now);
   const setup = await loadSetup(p.email);
   return withChurchLock(setup.userId, async () => {
-    const c = await classify(setup, p.email, p.csvText);
+    const c = await classify(setup, p.email, p.csvText, payouts);
     assertFeeAccount(c.classified, setup);
     const days = c.rows.map((r) => r.day).sort();
     const upload: any = await PayoutReportUpload.create({
@@ -610,8 +632,9 @@ export const importPayoutReport = async (
       }
     }
 
-    // 3. Everything else, and the summary.
+    // 3. Everything else, when each row was paid out, and the summary.
     await storeOtherRows(c, upload.id, setup.userId);
+    await markPaidOutIn(setup.userId, Number(upload.id), payouts, c.rows);
     const previous = await earlierUploads(setup.userId, days[0] ?? null, days[days.length - 1] ?? null, Number(upload.id));
     const summary = summarize(c, entries, previous, payouts);
     await upload.update({ summary });

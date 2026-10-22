@@ -1,5 +1,5 @@
 import { localToday } from '../donationSweep';
-import { isRealDay, monthEndOf, shortDay } from './days';
+import { addDays, isRealDay, monthEndOf, shortDay } from './days';
 import { PayoutReportFormatError } from './parsePayoutReport';
 import { openPlanningCenter, todayAnywhere } from './planningCenterSession';
 
@@ -62,4 +62,21 @@ export const assertPayoutRange = async (
   const late = payoutRangeProblem(range.from, range.to, today);
   if (late) throw new PayoutReportFormatError(late);
   return range;
+};
+
+/**
+ * The file's rows against the payout dates entered for it. A row's date is its charge (or refund)
+ * date, and nothing is paid out before it happens, so a row dated after the last payout date means
+ * the dates are wrong - typically the prefilled previous month kept for this month's file. A day of
+ * slack, because the file's dates and the payout dates need not be in the same timezone.
+ */
+export const assertRowsWithinPayouts = (rows: { day: string }[], range: PayoutRange): void => {
+  const latest = rows.reduce((max, r) => (r.day > max ? r.day : max), '');
+  if (latest && latest > addDays(range.to, 1)) {
+    const years = latest.slice(0, 4) !== range.to.slice(0, 4);
+    throw new PayoutReportFormatError(
+      `This file has rows dated as late as ${shortDay(latest, years)}, after the last payout date entered (${shortDay(range.to, years)}). ` +
+        'Nothing is paid out before it happens, so check the payout dates.',
+    );
+  }
 };

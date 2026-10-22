@@ -76,7 +76,11 @@ beforeEach(async () => {
   mocked.automationJournalEntry.mockImplementation(async () => ({ Id: `JE${++n}` }));
   mocked.generatePcToken.mockResolvedValue({ access_token: 'pco' } as any);
   (getOrgTimeZone as jest.Mock).mockResolvedValue('America/Denver');
-  (loadDayCoverage as jest.Mock).mockResolvedValue(new Map());
+  // The upload's giving check: the gifts in these files are on fully posted days.
+  (loadDayCoverage as jest.Mock).mockImplementation(
+    async (_e: string, _u: number, days: string[]) =>
+      new Map(days.map((d) => [d, { pcoGrossCents: 10000, postedGrossCents: 10000, pcoIds: new Set(['100', '101']), refundedGrossCents: 0 }])),
+  );
   (getQboTokensForUser as jest.Mock).mockResolvedValue({});
   qbo();
   await wipe();
@@ -124,11 +128,18 @@ afterAll(async () => {
   await sequelize.close();
 });
 
-test('the uploads carry their payout dates', async () => {
+test('the uploads carry their payout dates, and each row the upload it was paid out in', async () => {
   const uploads = (await PayoutReportUpload.findAll({ where: { userId: USER_ID }, order: [['id', 'ASC']] })) as any[];
   expect(uploads.map((u) => [u.payoutFrom, u.payoutTo])).toEqual([
     ['2026-10-01', '2026-10-31'],
     ['2026-11-01', '2026-11-30'],
+  ]);
+  const rows = (await PayoutTransaction.findAll({ where: { userId: USER_ID }, order: [['day', 'ASC'], ['rowKey', 'DESC']] })) as any[];
+  expect(rows.map((r) => [r.rowKey, r.status, r.payoutUploadId])).toEqual([
+    ['registration:1:charge:2026-10-05:6000', 'posted', uploads[0].id],
+    ['donation:100:charge:2026-10-20:10000', 'giving_covered', uploads[0].id],
+    ['registration:2:charge:2026-10-30:3000', 'posted', uploads[1].id],
+    ['donation:101:charge:2026-10-30:10000', 'giving_covered', uploads[1].id],
   ]);
 });
 

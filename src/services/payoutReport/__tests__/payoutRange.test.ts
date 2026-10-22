@@ -9,7 +9,7 @@ jest.mock('../../../utils/logger', () => ({ createLogger: () => ({ info: jest.fn
 import { generatePcToken } from '../../../controller/automation';
 import { getOrgTimeZone } from '../../dailyDonationSync';
 import { PayoutReportFormatError } from '../parsePayoutReport';
-import { assertPayoutRange, payoutRangeProblem } from '../payoutRange';
+import { assertPayoutRange, assertRowsWithinPayouts, payoutRangeProblem } from '../payoutRange';
 
 const token = generatePcToken as jest.Mock;
 const zone = getOrgTimeZone as jest.Mock;
@@ -117,5 +117,22 @@ describe('assertPayoutRange', () => {
     await expect(assertPayoutRange('c@x.test', '2026-10-05', '2026-10-01', now)).rejects.toThrow('wrong way round');
     await expect(assertPayoutRange('c@x.test', undefined, undefined, now)).rejects.toThrow('Enter the dates');
     expect(token).not.toHaveBeenCalled();
+  });
+});
+
+describe('assertRowsWithinPayouts: nothing is paid out before it happened', () => {
+  const range = { from: '2026-09-01', to: '2026-09-30' };
+
+  test('rows charged before or on the last payout date (a day of slack for timezones) are fine', () => {
+    expect(() => assertRowsWithinPayouts([{ day: '2026-08-28' }, { day: '2026-09-30' }, { day: '2026-10-01' }], range)).not.toThrow();
+    expect(() => assertRowsWithinPayouts([], range)).not.toThrow();
+  });
+
+  test("the prefilled previous month kept for this month's file is refused", () => {
+    expect(() => assertRowsWithinPayouts([{ day: '2026-10-05' }, { day: '2026-10-21' }, { day: '2026-09-29' }], range)).toThrow(
+      new PayoutReportFormatError(
+        'This file has rows dated as late as Oct 21, after the last payout date entered (Sep 30). Nothing is paid out before it happens, so check the payout dates.',
+      ),
+    );
   });
 });

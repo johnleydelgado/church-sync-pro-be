@@ -194,6 +194,32 @@ describe('import', () => {
     expect(upload.summary.file).toMatchObject({ payoutFrom: '2026-10-01', payoutTo: '2026-10-20' });
   });
 
+  test('each row points at the upload with the earliest payout dates it has appeared in', async () => {
+    pcoDays(OCT_5_POSTED);
+    const payoutUploadIds = async () => [...new Set([...(await rowsByKey()).values()].map((r: any) => r.payoutUploadId))];
+    const first = await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-10-15', payoutTo: '2026-10-20' });
+    expect(await payoutUploadIds()).toEqual([first.uploadId]);
+    const earlier = await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-10-07', payoutTo: '2026-10-10' });
+    expect(await payoutUploadIds()).toEqual([earlier.uploadId]);
+    await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-10-01', payoutTo: '2026-10-20' });
+    expect(await payoutUploadIds()).toEqual([earlier.uploadId]);
+    // Which upload created or re-checked a row is unchanged.
+    expect((await rowsByKey()).get('registration:1:charge:2026-10-05:6000')).toMatchObject({ uploadId: first.uploadId });
+  });
+
+  test('payout dates that end before the rows were charged are refused, and nothing is stored', async () => {
+    pcoDays(OCT_5_POSTED);
+    const err = await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-09-01', payoutTo: '2026-09-30' }).catch((e) => e);
+    expect(err).toBeInstanceOf(PayoutReportFormatError);
+    expect(err.message).toBe(
+      'This file has rows dated as late as Oct 6, after the last payout date entered (Sep 30). Nothing is paid out before it happens, so check the payout dates.',
+    );
+    expect(coverage).not.toHaveBeenCalled();
+    expect(posted).toHaveLength(0);
+    expect(await PayoutReportUpload.count({ where: { userId: USER_ID } })).toBe(0);
+    expect(await PayoutTransaction.count({ where: { userId: USER_ID } })).toBe(0);
+  });
+
   test.each([
     ['no payout dates', {}, 'Enter the dates of the payouts in this file: from and to.'],
     ['dates the wrong way round', { payoutFrom: '2026-10-20', payoutTo: '2026-10-01' }, 'The payout dates are the wrong way round'],

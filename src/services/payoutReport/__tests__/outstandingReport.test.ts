@@ -87,9 +87,14 @@ const donation = (id: number, gross: number, fee: number, receivedAt: string, o:
   },
   relationships: { designations: { data: [{ id: `des-${id}` }] } },
 });
-const included = (ids: number[]) => [
+const included = (ids: number[], unmappedIds: number[] = []) => [
   { type: 'Fund', id: 'f1', attributes: { name: 'General' } },
-  ...ids.map((id) => ({ type: 'Designation', id: `des-${id}`, relationships: { fund: { data: { id: 'f1' } } } })),
+  { type: 'Fund', id: 'f2', attributes: { name: 'Building Fund' } },
+  ...ids.map((id) => ({
+    type: 'Designation',
+    id: `des-${id}`,
+    relationships: { fund: { data: { id: unmappedIds.includes(id) ? 'f2' : 'f1' } } },
+  })),
 ];
 
 // QuickBooks: the account and its General Ledger detail.
@@ -112,6 +117,10 @@ const section = (name: string, rows: any[]) => ({ Columns: { Column: [] }, Rows:
 
 const SETTINGS = {
   startDateAutomationFund: '10-01-2026',
+  settingsData: [
+    { fundName: 'General', account: { value: '40000', label: 'Contributions' } },
+    { fundName: 'Building Fund', account: null },
+  ],
   settingBankData: [{ type: 'donation', value: '175', label: 'Clearing Account' }],
   clearingBalanceAtGoLiveCents: null,
   transitionTruedUpAt: null,
@@ -167,6 +176,7 @@ describe('a month that is over', () => {
       account: '175',
       start_date: '2026-10-01',
       end_date: '2031-12-31',
+      accounting_method: 'Accrual',
       columns: 'tx_date,txn_type,doc_num,memo,subt_nat_amount',
     });
     expect(r).toMatchObject({
@@ -211,6 +221,17 @@ describe('a month that is over', () => {
     expect(r.difference).toBe(1);
   });
 
+  test('a gift in a fund with no QuickBooks account was never posted: "not in QuickBooks yet"', async () => {
+    m.ledger.mockResolvedValue([ledger('2026-10-30', 10000, 300)]);
+    m.sweep.mockResolvedValue({
+      donations: [donation(2, 10000, 300, '2026-10-30T16:00:00Z'), donation(7, 4000, 150, '2026-10-30T15:00:00Z')],
+      included: included([2, 7], [7]),
+    });
+    const r = await getOutstandingDeposits({ email: EMAIL, month: '2026-10', now: NOV_5 });
+    expect(r.items.map((i) => i.ref)).toEqual(['Donation #2']);
+    expect(r.notInQuickBooksYet).toEqual([{ day: '2026-10-30', count: 1, gross: 40, net: 38.5 }]);
+  });
+
   test.each([
     ['no Planning Center connection', () => m.token.mockRejectedValue(new Error('Not found !'))],
     ['no timezone reported', () => m.zone.mockResolvedValue(null)],
@@ -245,6 +266,16 @@ describe('QuickBooks', () => {
       message: "QuickBooks answered with another account's figures, so the Clearing balance on Oct 31, 2026 isn't shown.",
     });
     expect(r.difference).toBeNull();
+  });
+
+  test('a report with rows CSP cannot read: no balance rather than a wrong one', async () => {
+    glReport = section('175000 Clearing Account', [glRow('2026-11-02', 'Deposit', '', 'n/a')]);
+    const r = await getOutstandingDeposits({ email: EMAIL, month: '2026-10', now: NOV_5 });
+    expect(r.qbo).toEqual({
+      account: { id: '175', name: 'Clearing Account' },
+      balance: null,
+      message: "QuickBooks' report for the Clearing account couldn't be read, so the balance on Oct 31, 2026 isn't shown.",
+    });
   });
 
   test("QuickBooks not answering is not a 500", async () => {

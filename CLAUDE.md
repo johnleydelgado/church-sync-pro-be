@@ -25,7 +25,7 @@ yarn db:migrate:undo:all     # undo all
 ```
 
 There IS a test suite (the "no test suite" note here was stale): `npx jest` runs the unit
-suites — 703 tests / 64 suites as of 2026-10-22. Read the **`Test Suites:`** line, not just
+suites — 716 tests / 64 suites as of 2026-10-22. Read the **`Test Suites:`** line, not just
 `Tests:` — a suite that fails to LOAD reports 0 tests while the others still read green.
 
 Integration tests are a separate config and are EXCLUDED from `npx jest`
@@ -36,7 +36,7 @@ itself after a reboot, so a green `npx jest` proves nothing about them:
 docker start csp-test-pg   # or the docker run in jest.integration.config.js the first time
 npx sequelize-cli db:migrate --url postgres://admin:1234@127.0.0.1:55433/csp_test \
   --migrations-path src/db/migrations
-npm run test:integration   # 152 tests / 9 suites (2026-10-22): engine, payout reports, churches; PCO+QBO faked
+npm run test:integration   # 154 tests / 9 suites (2026-10-22): engine, payout reports, churches; PCO+QBO faked
 ```
 
 If every integration test fails at once, check the container before the code — a stopped
@@ -131,14 +131,20 @@ contract: `docs/plans/2026-10-08-registrations-import.md` in the frontend repo (
 - **Every upload names its payout dates** (2026-10-22): preview and import require `payoutFrom` /
   `payoutTo` (YYYY-MM-DD, the PAYOUT dates the file was exported for - the rows carry charge dates
   only). 400 with a sentence when missing, reversed, ending after the church's local today, or
-  crossing a month-end (`payoutRange.ts`). Stored on `PayoutReportUploads` (migration
-  `20261022000001`); older uploads have null = "range unknown".
+  crossing a month-end, or when the file has rows dated more than a day after the last payout date
+  (the prefilled previous month kept for this month's file) - `payoutRange.ts`. Stored on
+  `PayoutReportUploads` (migration `20261022000001`); older uploads have null = "range unknown".
+  Each `PayoutTransactions` row's `payoutUploadId` (migration `20261022000002`) is the upload with
+  the earliest payout range it has appeared in, kept on every import - `uploadId` stays "the
+  upload that created or re-checked it".
 - **Still in transit at month-end** (`GET /user/payoutReport/outstanding?email=&month=YYYY-MM`;
   pure `outstanding.ts`, loader `outstandingReport.ts`; plan
   `docs/plans/2026-10-22-outstanding-deposits.md` in the frontend repo). An item in a file whose
   payout range ends on or before D was paid out; after D, or in no file, it is in transit. Giving
-  comes from Planning Center only for posted days the files don't settle (same selection as the
-  engine; a Planning Center failure is a 502 with a sentence). QuickBooks' balance on D =
+  comes from Planning Center only for posted days the files don't settle, plus days with
+  `giving_not_posted` lines (same selection as the engine, and gifts in unmapped funds are never
+  in the posted set; a Planning Center failure is a 502 with a sentence). A day whose posted total
+  two different sets of gifts would explain is one `day_unresolved` line, never a guess. QuickBooks' balance on D =
   `CurrentBalance` less the General Ledger detail rows dated after D, read only from the section
   whose header names the clearing account; unreadable is `qbo.balance: null` + a message, not a
   500. Checked on Active's September files: 18 gifts / $4,689.62, 19 / $6,439.32 with the 9/30
