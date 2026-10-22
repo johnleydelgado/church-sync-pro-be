@@ -110,16 +110,45 @@ describe('upload', () => {
   test('preview passes the file for the church, not the caller', async () => {
     signedIn = BOOKKEEPER;
     svc.preview.mockResolvedValue({ file: { rows: 0 } });
-    const { code } = await call(payoutReportPreview, makeReq({ body: { email: CHURCH, csvText: CSV } }));
+    const { code } = await call(
+      payoutReportPreview,
+      makeReq({ body: { email: CHURCH, csvText: CSV, payoutFrom: '2026-10-01', payoutTo: '2026-10-31' } }),
+    );
     expect(code).toBe(200);
-    expect(svc.preview).toHaveBeenCalledWith({ email: CHURCH, csvText: CSV });
+    expect(svc.preview).toHaveBeenCalledWith({ email: CHURCH, csvText: CSV, payoutFrom: '2026-10-01', payoutTo: '2026-10-31' });
+  });
+
+  test('the payout dates go to the service as sent; it checks them and says what is wrong', async () => {
+    svc.preview.mockRejectedValue(new PayoutReportFormatError('Enter the dates of the payouts in this file: from and to.'));
+    const res = await call(payoutReportPreview, makeReq({ body: { email: CHURCH, csvText: CSV } }));
+    expect(svc.preview).toHaveBeenCalledWith({ email: CHURCH, csvText: CSV, payoutFrom: undefined, payoutTo: undefined });
+    expect(res).toEqual({ code: 400, body: { success: false, message: 'Enter the dates of the payouts in this file: from and to.' } });
   });
 
   test('import records the signed-in user as the uploader, whatever the request says', async () => {
     signedIn = BOOKKEEPER;
     svc.import.mockResolvedValue({ uploadId: 3 });
-    await call(payoutReportImport, makeReq({ body: { email: CHURCH, csvText: CSV, fileName: 'oct.csv', uploadedBy: 'someone@else.test' } }));
-    expect(svc.import).toHaveBeenCalledWith({ email: CHURCH, fileName: 'oct.csv', csvText: CSV, uploadedBy: BOOKKEEPER });
+    await call(
+      payoutReportImport,
+      makeReq({
+        body: {
+          email: CHURCH,
+          csvText: CSV,
+          fileName: 'oct.csv',
+          uploadedBy: 'someone@else.test',
+          payoutFrom: '2026-10-01',
+          payoutTo: '2026-10-31',
+        },
+      }),
+    );
+    expect(svc.import).toHaveBeenCalledWith({
+      email: CHURCH,
+      fileName: 'oct.csv',
+      csvText: CSV,
+      uploadedBy: BOOKKEEPER,
+      payoutFrom: '2026-10-01',
+      payoutTo: '2026-10-31',
+    });
   });
 
   test.each([

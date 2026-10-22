@@ -14,6 +14,7 @@ import { readRegistrationMapping, RegistrationMappingV2 } from './registrationMa
 import { classifyRows, ClassifiedRow } from './classifyRows';
 import { givingCoverage, loadDayCoverage, CoverageResult } from './givingCoverage';
 import { registrationChargeEntry, registrationRefundEntry, registrationDocNumber } from './registrationEntries';
+import { assertPayoutRange, PayoutRange } from './payoutRange';
 
 const logger = createLogger('payout-report');
 
@@ -48,10 +49,13 @@ export interface PreviousUpload {
   uploadedBy: string | null;
   firstDay: string | null;
   lastDay: string | null;
+  payoutFrom: string | null;
+  payoutTo: string | null;
 }
 
 export interface PayoutSummary {
-  file: { rows: number; firstDay: string | null; lastDay: string | null };
+  /** firstDay / lastDay are the charge dates in the file; payoutFrom / payoutTo the payout dates it covers. */
+  file: { rows: number; firstDay: string | null; lastDay: string | null; payoutFrom: string; payoutTo: string };
   /**
    * Earlier uploads covering any of the same dates, and how many of this file's lines they already
    * brought in. Re-uploading is safe - those lines are skipped - but people should see it coming.
@@ -204,6 +208,8 @@ const earlierUploads = async (
     uploadedBy: u.uploadedBy ?? null,
     firstDay: u.firstDay ?? null,
     lastDay: u.lastDay ?? null,
+    payoutFrom: u.payoutFrom ?? null,
+    payoutTo: u.payoutTo ?? null,
   }));
 };
 
@@ -211,6 +217,7 @@ const summarize = (
   c: Classified,
   entries: PayoutSummary['entries'],
   previousUploads: PreviousUpload[],
+  payouts: PayoutRange,
 ): PayoutSummary => {
   const toPost = c.classified.filter((x) => x.status === 'to_post').map((x) => x.row);
   const beforeStart = c.classified.filter((x) => x.status === 'before_start').map((x) => x.row);
@@ -234,7 +241,13 @@ const summarize = (
 
   const reg = figures(toPost);
   return {
-    file: { rows: c.rows.length, firstDay: days[0] ?? null, lastDay: days[days.length - 1] ?? null },
+    file: {
+      rows: c.rows.length,
+      firstDay: days[0] ?? null,
+      lastDay: days[days.length - 1] ?? null,
+      payoutFrom: payouts.from,
+      payoutTo: payouts.to,
+    },
     overlap: { rowsSeenBefore: c.rows.filter((r) => c.stored.has(r.rowKey)).length, previousUploads },
     registrations: {
       toPost: { count: reg.count, gross: reg.gross, fees: reg.fees, net: reg.net },
@@ -451,8 +464,23 @@ const withChurchLock = <T>(userId: number, fn: () => Promise<T>): Promise<T> =>
     return fn();
   });
 
+/**
+ * The payout dates the file was exported for ("Payouts in this file: from / to"). Required on every
+ * upload: the rows carry charge dates only, so this is the one record of when they were paid out,
+ * which the month-end "still in transit" report reads.
+ */
+export interface UploadPayoutDates {
+  payoutFrom?: unknown;
+  payoutTo?: unknown;
+  /** For tests: the moment "in the future" is judged against. */
+  now?: Date;
+}
+
 /** What an import would do. Reads only - nothing is stored or posted. */
-export const previewPayoutReport = async (p: { email: string; csvText: string }): Promise<PayoutSummary> => {
+export const previewPayoutReport = async (
+  p: { email: string; csvText: string } & UploadPayoutDates,
+): Promise<PayoutSummary> => {
+  const payouts = await assertPayoutRange(p.email, p.payoutFrom, p.payoutTo, p.now);
   const setup = await loadSetup(p.email);
   const c = await classify(setup, p.email, p.csvText);
   assertFeeAccount(c.classified, setup);
@@ -472,19 +500,27 @@ export const previewPayoutReport = async (p: { email: string; csvText: string })
     return { day: g.day, kind: g.kind, docNumber: registrationDocNumber(g.day, seq, g.kind), ...figures(g.items.map((i) => i.row)) };
   });
   const fileDays = c.rows.map((r) => r.day).sort();
-  return summarize(c, entries, await earlierUploads(setup.userId, fileDays[0] ?? null, fileDays[fileDays.length - 1] ?? null));
+  return summarize(
+    c,
+    entries,
+    await earlierUploads(setup.userId, fileDays[0] ?? null, fileDays[fileDays.length - 1] ?? null),
+    payouts,
+  );
 };
 
 /**
  * Records a payout report: posts every registration charge and refund it has not seen, once,
  * stores the giving check and anything it could not recognise, and returns what it did.
  */
-export const importPayoutReport = async (p: {
-  email: string;
-  fileName?: string | null;
-  csvText: string;
-  uploadedBy?: string | null;
-}): Promise<PayoutSummary & { uploadId: number }> => {
+export const importPayoutReport = async (
+  p: {
+    email: string;
+    fileName?: string | null;
+    csvText: string;
+    uploadedBy?: string | null;
+  } & UploadPayoutDates,
+): Promise<PayoutSummary & { uploadId: number }> => {
+  const payouts = await assertPayoutRange(p.email, p.payoutFrom, p.payoutTo, p.now);
   const setup = await loadSetup(p.email);
   return withChurchLock(setup.userId, async () => {
     const c = await classify(setup, p.email, p.csvText);
@@ -497,6 +533,8 @@ export const importPayoutReport = async (p: {
       rowCount: c.rows.length,
       firstDay: days[0] ?? null,
       lastDay: days[days.length - 1] ?? null,
+      payoutFrom: payouts.from,
+      payoutTo: payouts.to,
     });
 
     // 1. Claim the registration rows to post. The unique (userId, rowKey) index decides who posts a
@@ -575,7 +613,7 @@ export const importPayoutReport = async (p: {
     // 3. Everything else, and the summary.
     await storeOtherRows(c, upload.id, setup.userId);
     const previous = await earlierUploads(setup.userId, days[0] ?? null, days[days.length - 1] ?? null, Number(upload.id));
-    const summary = summarize(c, entries, previous);
+    const summary = summarize(c, entries, previous, payouts);
     await upload.update({ summary });
     return { ...summary, uploadId: Number(upload.id) };
   });

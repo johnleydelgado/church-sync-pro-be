@@ -10,6 +10,10 @@ export interface PayoutReportUploadAttributes {
   rowCount?: number;
   firstDay?: string | null;
   lastDay?: string | null;
+  // The payout dates the file covers (YYYY-MM-DD), as the bookkeeper entered them. Null on uploads
+  // made before the field existed.
+  payoutFrom?: string | null;
+  payoutTo?: string | null;
   summary?: any;
   createdAt?: Date;
   updatedAt?: Date;
@@ -18,6 +22,9 @@ export interface PayoutReportUploadAttributes {
 /**
  * One row per payout report a church uploaded: the audit trail, and what the Clearing page shows
  * as "last payout report loaded". The rows of the file live in `PayoutTransactions`.
+ *
+ * `firstDay` / `lastDay` are the CHARGE dates in the file; `payoutFrom` / `payoutTo` are the PAYOUT
+ * dates it was exported for, which is what says when its rows were paid out.
  */
 class PayoutReportUpload extends Model<PayoutReportUploadAttributes> implements PayoutReportUploadAttributes {
   public id!: number;
@@ -27,6 +34,8 @@ class PayoutReportUpload extends Model<PayoutReportUploadAttributes> implements 
   public rowCount!: number;
   public firstDay!: string | null;
   public lastDay!: string | null;
+  public payoutFrom!: string | null;
+  public payoutTo!: string | null;
   public summary!: any;
   public createdAt!: Date;
   public updatedAt!: Date;
@@ -62,6 +71,14 @@ PayoutReportUpload.init(
     },
     lastDay: {
       type: DataTypes.STRING(10),
+      allowNull: true,
+    },
+    payoutFrom: {
+      type: DataTypes.DATEONLY,
+      allowNull: true,
+    },
+    payoutTo: {
+      type: DataTypes.DATEONLY,
       allowNull: true,
     },
     summary: {

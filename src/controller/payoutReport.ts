@@ -70,8 +70,12 @@ const csvFrom = (req: SessionRequest): string => {
 
 const READ_FAILED = 'Could not read the payout report';
 
+/** "Payouts in this file: from / to" - checked by the service, which says what is wrong in words. */
+const payoutDatesFrom = (req: SessionRequest) => ({ payoutFrom: req.body?.payoutFrom, payoutTo: req.body?.payoutTo });
+
 export const payoutReportPreview = forChurch(
-  async (req, res, _actor, church) => responseSuccess(res, await previewPayoutReport({ email: church, csvText: csvFrom(req) })),
+  async (req, res, _actor, church) =>
+    responseSuccess(res, await previewPayoutReport({ email: church, csvText: csvFrom(req), ...payoutDatesFrom(req) })),
   READ_FAILED,
 );
 
@@ -84,6 +88,7 @@ export const payoutReportImport = forChurch(
         fileName: typeof req.body?.fileName === 'string' ? req.body.fileName : null,
         csvText: csvFrom(req),
         uploadedBy: actor, // who is signed in, never what the request says
+        ...payoutDatesFrom(req),
       }),
     ),
   READ_FAILED,
