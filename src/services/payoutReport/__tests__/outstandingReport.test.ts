@@ -312,19 +312,32 @@ describe('QuickBooks', () => {
     expect(m.qbApi).not.toHaveBeenCalled();
   });
 
-  test('entries CSP did not make, up to D, explain a difference', async () => {
-    account = { ...CLEARING, CurrentBalance: -12.34 };
+  test('from the General Ledger: deposits summed against the payout reports, other entries CSP did not make listed', async () => {
+    m.ledger.mockResolvedValue([ledger('2026-10-03', 10000, 300)]);
+    m.rows.mockResolvedValue([givingRow(1, '2026-10-03', 10000, 300, 1)]); // paid out in October: $97.00
+    account = { ...CLEARING, CurrentBalance: -15 };
     glReport = section('175000 Clearing Account', [
-      glRow('2026-10-03', 'Journal Entry', 'CSP-2026-10-03-1', '100.00'),
-      glRow('2026-10-06', 'Deposit', 'DEP-1', '-112.34'),
+      glRow('2026-10-03', 'Journal Entry', 'CSP-2026-10-03-1', '97.00'),
+      glRow('2026-10-06', 'Deposit', 'DEP-1', '-97.00'),
+      glRow('2026-10-09', 'Journal Entry', 'ADJ-1', '5.00'),
+      glRow('2026-11-02', 'Deposit', 'DEP-2', '-20.00'), // after D: off the balance on D, not in the comparison
     ]);
     const r = await getOutstandingDeposits({ email: EMAIL, month: '2026-10', now: NOV_5 });
+    expect(r.qbo.balance).toBe(5);
+    expect(r.inTransit.net).toBe(0);
+    expect(r.difference).toBe(5);
     expect(r.differenceNotes).toEqual([
-      expect.objectContaining({
+      {
+        kind: 'deposits',
+        text: 'Your payout reports show Stripe paid out $97.00 between Oct 1 and Oct 31, 2026. Deposits recorded against Clearing in that time total $97.00.',
+        amount: 0,
+      },
+      {
         kind: 'not_csp',
-        amount: -12.34,
-        entries: [{ date: '2026-10-06', type: 'Deposit', amount: -112.34, memo: 'memo', docNumber: 'DEP-1' }],
-      }),
+        text: "These entries in Clearing from Oct 1 to Oct 31, 2026 weren't made by CSP and aren't deposits. Together they add $5.00 to Clearing.",
+        amount: 5,
+        entries: [{ date: '2026-10-09', type: 'Journal Entry', amount: 5, memo: 'memo', docNumber: 'ADJ-1' }],
+      },
     ]);
   });
 });
