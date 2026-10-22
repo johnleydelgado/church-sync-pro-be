@@ -175,6 +175,13 @@ it('checks the church by churchId on the /church/ routes, and by account on ever
   expect(guarded.filter((r) => guardsOf(r)[0].kind === 'church').length).toBe(5);
 });
 
+it('mounts the in-transit report read-only, behind the session and a membership check on the church it names', () => {
+  const route = mounted.filter((r) => r.handler === 'payoutReportOutstanding');
+  expect(route.map((r) => ({ route: `${r.method} ${r.path}`, session: hasSession(r), guard: guardsOf(r).map((g) => [g.kind, g.need]) }))).toEqual([
+    { route: 'GET /user/payoutReport/outstanding', session: true, guard: [['account', 'member']] },
+  ]);
+});
+
 it('no longer mounts updateUser', () => {
   expect(mounted.map((r) => r.handler)).not.toContain('updateUser');
 });

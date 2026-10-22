@@ -63,6 +63,7 @@ import {
 import { requireAutomationKey } from '../utils/automationAuth';
 import {
   payoutReportImport,
+  payoutReportOutstanding,
   payoutReportPreview,
   payoutReportRecheckGiving,
   payoutReportResolve,
@@ -174,6 +175,8 @@ routers.get(userRoutes.payoutReportReview, verifySession(), q, payoutReportRevie
 routers.post(userRoutes.payoutReportResolve, verifySession(), b, payoutReportResolve);
 routers.post(userRoutes.payoutReportRecheckGiving, verifySession(), b, payoutReportRecheckGiving);
 routers.get(userRoutes.payoutReportSignups, verifySession(), q, payoutReportSignups);
+// Still in transit at month-end (read-only).
+routers.get(userRoutes.payoutReportOutstanding, verifySession(), q, payoutReportOutstanding);
 routers.post(userRoutes.manualSync, verifySession(), b, manualSync);
 routers.post(userRoutes.isUserHaveTokens, verifySession(), b, isUserHaveTokens);
 routers.post(userRoutes.getTokenList, verifySession(), b, getTokenList);
