@@ -142,7 +142,13 @@ export interface GroupTotals {
   net: number;
 }
 export interface DifferenceNote {
-  kind: 'switch_over' | 'not_csp';
+  /**
+   * switch_over: the balance Clearing held when CSP took over.
+   * deposits: what the payout reports say Stripe paid out against the deposits recorded in Clearing
+   *   over the same dates (amount = paid out less deposited, the sign it adds to the difference).
+   * not_csp: the other entries in Clearing CSP didn't make, listed (amount = their total).
+   */
+  kind: 'switch_over' | 'deposits' | 'not_csp';
   text: string;
   amount: number;
   entries?: { date: string; type: string; amount: number; memo: string; docNumber: string }[];
@@ -194,7 +200,8 @@ const paidOutOf = (row: StoredPayoutRow, uploads: Map<number, UploadRange>): Pai
 
 const paidBy = (p: PaidOut | null | undefined, day: string) => !!p && p.to <= day;
 
-const earlier = (a: PaidOut, b: PaidOut) => (a.to !== b.to ? a.to < b.to : (a.from ?? a.to) < (b.from ?? b.to));
+/** The earlier payout range: the one ending first; of two ending the same day, the narrower (it says more). */
+const earlier = (a: PaidOut, b: PaidOut) => (a.to !== b.to ? a.to < b.to : (a.from ?? '') > (b.from ?? ''));
 
 interface Placed {
   row: StoredPayoutRow;
@@ -585,7 +592,7 @@ export const computeOutstanding = (input: OutstandingInput): OutstandingReport =
     inTransit: { net: dollars(inTransitCents), gifts: totals(gifts), registrations: totals(regs) },
     difference: differenceCents === null ? null : dollars(differenceCents),
     differenceNotes:
-      differenceCents === null ? [] : differenceNotes(differenceCents, input, start, coverage.complete),
+      differenceCents === null ? [] : differenceNotes(differenceCents, input, start),
     notInQuickBooksYet: notYet,
     items: items.map(({ grossCents, feeCents, netCents, ...rest }) => ({
       ...rest,
@@ -596,26 +603,108 @@ export const computeOutstanding = (input: OutstandingInput): OutstandingReport =
   };
 };
 
+/** "Oct 21 to Oct 31", "Oct 3" (years only when a span crosses one), joined with commas and a final "and". */
+const daySpans = (spans: DayWindow[]) => {
+  const parts = spans.map((w) => {
+    if (w.from === w.to) return shortDay(w.from);
+    const years = w.from.slice(0, 4) !== w.to.slice(0, 4);
+    return `${shortDay(w.from, years)} to ${shortDay(w.to, years)}`;
+  });
+  return parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+};
+
+/** Overlapping or touching ranges merged, in order. */
+const unionOf = (ranges: DayWindow[]): DayWindow[] => {
+  const out: DayWindow[] = [];
+  for (const r of [...ranges].sort((a, b) => a.from.localeCompare(b.from))) {
+    const last = out[out.length - 1];
+    if (last && r.from <= addDays(last.to, 1)) {
+      if (r.to > last.to) last.to = r.to;
+    } else out.push({ ...r });
+  }
+  return out;
+};
+
+/** QuickBooks' own name for a deposit in the General Ledger report's Transaction Type column. */
+const DEPOSIT = 'Deposit';
+
 /**
- * The difference (QuickBooks' balance on D less what is in transit), explained where CSP knows why:
- * the balance the account already held when CSP took over, then anything else as "QuickBooks has
- * $X that CSP's records don't account for", with the entries in Clearing CSP didn't make so the
- * team can look.
+ * Stripe's payouts against the deposits recorded in Clearing, apples to apples over the dates the
+ * payout reports cover. Only uploads whose payout dates lie entirely within the sync start date..D
+ * count: one that starts earlier (September uploaded as Sep 1-30 for a Sep 15 go-live) carries
+ * payouts of money that never went through Clearing. Paid out = the net of every row placed in
+ * those uploads (giving and registrations, charges and refunds, rows CSP didn't post - it is all in
+ * the payout). Deposited = the entries CSP didn't make, typed exactly Deposit, dated inside those
+ * uploads' payout dates. Missing reports are the main coverage warning's job, not this note's.
+ *
+ * No qualifying upload: a sentence saying the deposits can't be checked yet (amount 0, no claim),
+ * or nothing when there are no deposits either. Nothing on either side: no note.
  */
-const differenceNotes = (
-  differenceCents: number,
-  input: OutstandingInput,
-  start: string,
-  coverageComplete: boolean,
-): DifferenceNote[] => {
+const depositsNote = (input: OutstandingInput, start: string): DifferenceNote | null => {
+  const D = input.asOf;
+  const qualifying = input.uploads.filter((u) => u.payoutFrom && u.payoutTo && u.payoutFrom >= start && u.payoutTo <= D);
+  const isDeposit = (e: GlEntry) => e.type.trim() === DEPOSIT;
+  if (!qualifying.length) {
+    const any = (input.clearing?.entries ?? []).some((e) => isDeposit(e) && e.date >= start && e.date <= D);
+    if (!any) return null;
+    const years = start.slice(0, 4) !== D.slice(0, 4);
+    return {
+      kind: 'deposits',
+      text:
+        `No payout reports covering dates from ${shortDay(start, years)} to ${shortDay(D, years)} have been uploaded yet, ` +
+        "so deposits recorded against Clearing can't be checked against what Stripe paid out.",
+      amount: 0,
+    };
+  }
+
+  const ids = new Set(qualifying.map((u) => Number(u.id)));
+  const covered = unionOf(qualifying.map((u) => ({ from: u.payoutFrom as string, to: u.payoutTo as string })));
+  const paidOut = input.rows.filter((r) => {
+    const placed = r.payoutUploadId ?? r.uploadId;
+    return placed != null && ids.has(Number(placed));
+  });
+  const deposits = (input.clearing?.entries ?? []).filter(
+    (e) => isDeposit(e) && covered.some((w) => e.date >= w.from && e.date <= w.to),
+  );
+  if (!paidOut.length && !deposits.length) return null;
+
+  const paidCents = sum(paidOut, (r) => Number(r.netCents));
+  // A deposit takes money out of Clearing (a credit, negative in the account's own sign).
+  const depositedCents = -sum(deposits, (e) => e.amountCents);
+  const apartCents = paidCents - depositedCents;
+  return {
+    kind: 'deposits',
+    text:
+      `Your payout reports for ${daySpans(covered)} show Stripe paid out ${usd(paidCents)}. ` +
+      `Deposits recorded against Clearing on those dates total ${usd(depositedCents)}.` +
+      (apartCents !== 0
+        ? ` They're ${usd(Math.abs(apartCents))} apart: a payout not recorded as a deposit yet, or recorded for a different amount.`
+        : ''),
+    amount: dollars(apartCents),
+  };
+};
+
+/**
+ * The difference (QuickBooks' balance on D less what is in transit), explained where CSP knows why.
+ * Only when there is a difference to explain:
+ *  - switch_over: the balance Clearing already held when CSP took over;
+ *  - deposits: one line comparing what Stripe paid out (payout reports) with the deposits recorded
+ *    in Clearing over the dates those reports cover - the team's routine deposits are summed, not
+ *    listed;
+ *  - not_csp: every other entry in Clearing CSP didn't make (journal entries, transfers, ...),
+ *    listed so the team can look. Omitted when there are none.
+ * With CSP's own entries in QuickBooks as CSP recorded them, difference = switch-over balance +
+ * (paid out - deposited) + other entries, less any money in the payouts that was never CSP's
+ * (gifts from before the sync start date, registrations before their start date, giving CSP has not
+ * posted).
+ */
+const differenceNotes = (differenceCents: number, input: OutstandingInput, start: string): DifferenceNote[] => {
   if (differenceCents === 0) return [];
   const notes: DifferenceNote[] = [];
   const D = input.asOf;
   const s = input.switchOver;
-  let explained = 0;
   if (s && s.goLiveDay <= D && s.balanceAtGoLiveCents != null && Number(s.balanceAtGoLiveCents) !== 0) {
     const S = Number(s.balanceAtGoLiveCents);
-    explained = S;
     const held =
       S > 0
         ? `QuickBooks already held ${usd(S)} in Clearing when CSP took over on ${longDay(s.goLiveDay)}.`
@@ -628,23 +717,20 @@ const differenceNotes = (
       amount: dollars(S),
     });
   }
-  const rest = differenceCents - explained;
-  if (rest !== 0) {
-    const lead =
-      rest > 0
-        ? `QuickBooks has ${usd(rest)} in Clearing on ${longDay(D)} that CSP's records don't account for.`
-        : `QuickBooks has ${usd(-rest)} less in Clearing on ${longDay(D)} than CSP's records account for.`;
-    const entries = input.clearing?.entries ?? [];
+
+  const deposits = depositsNote(input, start);
+  if (deposits) notes.push(deposits);
+
+  const others = (input.clearing?.entries ?? []).filter((e) => e.type.trim() !== DEPOSIT && e.date >= start && e.date <= D);
+  if (others.length) {
+    const total = sum(others, (e) => e.amountCents);
     notes.push({
       kind: 'not_csp',
       text:
-        `${lead} ` +
-        (entries.length
-          ? `These are the entries in Clearing from ${longDay(start)} to ${longDay(D)} that CSP didn't make; a deposit recorded for a different amount than its payout shows up here too.`
-          : `There are no entries in Clearing from ${longDay(start)} to ${longDay(D)} that CSP didn't make.`) +
-        (coverageComplete ? '' : ' Payout reports are missing for part of this period, so some of this may be money that was paid out.'),
-      amount: dollars(rest),
-      entries: entries.map((e) => ({
+        `These entries in Clearing from ${shortDay(start, start.slice(0, 4) !== D.slice(0, 4))} to ${shortDay(D, true)} weren't made by CSP and aren't deposits. ` +
+        (total < 0 ? `Together they take ${usd(-total)} out of Clearing.` : `Together they add ${usd(total)} to Clearing.`),
+      amount: dollars(total),
+      entries: others.map((e) => ({
         date: e.date,
         type: e.type,
         amount: dollars(e.amountCents),

@@ -462,40 +462,54 @@ describe('registrations', () => {
 });
 
 describe('QuickBooks and the difference', () => {
+  // In transit on Oct 31: gift 1 ($100, fee $3), posted Oct 30 and in no payout report: $97.00.
   const inTransitDay = (o: Partial<OutstandingInput> = {}) =>
     withPco(base({ ledgers: [ledger('2026-10-30', 10000, 300)], ...o }), { '2026-10-30': [gift(1, 10000, 300)] });
-  const entry = (date: string, amountCents: number, type = 'Deposit', docNumber = ''): GlEntry => ({ date, type, docNumber, memo: 'memo', amountCents });
+  const entry = (date: string, amountCents: number, type = 'Deposit', docNumber = '', memo = 'memo'): GlEntry => ({
+    date,
+    type,
+    docNumber,
+    memo,
+    amountCents,
+  });
+  const clearing = (balanceCents: number | null, entries: GlEntry[] = []) => ({ account: { id: '175', name: 'Clearing' }, balanceCents, entries });
+  // October's payout report: giving and registrations, a charge refunded, and a line held for review.
+  const OCT_ROWS: StoredPayoutRow[] = [
+    givingRow(10, '2026-10-05', 50000, 1500, 1), // net 485.00
+    regRow(11, '2026-10-06', 20000, 500, 1), // net 195.00
+    regRow(12, '2026-10-07', -2500, 0, 1), // refund -25.00
+    { ...givingRow(13, '2026-10-08', -1000, 0, 1, 'Dispute'), status: 'held' }, // -10.00
+  ]; // paid out in October: 645.00
+  const notesOf = (balanceCents: number, entries: GlEntry[], o: Partial<OutstandingInput> = {}) =>
+    computeOutstanding(inTransitDay({ uploads: [OCT], rows: OCT_ROWS, clearing: clearing(balanceCents, entries), ...o }));
 
   test('tied: no difference, no notes', () => {
-    const r = computeOutstanding(inTransitDay({ clearing: { account: { id: '175', name: 'Clearing' }, balanceCents: 9700, entries: [] } }));
+    const r = computeOutstanding(inTransitDay({ clearing: clearing(9700) }));
     expect(r.qbo).toEqual({ account: { id: '175', name: 'Clearing' }, balance: 97 });
     expect(r.difference).toBe(0);
     expect(r.differenceNotes).toEqual([]);
   });
 
   test("QuickBooks can't be read: balance and difference are null and the message is passed on", () => {
-    const r = computeOutstanding(
-      inTransitDay({ clearing: { account: { id: '175', name: 'Clearing' }, balanceCents: null, entries: [], message: "QuickBooks didn't answer." } }),
-    );
+    const r = computeOutstanding(inTransitDay({ clearing: { ...clearing(null), message: "QuickBooks didn't answer." } }));
     expect(r.qbo).toEqual({ account: { id: '175', name: 'Clearing' }, balance: null, message: "QuickBooks didn't answer." });
     expect(r.difference).toBeNull();
     expect(r.differenceNotes).toEqual([]);
     expect(r.inTransit.net).toBe(97);
   });
 
-  test('the switch-over balance explains its part; the rest lists the entries CSP did not make', () => {
-    const r = computeOutstanding(
-      inTransitDay({
-        uploads: [OCT],
-        clearing: {
-          account: { id: '175', name: 'Clearing' },
-          balanceCents: 9700 + 50000 + 1234,
-          entries: [entry('2026-10-12', -46766, 'Deposit'), entry('2026-10-14', 48000, 'Journal Entry', 'TRUEUP-1')],
-        },
-        switchOver: { goLiveDay: '2026-10-01', balanceAtGoLiveCents: 50000, truedUpAt: '2026-10-14T10:00:00.000Z' },
-      }),
+  test('switch-over; deposits summarised in one line against the payout reports; other entries listed', () => {
+    const r = notesOf(
+      9700 + 50000 + 47500,
+      [
+        entry('2026-10-08', -40000),
+        entry('2026-10-12', -24500),
+        entry('2026-10-14', 48000, 'Journal Entry', 'TRUEUP-1', 'Deposit correction'), // memo says Deposit; type decides
+        entry('2026-10-20', -500, 'Transfer'),
+      ],
+      { switchOver: { goLiveDay: '2026-10-01', balanceAtGoLiveCents: 50000, truedUpAt: '2026-10-14T10:00:00.000Z' } },
     );
-    expect(r.difference).toBe(512.34);
+    expect(r.difference).toBe(975);
     expect(r.differenceNotes).toEqual([
       {
         kind: 'switch_over',
@@ -503,34 +517,171 @@ describe('QuickBooks and the difference', () => {
         amount: 500,
       },
       {
+        kind: 'deposits',
+        text: 'Your payout reports for Oct 1 to Oct 31 show Stripe paid out $645.00. Deposits recorded against Clearing on those dates total $645.00.',
+        amount: 0,
+      },
+      {
         kind: 'not_csp',
-        text: "QuickBooks has $12.34 in Clearing on Oct 31, 2026 that CSP's records don't account for. These are the entries in Clearing from Oct 1, 2026 to Oct 31, 2026 that CSP didn't make; a deposit recorded for a different amount than its payout shows up here too.",
-        amount: 12.34,
+        text: "These entries in Clearing from Oct 1 to Oct 31, 2026 weren't made by CSP and aren't deposits. Together they add $475.00 to Clearing.",
+        amount: 475,
         entries: [
-          { date: '2026-10-12', type: 'Deposit', amount: -467.66, memo: 'memo', docNumber: '' },
-          { date: '2026-10-14', type: 'Journal Entry', amount: 480, memo: 'memo', docNumber: 'TRUEUP-1' },
+          { date: '2026-10-14', type: 'Journal Entry', amount: 480, memo: 'Deposit correction', docNumber: 'TRUEUP-1' },
+          { date: '2026-10-20', type: 'Transfer', amount: -5, memo: 'memo', docNumber: '' },
         ],
       },
     ]);
   });
 
-  test('less in QuickBooks than in transit, with payout reports missing, says both', () => {
-    const r = computeOutstanding(inTransitDay({ clearing: { account: { id: '175', name: 'Clearing' }, balanceCents: 0, entries: [] } }));
-    expect(r.difference).toBe(-97);
-    expect(r.differenceNotes).toHaveLength(1);
-    expect(r.differenceNotes[0].text).toBe(
-      "QuickBooks has $97.00 less in Clearing on Oct 31, 2026 than CSP's records account for. There are no entries in Clearing from Oct 1, 2026 to Oct 31, 2026 that CSP didn't make. Payout reports are missing for part of this period, so some of this may be money that was paid out.",
+  test('a payout not recorded as a deposit: positive, like the difference it explains', () => {
+    const r = notesOf(9700 + 4500, [entry('2026-10-08', -40000), entry('2026-10-12', -20000)]);
+    expect(r.difference).toBe(45);
+    expect(r.differenceNotes).toEqual([
+      {
+        kind: 'deposits',
+        text:
+          'Your payout reports for Oct 1 to Oct 31 show Stripe paid out $645.00. Deposits recorded against Clearing on those dates total $600.00. ' +
+          "They're $45.00 apart: a payout not recorded as a deposit yet, or recorded for a different amount.",
+        amount: 45,
+      },
+    ]);
+  });
+
+  test('more deposited than paid out: negative', () => {
+    const r = notesOf(9700 - 100, [entry('2026-10-08', -64600)]);
+    expect(r.difference).toBe(-1);
+    expect(r.differenceNotes).toEqual([expect.objectContaining({ kind: 'deposits', amount: -1, text: expect.stringContaining("They're $1.00 apart:") })]);
+  });
+
+  test('a cent apart is apart; to the cent is not', () => {
+    const cent = notesOf(9700 - 1, [entry('2026-10-08', -64501)]);
+    expect(cent.differenceNotes).toEqual([expect.objectContaining({ kind: 'deposits', amount: -0.01, text: expect.stringContaining("They're $0.01 apart:") })]);
+    const exact = notesOf(9700 + 7, [entry('2026-10-08', -64500), entry('2026-10-09', 7, 'Journal Entry')]);
+    expect(exact.differenceNotes.find((n) => n.kind === 'deposits')).toEqual(
+      expect.objectContaining({ amount: 0, text: expect.not.stringContaining('apart') }),
+    );
+  });
+
+  test("only deposits on the dates the payout reports cover are compared; missing reports are not this note's business", () => {
+    const r = notesOf(9700 + 2000 - 5000, [entry('2026-10-08', -62500), entry('2026-10-25', -5000)], {
+      uploads: [upload(1, '2026-10-01', '2026-10-20')],
+    });
+    expect(r.coverage.complete).toBe(false); // the report's main warning says Oct 21-31 is missing
+    expect(r.differenceNotes).toEqual([
+      {
+        kind: 'deposits',
+        text:
+          'Your payout reports for Oct 1 to Oct 20 show Stripe paid out $645.00. Deposits recorded against Clearing on those dates total $625.00. ' +
+          "They're $20.00 apart: a payout not recorded as a deposit yet, or recorded for a different amount.",
+        amount: 20,
+      },
+    ]);
+  });
+
+  test('several reports: their dates joined, overlaps merged, deposits between them left out', () => {
+    const r = notesOf(9700 + 100, [entry('2026-10-05', -48500), entry('2026-10-12', -16000), entry('2026-10-17', -99999), entry('2026-10-22', 100, 'Journal Entry')], {
+      uploads: [upload(1, '2026-10-01', '2026-10-10'), upload(2, '2026-10-08', '2026-10-15'), upload(3, '2026-10-20', '2026-10-31')],
+      rows: [givingRow(10, '2026-10-05', 50000, 1500, 1), regRow(11, '2026-10-06', 20000, 500, 2), { ...regRow(12, '2026-10-21', -3500, 0, 2), payoutUploadId: 3 }],
+    });
+    expect(r.differenceNotes[0]).toEqual({
+      kind: 'deposits',
+      text: 'Your payout reports for Oct 1 to Oct 15 and Oct 20 to Oct 31 show Stripe paid out $645.00. Deposits recorded against Clearing on those dates total $645.00.',
+      amount: 0,
+    });
+  });
+
+  test('a report starting before the sync start date: left out of the note, still counted for coverage', () => {
+    const r = computeOutstanding(
+      inTransitDay({
+        startDay: '2026-09-15',
+        uploads: [upload(9, '2026-09-01', '2026-09-30'), OCT],
+        rows: [givingRow(20, '2026-09-20', 30000, 900, 9), ...OCT_ROWS],
+        clearing: clearing(9700 + 1000, [entry('2026-09-22', -29100), entry('2026-10-08', -64500), entry('2026-10-09', 1000, 'Journal Entry')]),
+      }),
+    );
+    expect(r.coverage).toEqual({ complete: true, from: '2026-09-15', missing: [] });
+    expect(r.differenceNotes[0]).toEqual({
+      kind: 'deposits',
+      text: 'Your payout reports for Oct 1 to Oct 31 show Stripe paid out $645.00. Deposits recorded against Clearing on those dates total $645.00.',
+      amount: 0,
+    });
+  });
+
+  test("September uploaded as Sep 1-30 for a Sep 15 go-live: September's report says the deposits can't be checked, nothing more", () => {
+    const r = computeOutstanding(
+      inTransitDay({
+        month: '2026-09',
+        asOf: '2026-09-30',
+        startDay: '2026-09-15',
+        ledgers: [ledger('2026-09-29', 10000, 300)],
+        uploads: [upload(9, '2026-09-01', '2026-09-30')],
+        rows: [givingRow(20, '2026-09-20', 30000, 900, 9)],
+        clearing: clearing(9700 - 29100, [entry('2026-09-22', -29100)]),
+      }),
+    );
+    expect(r.coverage.complete).toBe(true);
+    expect(r.differenceNotes).toEqual([
+      {
+        kind: 'deposits',
+        text: "No payout reports covering dates from Sep 15 to Sep 30 have been uploaded yet, so deposits recorded against Clearing can't be checked against what Stripe paid out.",
+        amount: 0,
+      },
+    ]);
+  });
+
+  test('no payout reports at all: the same sentence, no amount claimed', () => {
+    const r = computeOutstanding(inTransitDay({ clearing: clearing(9700 - 64500, [entry('2026-10-08', -64500)]) }));
+    expect(r.differenceNotes).toEqual([
+      {
+        kind: 'deposits',
+        text: "No payout reports covering dates from Oct 1 to Oct 31 have been uploaded yet, so deposits recorded against Clearing can't be checked against what Stripe paid out.",
+        amount: 0,
+      },
+    ]);
+  });
+
+  test('nothing to compare and no other entries: no deposits note and no entries note', () => {
+    const r = computeOutstanding(inTransitDay({ clearing: clearing(9800) }));
+    expect(r.difference).toBe(1);
+    expect(r.differenceNotes).toEqual([]);
+  });
+
+  test('a payout report with no rows in it and no deposits is nothing to compare', () => {
+    const r = computeOutstanding(inTransitDay({ uploads: [OCT], clearing: clearing(9800, [entry('2026-10-09', 100, 'Journal Entry', 'JE9')]) }));
+    expect(r.differenceNotes.map((n) => [n.kind, n.amount])).toEqual([['not_csp', 1]]);
+  });
+
+  test('entries that take money out of Clearing say so', () => {
+    const r = notesOf(9700 - 250, [entry('2026-10-08', -64500), entry('2026-10-19', -250, 'Transfer')]);
+    expect(r.differenceNotes.find((n) => n.kind === 'not_csp')?.text).toBe(
+      "These entries in Clearing from Oct 1 to Oct 31, 2026 weren't made by CSP and aren't deposits. Together they take $2.50 out of Clearing.",
     );
   });
 
   test('a switch-over after D, or with no captured balance, is not a note', () => {
+    const r = notesOf(9700 + 100, [entry('2026-10-08', -64500), entry('2026-10-09', 100, 'Journal Entry')], {
+      switchOver: { goLiveDay: '2026-10-01', balanceAtGoLiveCents: null, truedUpAt: null },
+    });
+    expect(r.differenceNotes.map((n) => n.kind)).toEqual(['deposits', 'not_csp']);
+  });
+});
+
+describe('placing a row in its payout reports', () => {
+  test('of two reports ending the same day, the narrower one', () => {
     const r = computeOutstanding(
-      inTransitDay({
-        clearing: { account: { id: '175', name: 'Clearing' }, balanceCents: 9800, entries: [] },
-        switchOver: { goLiveDay: '2026-10-01', balanceAtGoLiveCents: null, truedUpAt: null },
-      }),
+      withPco(
+        base({
+          startDay: '2026-09-01',
+          month: '2026-09',
+          asOf: '2026-09-14',
+          uploads: [upload(1, '2026-09-01', '2026-09-30'), upload(2, '2026-09-15', '2026-09-30')],
+          ledgers: [ledger('2026-09-10', 5000, 175)],
+          rows: [givingRow(1, '2026-09-10', 5000, 175, 1), { ...givingRow(1, '2026-09-10', 5000, 175, 2), rowKey: 'donation:1:charge:2026-09-10:5000#2' }],
+        }),
+        { '2026-09-10': [gift(1, 5000, 175)] },
+      ),
     );
-    expect(r.differenceNotes.map((n) => n.kind)).toEqual(['not_csp']);
+    expect(r.items.map((i) => i.paidOut)).toEqual([{ from: '2026-09-15', to: '2026-09-30' }]);
   });
 });
 

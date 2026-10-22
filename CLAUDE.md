@@ -153,7 +153,11 @@ contract: `docs/plans/2026-10-08-registrations-import.md` in the frontend repo (
   `CurrentBalance` less the General Ledger detail rows dated after D, read only from the section
   whose header names the clearing account; unreadable is `qbo.balance: null` + a message, not a
   500. Checked on Active's September files: 18 gifts / $4,689.62, 19 / $6,439.32 with the 9/30
-  ACH settled - Matt's reconciled figure.
+  ACH settled - Matt's reconciled figure. A non-zero difference gets notes: `switch_over` (the
+  go-live balance), `deposits` (one line: what the payout reports wholly inside sync start..D say Stripe
+  paid out, against the GL entries typed exactly `Deposit` dated inside those reports' payout dates;
+  a report starting before the sync start date is left out of it but still counts for `coverage`;
+  the team's routine deposits are summed, never listed) and `not_csp` (every other entry CSP didn't make, listed).
 - `settingRegistrationData` now holds the v2 object. The Stripe-era code (`stripe.ts`,
   `automation.ts`, `utils/automation-helper.ts`) reads it only through `legacyRegistrationList()`,
   which returns [] for v2 - never call `.find`/`.filter` on the raw setting.
