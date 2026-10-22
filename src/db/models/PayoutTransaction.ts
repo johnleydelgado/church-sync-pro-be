@@ -27,6 +27,8 @@ export interface PayoutTransactionAttributes {
   id?: number;
   userId?: number;
   uploadId?: number | null;
+  /** The upload with the earliest payout range this row has appeared in (when it was paid out). */
+  payoutUploadId?: number | null;
   rowKey?: string;
   line?: number | null;
   day?: string;
@@ -61,6 +63,7 @@ class PayoutTransaction extends Model<PayoutTransactionAttributes> implements Pa
   public id!: number;
   public userId!: number;
   public uploadId!: number | null;
+  public payoutUploadId!: number | null;
   public rowKey!: string;
   public line!: number | null;
   public day!: string;
@@ -97,6 +100,10 @@ PayoutTransaction.init(
       allowNull: false,
     },
     uploadId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    payoutUploadId: {
       type: DataTypes.INTEGER,
       allowNull: true,
     },

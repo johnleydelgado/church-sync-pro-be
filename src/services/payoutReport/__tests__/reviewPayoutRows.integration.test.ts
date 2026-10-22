@@ -24,6 +24,8 @@ import { getPayoutStatus, listReview, listSignups, recheckGiving, resolvePayoutR
 const mockedAutomation = automation as jest.Mocked<typeof automation>;
 const coverage = loadDayCoverage as jest.Mock;
 
+/** "Payouts in this file: from / to" - required on every upload. */
+const PAYOUTS = { payoutFrom: '2026-10-01', payoutTo: '2026-10-20' };
 const EMAIL = 'review@example.test';
 const USER_ID = 90011;
 const OTHER_EMAIL = 'other-church@example.test';
@@ -117,7 +119,7 @@ beforeEach(async () => {
 describe('listReview', () => {
   test('held, giving not posted and interrupted lines - but not a line an upload is posting right now', async () => {
     pcoDays({ '2026-10-06': { pcoGrossCents: 5000, postedGrossCents: 0, ids: ['101'] } });
-    await importPayoutReport({ email: EMAIL, csvText: file(DISPUTE, gift('2026-10-06', 101, 50, 1.5)) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(DISPUTE, gift('2026-10-06', 101, 50, 1.5)) });
     await interruptedRow({ qboEntryId: '555' });
     await interruptedRow({ rowKey: 'registration:10:charge:2026-10-04:6000', reason: null }); // just went pending
 
@@ -130,7 +132,7 @@ describe('listReview', () => {
 
 describe('resolvePayoutRow', () => {
   test("a held line coded by a person posts on its own, continuing the day's numbering", async () => {
-    await importPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59), STRIPE_ADJUSTMENT) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59), STRIPE_ADJUSTMENT) });
     const [held] = (await listReview(EMAIL)).held;
     expect(held.reason).toBe('unrecognised_source');
     posted = [];
@@ -160,7 +162,7 @@ describe('resolvePayoutRow', () => {
   });
 
   test('QuickBooks refusing a coded line puts it back in the list', async () => {
-    await importPayoutReport({ email: EMAIL, csvText: file(STRIPE_ADJUSTMENT) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(STRIPE_ADJUSTMENT) });
     const [held] = (await listReview(EMAIL)).held;
     mockedAutomation.automationJournalEntry.mockRejectedValueOnce({ Fault: { Error: [{ Message: 'Invalid account' }] } });
     await expect(resolvePayoutRow({ email: EMAIL, id: held.id, action: 'post', account: { value: '80' } })).rejects.toThrow(
@@ -174,7 +176,7 @@ describe('resolvePayoutRow', () => {
     ['a refund that returns a fee', '2026-10-05,Refund,Registrations,X,SHE,-25.00,1.00,-26.00,card,,"REFUND FOR CHARGE (Registration #5)"'],
     ['a dispute', DISPUTE],
   ])('%s can only be marked handled', async (_name, line) => {
-    await importPayoutReport({ email: EMAIL, csvText: file(line) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(line) });
     const [held] = (await listReview(EMAIL)).held;
     await expect(resolvePayoutRow({ email: EMAIL, id: held.id, action: 'post', account: { value: '80' } })).rejects.toThrow(
       /Record it yourself and mark it handled/,
@@ -184,7 +186,7 @@ describe('resolvePayoutRow', () => {
   });
 
   test('marking a line handled needs a note, and a later upload leaves it handled', async () => {
-    await importPayoutReport({ email: EMAIL, csvText: file(DISPUTE) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(DISPUTE) });
     const [held] = (await listReview(EMAIL)).held;
     await expect(resolvePayoutRow({ email: EMAIL, id: held.id, action: 'dismiss', note: '   ' })).rejects.toThrow(/note/);
 
@@ -192,20 +194,20 @@ describe('resolvePayoutRow', () => {
     expect(res).toEqual({ id: held.id, status: 'dismissed' });
     expect(await PayoutTransaction.findByPk(held.id)).toMatchObject({ status: 'dismissed', note: 'Recorded by hand, JE 123', resolvedBy: 'bk@example.test' });
 
-    await importPayoutReport({ email: EMAIL, csvText: file(DISPUTE) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(DISPUTE) });
     expect((await listReview(EMAIL)).held).toEqual([]);
   });
 
   test('a giving line can be marked handled too', async () => {
     pcoDays({ '2026-10-06': { pcoGrossCents: 5000, postedGrossCents: 0, ids: ['101'] } });
-    await importPayoutReport({ email: EMAIL, csvText: file(gift('2026-10-06', 101, 50, 1.5)) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(gift('2026-10-06', 101, 50, 1.5)) });
     const [line] = (await listReview(EMAIL)).givingNotPosted;
     await resolvePayoutRow({ email: EMAIL, id: line.id, action: 'dismiss', note: 'Cash entry covers it' });
     expect((await listReview(EMAIL)).givingNotPosted).toEqual([]);
   });
 
   test('a line that is not waiting for review is refused, and another church cannot touch it', async () => {
-    await importPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
     const postedRow: any = await PayoutTransaction.findOne({ where: { userId: USER_ID, status: 'posted' } });
     await expect(resolvePayoutRow({ email: EMAIL, id: postedRow.id, action: 'post', account: { value: '80' } })).rejects.toMatchObject({ status: 409 });
     await expect(resolvePayoutRow({ email: EMAIL, id: postedRow.id, action: 'dismiss', note: 'x' })).rejects.toMatchObject({ status: 409 });
@@ -214,7 +216,7 @@ describe('resolvePayoutRow', () => {
 
     await User.create({ id: OTHER_ID, email: OTHER_EMAIL, isActive: true, role: 'client' } as any);
     await UserSettings.create(settings(OTHER_ID) as any);
-    await importPayoutReport({ email: OTHER_EMAIL, csvText: file(DISPUTE) });
+    await importPayoutReport({ ...PAYOUTS, email: OTHER_EMAIL, csvText: file(DISPUTE) });
     const [theirs] = (await listReview(OTHER_EMAIL)).held;
     await expect(resolvePayoutRow({ email: EMAIL, id: theirs.id, action: 'dismiss', note: 'x' })).rejects.toMatchObject({ status: 404 });
     expect(await PayoutTransaction.findByPk(theirs.id)).toMatchObject({ status: 'held' });
@@ -254,7 +256,7 @@ describe('recheckGiving', () => {
       '2026-10-06': { pcoGrossCents: 5000, postedGrossCents: 0, ids: ['101'] },
       '2026-10-07': { pcoGrossCents: 3000, postedGrossCents: 0, ids: ['102'] },
     });
-    await importPayoutReport({ email: EMAIL, csvText: file(gift('2026-10-06', 101, 50, 1.5), gift('2026-10-07', 102, 30, 1)) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(gift('2026-10-06', 101, 50, 1.5), gift('2026-10-07', 102, 30, 1)) });
     pcoDays({
       '2026-10-06': { pcoGrossCents: 5000, postedGrossCents: 5000, ids: ['101'] },
       '2026-10-07': { pcoGrossCents: 3000, postedGrossCents: 0, ids: ['102'] },
@@ -282,6 +284,7 @@ describe('getPayoutStatus', () => {
 
     pcoDays({ '2026-10-06': { pcoGrossCents: 5000, postedGrossCents: 0, ids: ['101'] } });
     await importPayoutReport({
+      ...PAYOUTS,
       email: EMAIL,
       fileName: 'oct.csv',
       uploadedBy: 'bk@example.test',
@@ -290,7 +293,14 @@ describe('getPayoutStatus', () => {
     await interruptedRow();
     const s = await getPayoutStatus(EMAIL);
     expect(s).toMatchObject({
-      lastUpload: { fileName: 'oct.csv', firstDay: '2026-10-02', lastDay: '2026-10-06', uploadedBy: 'bk@example.test' },
+      lastUpload: {
+        fileName: 'oct.csv',
+        firstDay: '2026-10-02',
+        lastDay: '2026-10-06',
+        payoutFrom: '2026-10-01',
+        payoutTo: '2026-10-20',
+        uploadedBy: 'bk@example.test',
+      },
       needsReview: 2,
       givingNotPosted: 1,
       ready: true,
@@ -314,6 +324,7 @@ describe('getPayoutStatus', () => {
 describe('listSignups', () => {
   test('the registration names seen so far, sorted, giving funds excluded', async () => {
     await importPayoutReport({
+      ...PAYOUTS,
       email: EMAIL,
       csvText: file(
         reg('2026-10-05', 1, 60, 1.59, 'Young Adult Retreat 2027'),

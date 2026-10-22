@@ -18,6 +18,11 @@ import {
   recheckGiving,
   resolvePayoutRow,
 } from '../services/payoutReport/reviewPayoutRows';
+import {
+  getOutstandingDeposits,
+  OutstandingRequestError,
+  PlanningCenterUnavailableError,
+} from '../services/payoutReport/outstandingReport';
 
 const logger = createLogger('payout-report');
 
@@ -29,6 +34,8 @@ const fail = (res: Response, e: unknown, fallback: string) => {
     return res.status(409).json({ success: false, message: e.message });
   }
   if (e instanceof PayoutReviewError) return res.status(e.status).json({ success: false, message: e.message });
+  if (e instanceof OutstandingRequestError) return res.status(e.status).json({ success: false, message: e.message });
+  if (e instanceof PlanningCenterUnavailableError) return res.status(502).json({ success: false, message: e.message });
   logger.error('payout report endpoint failed', { error: e instanceof Error ? e.message : String(e) });
   return res.status(500).json({ success: false, message: fallback });
 };
@@ -70,8 +77,12 @@ const csvFrom = (req: SessionRequest): string => {
 
 const READ_FAILED = 'Could not read the payout report';
 
+/** "Payouts in this file: from / to" - checked by the service, which says what is wrong in words. */
+const payoutDatesFrom = (req: SessionRequest) => ({ payoutFrom: req.body?.payoutFrom, payoutTo: req.body?.payoutTo });
+
 export const payoutReportPreview = forChurch(
-  async (req, res, _actor, church) => responseSuccess(res, await previewPayoutReport({ email: church, csvText: csvFrom(req) })),
+  async (req, res, _actor, church) =>
+    responseSuccess(res, await previewPayoutReport({ email: church, csvText: csvFrom(req), ...payoutDatesFrom(req) })),
   READ_FAILED,
 );
 
@@ -84,6 +95,7 @@ export const payoutReportImport = forChurch(
         fileName: typeof req.body?.fileName === 'string' ? req.body.fileName : null,
         csvText: csvFrom(req),
         uploadedBy: actor, // who is signed in, never what the request says
+        ...payoutDatesFrom(req),
       }),
     ),
   READ_FAILED,
@@ -121,4 +133,10 @@ export const payoutReportRecheckGiving = forChurch(async (_req, res, _actor, chu
 
 export const payoutReportSignups = forChurch(async (_req, res, _actor, church) =>
   responseSuccess(res, await listSignups(church)),
+);
+
+/** "Still in transit on <month-end>": ?month=YYYY-MM. Read-only. */
+export const payoutReportOutstanding = forChurch(
+  async (req, res, _actor, church) => responseSuccess(res, await getOutstandingDeposits({ email: church, month: req.query?.month })),
+  "Couldn't put together what's still in transit. Try again in a minute.",
 );

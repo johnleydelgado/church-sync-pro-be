@@ -51,6 +51,9 @@ export interface PayoutStatus {
     uploadedAt: string;
     firstDay: string | null;
     lastDay: string | null;
+    /** The payout dates the file covers; null on uploads made before they were asked for. */
+    payoutFrom: string | null;
+    payoutTo: string | null;
     uploadedBy: string | null;
   } | null;
   needsReview: number;
@@ -383,6 +386,8 @@ export const getPayoutStatus = async (email: string): Promise<PayoutStatus> => {
           uploadedAt: iso(last.createdAt),
           firstDay: last.firstDay ?? null,
           lastDay: last.lastDay ?? null,
+          payoutFrom: last.payoutFrom ?? null,
+          payoutTo: last.payoutTo ?? null,
           uploadedBy: last.uploadedBy ?? null,
         }
       : null,

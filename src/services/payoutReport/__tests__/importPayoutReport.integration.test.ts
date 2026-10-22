@@ -20,10 +20,13 @@ import PayoutTransaction from '../../../db/models/PayoutTransaction';
 import * as automation from '../../../controller/automation';
 import { loadDayCoverage, DayCoverage } from '../givingCoverage';
 import { importPayoutReport, previewPayoutReport, PayoutImportSetupError, PayoutImportBusyError } from '../importPayoutReport';
+import { PayoutReportFormatError } from '../parsePayoutReport';
 
 const mockedAutomation = automation as jest.Mocked<typeof automation>;
 const coverage = loadDayCoverage as jest.Mock;
 
+/** "Payouts in this file: from / to" - required on every upload. */
+const PAYOUTS = { payoutFrom: '2026-10-01', payoutTo: '2026-10-20' };
 const EMAIL = 'payout@example.test';
 const USER_ID = 90010;
 const CLEARING = '1150040022';
@@ -114,8 +117,8 @@ beforeEach(async () => {
 describe('preview', () => {
   test('says what an import would do, and writes nothing', async () => {
     pcoDays(OCT_5_POSTED);
-    const s = await previewPayoutReport({ email: EMAIL, csvText: OCT });
-    expect(s.file).toEqual({ rows: 5, firstDay: '2026-10-05', lastDay: '2026-10-06' });
+    const s = await previewPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCT });
+    expect(s.file).toEqual({ rows: 5, firstDay: '2026-10-05', lastDay: '2026-10-06', payoutFrom: '2026-10-01', payoutTo: '2026-10-20' });
     expect(s.registrations).toEqual({
       toPost: { count: 4, gross: 95, fees: 4.13, net: 90.87 },
       alreadyRecorded: 0,
@@ -138,7 +141,7 @@ describe('preview', () => {
 describe('import', () => {
   test('posts one entry per day and kind, and records it on the ledger, the rows and the upload', async () => {
     pcoDays(OCT_5_POSTED);
-    const s = await importPayoutReport({ email: EMAIL, fileName: 'oct.csv', csvText: OCT, uploadedBy: 'bk@example.test' });
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, fileName: 'oct.csv', csvText: OCT, uploadedBy: 'bk@example.test' });
 
     expect(posted.map((je) => [je.TxnDate, je.DocNumber])).toEqual([
       ['2026-10-05', 'CSP-E-2026-10-05-1'],
@@ -178,15 +181,67 @@ describe('import', () => {
     expect(rows.get('donation:100:charge:2026-10-05:10000')).toMatchObject({ status: 'giving_covered' });
 
     const upload: any = await PayoutReportUpload.findOne({ where: { userId: USER_ID } });
-    expect(upload).toMatchObject({ fileName: 'oct.csv', uploadedBy: 'bk@example.test', rowCount: 5, firstDay: '2026-10-05', lastDay: '2026-10-06' });
+    expect(upload).toMatchObject({
+      fileName: 'oct.csv',
+      uploadedBy: 'bk@example.test',
+      rowCount: 5,
+      firstDay: '2026-10-05',
+      lastDay: '2026-10-06',
+      payoutFrom: '2026-10-01',
+      payoutTo: '2026-10-20',
+    });
     expect(upload.summary.entries).toHaveLength(3);
+    expect(upload.summary.file).toMatchObject({ payoutFrom: '2026-10-01', payoutTo: '2026-10-20' });
+  });
+
+  test('each row points at the upload with the earliest payout dates it has appeared in', async () => {
+    pcoDays(OCT_5_POSTED);
+    const payoutUploadIds = async () => [...new Set([...(await rowsByKey()).values()].map((r: any) => r.payoutUploadId))];
+    const first = await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-10-15', payoutTo: '2026-10-20' });
+    expect(await payoutUploadIds()).toEqual([first.uploadId]);
+    const earlier = await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-10-07', payoutTo: '2026-10-10' });
+    expect(await payoutUploadIds()).toEqual([earlier.uploadId]);
+    await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-10-01', payoutTo: '2026-10-20' });
+    expect(await payoutUploadIds()).toEqual([earlier.uploadId]);
+    // Which upload created or re-checked a row is unchanged.
+    expect((await rowsByKey()).get('registration:1:charge:2026-10-05:6000')).toMatchObject({ uploadId: first.uploadId });
+  });
+
+  test('payout dates that end before the rows were charged are refused, and nothing is stored', async () => {
+    pcoDays(OCT_5_POSTED);
+    const err = await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-09-01', payoutTo: '2026-09-30' }).catch((e) => e);
+    expect(err).toBeInstanceOf(PayoutReportFormatError);
+    expect(err.message).toBe(
+      'This file has rows dated as late as Oct 6, after the last payout date entered (Sep 30). Nothing is paid out before it happens, so check the payout dates.',
+    );
+    expect(coverage).not.toHaveBeenCalled();
+    expect(posted).toHaveLength(0);
+    expect(await PayoutReportUpload.count({ where: { userId: USER_ID } })).toBe(0);
+    expect(await PayoutTransaction.count({ where: { userId: USER_ID } })).toBe(0);
+  });
+
+  test.each([
+    ['no payout dates', {}, 'Enter the dates of the payouts in this file: from and to.'],
+    ['dates the wrong way round', { payoutFrom: '2026-10-20', payoutTo: '2026-10-01' }, 'The payout dates are the wrong way round'],
+    ['a last date in the future', { payoutFrom: '2026-10-01', payoutTo: '2099-10-31' }, 'is in the future'],
+    ['dates across a month-end', { payoutFrom: '2026-09-25', payoutTo: '2026-10-05' }, "Split it at the month-end: CSP can't tell which side of Sep 30"],
+  ])('%s: refused with a sentence, and nothing is read, posted or stored', async (_name, dates, message) => {
+    pcoDays(OCT_5_POSTED);
+    const err = await importPayoutReport({ ...dates, email: EMAIL, csvText: OCT }).catch((e) => e);
+    expect(err).toBeInstanceOf(PayoutReportFormatError);
+    expect(err.message).toContain(message);
+    await expect(previewPayoutReport({ ...dates, email: EMAIL, csvText: OCT })).rejects.toThrow(PayoutReportFormatError);
+    expect(posted).toHaveLength(0);
+    expect(coverage).not.toHaveBeenCalled();
+    expect(await PayoutReportUpload.count({ where: { userId: USER_ID } })).toBe(0);
+    expect(await PayoutTransaction.count({ where: { userId: USER_ID } })).toBe(0);
   });
 
   test('uploading the same file again posts nothing', async () => {
     pcoDays(OCT_5_POSTED);
-    await importPayoutReport({ email: EMAIL, csvText: OCT });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCT });
     posted = [];
-    const again = await importPayoutReport({ email: EMAIL, csvText: OCT });
+    const again = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCT });
     expect(posted).toHaveLength(0);
     expect(again.entries).toEqual([]);
     expect(again.registrations).toMatchObject({ toPost: { count: 0 }, alreadyRecorded: 4 });
@@ -195,9 +250,10 @@ describe('import', () => {
   });
 
   test('an overlapping file posts only its new rows, numbered after the earlier entries', async () => {
-    await importPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59), reg('2026-10-07', 3, 30, 0.95)) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59), reg('2026-10-07', 3, 30, 0.95)) });
     posted = [];
     const s = await importPayoutReport({
+      ...PAYOUTS,
       email: EMAIL,
       csvText: file(reg('2026-10-05', 1, 60, 1.59), reg('2026-10-07', 3, 30, 0.95), reg('2026-10-07', 5, 60, 1.59), reg('2026-10-08', 6, 30, 0.95)),
     });
@@ -207,13 +263,13 @@ describe('import', () => {
 
   test('charges before the start date are left alone, and post if the start date moves earlier', async () => {
     const sept = file(reg('2026-09-28', 7, 60, 1.59), reg('2026-09-29', 8, 60, 1.59));
-    const first = await importPayoutReport({ email: EMAIL, csvText: sept });
+    const first = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: sept });
     expect(posted).toHaveLength(0);
     expect(first.registrations.beforeStart).toEqual({ count: 2, net: 116.82 });
     expect([...(await rowsByKey()).values()].map((r: any) => r.status)).toEqual(['before_start', 'before_start']);
 
     await UserSettings.update({ startDateAutomationRegistration: '09-01-2026' } as any, { where: { userId: USER_ID } });
-    const second = await importPayoutReport({ email: EMAIL, csvText: sept });
+    const second = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: sept });
     expect(posted.map((je) => je.TxnDate)).toEqual(['2026-09-28', '2026-09-29']);
     expect(second.registrations.toPost.count).toBe(2);
   });
@@ -227,7 +283,7 @@ describe('import', () => {
       return { Id: `JE${posted.length}` } as any;
     });
     const f = file(reg('2026-10-05', 1, 60, 1.59), reg('2026-10-06', 3, 30, 0.95));
-    const s = await importPayoutReport({ email: EMAIL, csvText: f });
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: f });
     expect(posted.map((je) => je.TxnDate)).toEqual(['2026-10-05']);
     expect(s.entries[1]).toMatchObject({ day: '2026-10-06', error: 'Invalid account: Account 77 is inactive' });
     expect((await rowsByKey()).get('registration:3:charge:2026-10-06:3000')).toMatchObject({
@@ -237,7 +293,7 @@ describe('import', () => {
     expect((await ledger('2026-10-06'))?.registrationEntryCount ?? 0).toBe(0);
 
     postNormally();
-    await importPayoutReport({ email: EMAIL, csvText: f });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: f });
     expect(posted.map((je) => [je.TxnDate, je.DocNumber])).toEqual([
       ['2026-10-05', 'CSP-E-2026-10-05-1'],
       ['2026-10-06', 'CSP-E-2026-10-06-1'],
@@ -247,7 +303,7 @@ describe('import', () => {
 
   test('QuickBooks took it but CSP could not record it: the rows wait for a person and are never posted again', async () => {
     const spy = jest.spyOn(DailyJeSync.prototype, 'update').mockRejectedValueOnce(new Error('connection lost'));
-    const s = await importPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
     spy.mockRestore();
     expect(posted).toHaveLength(1);
     expect(s.entries[0]).toMatchObject({ docNumber: 'CSP-E-2026-10-05-1', qboEntryId: 'JE1' });
@@ -259,7 +315,7 @@ describe('import', () => {
     });
 
     posted = [];
-    await importPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
     expect(posted).toHaveLength(0);
   });
 
@@ -275,14 +331,14 @@ describe('import', () => {
       netCents: 5841,
       status: 'pending',
     } as any);
-    const s = await importPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
     expect(posted).toHaveLength(0);
     expect(s.registrations.alreadyRecorded).toBe(1);
   });
 
   test('unrecognised lines are held once with their reason; later uploads leave them to the review list', async () => {
     const f = file('2026-10-02,Dispute,Stripe,,,-25.00,15.00,-40.00,card,,Chargeback', reg('2026-10-05', 1, 60, 1.59, 'Brand New Event'));
-    const s = await importPayoutReport({ email: EMAIL, csvText: f });
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: f });
     expect(s.held).toEqual([
       { line: 2, day: '2026-10-02', type: 'Dispute', source: 'Stripe', fundOrSignup: '', net: -40, reason: 'unrecognised_type' },
     ]);
@@ -291,7 +347,7 @@ describe('import', () => {
     const held = [...(await rowsByKey()).values()].find((r: any) => r.status === 'held');
     expect(held).toMatchObject({ reason: 'unrecognised_type', type: 'Dispute', source: 'Stripe' });
 
-    const again = await importPayoutReport({ email: EMAIL, csvText: f });
+    const again = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: f });
     expect(again.held).toEqual([]);
     expect(again.registrations.alreadyRecorded).toBe(1);
   });
@@ -308,6 +364,7 @@ describe('import', () => {
       { where: { userId: USER_ID } },
     );
     await importPayoutReport({
+      ...PAYOUTS,
       email: EMAIL,
       csvText: file(reg('2026-10-05', 1, 60, 1.59), reg('2026-10-05', 2, 500, 11.35, 'Young Adult Retreat 2027')),
     });
@@ -337,7 +394,7 @@ describe('setup', () => {
     ['no fee account while a row has a fee', { settingBankCharges: null }, /Stripe fees/],
   ])('%s: refused, nothing written', async (_name, override, message) => {
     await UserSettings.update(override as any, { where: { userId: USER_ID } });
-    const attempt = importPayoutReport({ email: EMAIL, csvText: OCT });
+    const attempt = importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCT });
     await expect(attempt).rejects.toThrow(message);
     await expect(attempt).rejects.toBeInstanceOf(PayoutImportSetupError);
     expect(await PayoutTransaction.count({ where: { userId: USER_ID } })).toBe(0);
@@ -347,7 +404,7 @@ describe('setup', () => {
 
   test('a refund-only file needs no fee account', async () => {
     await UserSettings.update({ settingBankCharges: null } as any, { where: { userId: USER_ID } });
-    await importPayoutReport({ email: EMAIL, csvText: file(regRefund('2026-10-06', 4, 55)) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(regRefund('2026-10-06', 4, 55)) });
     expect(posted).toHaveLength(1);
   });
 
@@ -355,13 +412,13 @@ describe('setup', () => {
     await UserSettings.update({ settingBankData: [{ type: 'donation', value: '999', label: 'Stripe Clearing' }] } as any, {
       where: { userId: USER_ID },
     });
-    await importPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
     expect(linesOf(posted[0])[2]).toEqual(['Debit', '999', 58.41]);
   });
 
   test('preview refuses for the same reasons', async () => {
     await UserSettings.update({ startDateAutomationRegistration: null } as any, { where: { userId: USER_ID } });
-    await expect(previewPayoutReport({ email: EMAIL, csvText: OCT })).rejects.toBeInstanceOf(PayoutImportSetupError);
+    await expect(previewPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCT })).rejects.toBeInstanceOf(PayoutImportSetupError);
   });
 });
 
@@ -374,8 +431,8 @@ describe('two uploads at once', () => {
       return { Id: `JE${posted.length}` } as any;
     });
     const results = await Promise.allSettled([
-      importPayoutReport({ email: EMAIL, csvText: OCT }),
-      importPayoutReport({ email: EMAIL, csvText: OCT }),
+      importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCT }),
+      importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCT }),
     ]);
     expect(posted).toHaveLength(3);
     for (const r of results) {
@@ -393,7 +450,7 @@ describe('giving lines', () => {
   test('stored as covered or not posted, and re-checked by the next upload', async () => {
     const f = file(gift('2026-10-05', 100, 100, 3), gift('2026-10-06', 101, 50, 1.5));
     pcoDays({ ...OCT_5_POSTED, '2026-10-06': { pcoGrossCents: 5000, postedGrossCents: 0, ids: ['101'] } });
-    const first = await importPayoutReport({ email: EMAIL, csvText: f });
+    const first = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: f });
     expect(first.giving).toEqual({ covered: 1, notPosted: [{ day: '2026-10-06', count: 1, net: 48.5, reason: 'day_not_posted' }] });
     expect((await rowsByKey()).get('donation:101:charge:2026-10-06:5000')).toMatchObject({
       status: 'giving_not_posted',
@@ -401,13 +458,13 @@ describe('giving lines', () => {
     });
 
     pcoDays({ '2026-10-06': { pcoGrossCents: 5000, postedGrossCents: 5000, ids: ['101'] } });
-    const second = await importPayoutReport({ email: EMAIL, csvText: f });
+    const second = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: f });
     expect(second.giving).toEqual({ covered: 2, notPosted: [] });
     expect((await rowsByKey()).get('donation:101:charge:2026-10-06:5000')).toMatchObject({ status: 'giving_covered', reason: null });
   });
 
   test('giving before the giving start date is covered without asking Planning Center', async () => {
-    const s = await importPayoutReport({ email: EMAIL, csvText: file(gift('2026-09-10', 90, 100, 3)) });
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(gift('2026-09-10', 90, 100, 3)) });
     expect(s.giving.covered).toBe(1);
     expect(coverage).toHaveBeenCalledWith(EMAIL, USER_ID, []);
   });
@@ -415,14 +472,15 @@ describe('giving lines', () => {
 
 describe('earlier uploads covering the same dates', () => {
   test('a fresh file has none', async () => {
-    const s = await previewPayoutReport({ email: EMAIL, csvText: OCT });
+    const s = await previewPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCT });
     expect(s.overlap).toEqual({ rowsSeenBefore: 0, previousUploads: [] });
   });
 
   test('the preview names the earlier upload and counts the lines it already brought in', async () => {
     pcoDays(OCT_5_POSTED);
-    await importPayoutReport({ email: EMAIL, fileName: 'oct-week1.csv', uploadedBy: 'bk@example.test', csvText: OCT });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, fileName: 'oct-week1.csv', uploadedBy: 'bk@example.test', csvText: OCT });
     const s = await previewPayoutReport({
+      ...PAYOUTS,
       email: EMAIL,
       csvText: file(reg('2026-10-05', 1, 60, 1.59), reg('2026-10-06', 3, 30, 0.95), reg('2026-10-07', 5, 60, 1.59)),
     });
@@ -433,19 +491,22 @@ describe('earlier uploads covering the same dates', () => {
       uploadedBy: 'bk@example.test',
       firstDay: '2026-10-05',
       lastDay: '2026-10-06',
+      payoutFrom: '2026-10-01',
+      payoutTo: '2026-10-20',
     });
     expect(typeof s.overlap.previousUploads[0].uploadedAt).toBe('string');
   });
 
   test('an upload with no dates in common is not mentioned', async () => {
-    await importPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
-    const s = await previewPayoutReport({ email: EMAIL, csvText: file(reg('2026-10-20', 9, 60, 1.59)) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
+    const s = await previewPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(reg('2026-10-20', 9, 60, 1.59)) });
     expect(s.overlap).toEqual({ rowsSeenBefore: 0, previousUploads: [] });
   });
 
   test('the import result lists the earlier uploads, not itself', async () => {
-    await importPayoutReport({ email: EMAIL, fileName: 'first.csv', csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, fileName: 'first.csv', csvText: file(reg('2026-10-05', 1, 60, 1.59)) });
     const s = await importPayoutReport({
+      ...PAYOUTS,
       email: EMAIL,
       fileName: 'second.csv',
       csvText: file(reg('2026-10-05', 1, 60, 1.59), reg('2026-10-05', 2, 60, 1.59)),

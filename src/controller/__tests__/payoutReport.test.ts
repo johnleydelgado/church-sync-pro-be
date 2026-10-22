@@ -28,13 +28,24 @@ jest.mock('../../services/payoutReport/reviewPayoutRows', () => {
     resolvePayoutRow: jest.fn(),
   };
 });
+jest.mock('../../services/payoutReport/outstandingReport', () => {
+  class OutstandingRequestError extends Error {
+    constructor(message: string, public status = 400) {
+      super(message);
+    }
+  }
+  class PlanningCenterUnavailableError extends Error {}
+  return { OutstandingRequestError, PlanningCenterUnavailableError, getOutstandingDeposits: jest.fn() };
+});
 
 import { createLogger } from '../../utils/logger';
 import { PayoutReportFormatError } from '../../services/payoutReport/parsePayoutReport';
 import * as importer from '../../services/payoutReport/importPayoutReport';
 import * as review from '../../services/payoutReport/reviewPayoutRows';
+import * as outstanding from '../../services/payoutReport/outstandingReport';
 import {
   payoutReportImport,
+  payoutReportOutstanding,
   payoutReportPreview,
   payoutReportRecheckGiving,
   payoutReportResolve,
@@ -54,6 +65,7 @@ const svc = {
   signups: review.listSignups as jest.Mock,
   recheck: review.recheckGiving as jest.Mock,
   resolve: review.resolvePayoutRow as jest.Mock,
+  outstanding: outstanding.getOutstandingDeposits as jest.Mock,
 };
 
 const makeReq = (o: { body?: any; query?: any } = {}) => ({ body: o.body ?? {}, query: o.query ?? {}, path: '/x' } as any);
@@ -110,16 +122,45 @@ describe('upload', () => {
   test('preview passes the file for the church, not the caller', async () => {
     signedIn = BOOKKEEPER;
     svc.preview.mockResolvedValue({ file: { rows: 0 } });
-    const { code } = await call(payoutReportPreview, makeReq({ body: { email: CHURCH, csvText: CSV } }));
+    const { code } = await call(
+      payoutReportPreview,
+      makeReq({ body: { email: CHURCH, csvText: CSV, payoutFrom: '2026-10-01', payoutTo: '2026-10-31' } }),
+    );
     expect(code).toBe(200);
-    expect(svc.preview).toHaveBeenCalledWith({ email: CHURCH, csvText: CSV });
+    expect(svc.preview).toHaveBeenCalledWith({ email: CHURCH, csvText: CSV, payoutFrom: '2026-10-01', payoutTo: '2026-10-31' });
+  });
+
+  test('the payout dates go to the service as sent; it checks them and says what is wrong', async () => {
+    svc.preview.mockRejectedValue(new PayoutReportFormatError('Enter the dates of the payouts in this file: from and to.'));
+    const res = await call(payoutReportPreview, makeReq({ body: { email: CHURCH, csvText: CSV } }));
+    expect(svc.preview).toHaveBeenCalledWith({ email: CHURCH, csvText: CSV, payoutFrom: undefined, payoutTo: undefined });
+    expect(res).toEqual({ code: 400, body: { success: false, message: 'Enter the dates of the payouts in this file: from and to.' } });
   });
 
   test('import records the signed-in user as the uploader, whatever the request says', async () => {
     signedIn = BOOKKEEPER;
     svc.import.mockResolvedValue({ uploadId: 3 });
-    await call(payoutReportImport, makeReq({ body: { email: CHURCH, csvText: CSV, fileName: 'oct.csv', uploadedBy: 'someone@else.test' } }));
-    expect(svc.import).toHaveBeenCalledWith({ email: CHURCH, fileName: 'oct.csv', csvText: CSV, uploadedBy: BOOKKEEPER });
+    await call(
+      payoutReportImport,
+      makeReq({
+        body: {
+          email: CHURCH,
+          csvText: CSV,
+          fileName: 'oct.csv',
+          uploadedBy: 'someone@else.test',
+          payoutFrom: '2026-10-01',
+          payoutTo: '2026-10-31',
+        },
+      }),
+    );
+    expect(svc.import).toHaveBeenCalledWith({
+      email: CHURCH,
+      fileName: 'oct.csv',
+      csvText: CSV,
+      uploadedBy: BOOKKEEPER,
+      payoutFrom: '2026-10-01',
+      payoutTo: '2026-10-31',
+    });
   });
 
   test.each([
@@ -194,5 +235,38 @@ describe('review actions', () => {
     svc.signups.mockResolvedValue(['SHE Conference 2026']);
     expect((await call(payoutReportRecheckGiving, makeReq({ body: { email: CHURCH } }))).body.data).toEqual({ checked: 1, nowCovered: 1, stillNotPosted: 0 });
     expect((await call(payoutReportSignups, makeReq({ query: { email: CHURCH } }))).body.data).toEqual(['SHE Conference 2026']);
+  });
+});
+
+describe('still in transit', () => {
+  test('reports for the church the guard checked, for the month asked', async () => {
+    signedIn = BOOKKEEPER;
+    svc.outstanding.mockResolvedValue({ month: '2026-10', asOf: '2026-10-31', items: [] });
+    const res = await call(payoutReportOutstanding, makeReq({ query: { email: 'other@example.test', month: '2026-10' } }));
+    expect(res).toEqual({ code: 200, body: expect.objectContaining({ success: true, data: { month: '2026-10', asOf: '2026-10-31', items: [] } }) });
+    expect(svc.outstanding).toHaveBeenCalledWith({ email: CHURCH, month: '2026-10' });
+  });
+
+  test.each([
+    ['a bad month', () => new (outstanding as any).OutstandingRequestError('month must be YYYY-MM'), 400],
+    ['an unknown church', () => new (outstanding as any).OutstandingRequestError('No church found for this account.', 404), 404],
+    ['Planning Center not answering', () => new (outstanding as any).PlanningCenterUnavailableError("Planning Center didn't answer, so the giving lines can't be listed. Try again in a minute."), 502],
+  ])('%s -> %s with the sentence', async (_name, makeError, code) => {
+    const error = makeError();
+    svc.outstanding.mockRejectedValue(error);
+    const res = await call(payoutReportOutstanding, makeReq({ query: { email: CHURCH, month: '2026-10' } }));
+    expect(res).toEqual({ code, body: { success: false, message: error.message } });
+  });
+
+  test('anything else is a 500 that says nothing internal', async () => {
+    svc.outstanding.mockRejectedValue(new Error('column "payoutTo" does not exist'));
+    const res = await call(payoutReportOutstanding, makeReq({ query: { email: CHURCH, month: '2026-10' } }));
+    expect(res).toEqual({ code: 500, body: { success: false, message: "Couldn't put together what's still in transit. Try again in a minute." } });
+  });
+
+  test('wired without its guard, it is refused', async () => {
+    const res = await call(payoutReportOutstanding, makeReq({ query: { email: CHURCH, month: '2026-10' } }), {});
+    expect(res.code).toBe(403);
+    expect(svc.outstanding).not.toHaveBeenCalled();
   });
 });

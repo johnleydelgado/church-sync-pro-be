@@ -60,6 +60,7 @@ const userRoutes = {
   payoutReportResolve: '/user/payoutReport/resolve',
   payoutReportRecheckGiving: '/user/payoutReport/recheckGiving',
   payoutReportSignups: '/user/payoutReport/signups',
+  payoutReportOutstanding: '/user/payoutReport/outstanding',
 };
 
 // The Churches page and the People tab (controller/church.ts).
