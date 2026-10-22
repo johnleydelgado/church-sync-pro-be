@@ -203,6 +203,11 @@ describe('import', () => {
     expect(await payoutUploadIds()).toEqual([earlier.uploadId]);
     await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-10-01', payoutTo: '2026-10-20' });
     expect(await payoutUploadIds()).toEqual([earlier.uploadId]);
+    // Ending the same day: the narrower report wins, a wider one does not.
+    const narrower = await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-10-09', payoutTo: '2026-10-10' });
+    expect(await payoutUploadIds()).toEqual([narrower.uploadId]);
+    await importPayoutReport({ email: EMAIL, csvText: OCT, payoutFrom: '2026-10-01', payoutTo: '2026-10-10' });
+    expect(await payoutUploadIds()).toEqual([narrower.uploadId]);
     // Which upload created or re-checked a row is unchanged.
     expect((await rowsByKey()).get('registration:1:charge:2026-10-05:6000')).toMatchObject({ uploadId: first.uploadId });
   });

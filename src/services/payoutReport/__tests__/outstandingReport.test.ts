@@ -329,7 +329,7 @@ describe('QuickBooks', () => {
     expect(r.differenceNotes).toEqual([
       {
         kind: 'deposits',
-        text: 'Your payout reports show Stripe paid out $97.00 between Oct 1 and Oct 31, 2026. Deposits recorded against Clearing in that time total $97.00.',
+        text: 'Your payout reports for Oct 1 to Oct 31 show Stripe paid out $97.00. Deposits recorded against Clearing on those dates total $97.00.',
         amount: 0,
       },
       {

@@ -518,7 +518,7 @@ describe('QuickBooks and the difference', () => {
       },
       {
         kind: 'deposits',
-        text: 'Your payout reports show Stripe paid out $645.00 between Oct 1 and Oct 31, 2026. Deposits recorded against Clearing in that time total $645.00.',
+        text: 'Your payout reports for Oct 1 to Oct 31 show Stripe paid out $645.00. Deposits recorded against Clearing on those dates total $645.00.',
         amount: 0,
       },
       {
@@ -540,7 +540,7 @@ describe('QuickBooks and the difference', () => {
       {
         kind: 'deposits',
         text:
-          'Your payout reports show Stripe paid out $645.00 between Oct 1 and Oct 31, 2026. Deposits recorded against Clearing in that time total $600.00. ' +
+          'Your payout reports for Oct 1 to Oct 31 show Stripe paid out $645.00. Deposits recorded against Clearing on those dates total $600.00. ' +
           "They're $45.00 apart: a payout not recorded as a deposit yet, or recorded for a different amount.",
         amount: 45,
       },
@@ -562,55 +562,80 @@ describe('QuickBooks and the difference', () => {
     );
   });
 
-  test('payout reports missing for part of the period: the payout total says it is incomplete, and until when', () => {
-    const r = notesOf(9700 + 2000, [entry('2026-10-08', -62500)], { uploads: [upload(1, '2026-10-01', '2026-10-20')] });
+  test("only deposits on the dates the payout reports cover are compared; missing reports are not this note's business", () => {
+    const r = notesOf(9700 + 2000 - 5000, [entry('2026-10-08', -62500), entry('2026-10-25', -5000)], {
+      uploads: [upload(1, '2026-10-01', '2026-10-20')],
+    });
+    expect(r.coverage.complete).toBe(false); // the report's main warning says Oct 21-31 is missing
     expect(r.differenceNotes).toEqual([
       {
         kind: 'deposits',
         text:
-          'Your payout reports show Stripe paid out $645.00 between Oct 1 and Oct 31, 2026. Deposits recorded against Clearing in that time total $625.00. ' +
-          "They're $20.00 apart, but the payout total is incomplete until the payout reports for Oct 21 to Oct 31 are uploaded.",
+          'Your payout reports for Oct 1 to Oct 20 show Stripe paid out $645.00. Deposits recorded against Clearing on those dates total $625.00. ' +
+          "They're $20.00 apart: a payout not recorded as a deposit yet, or recorded for a different amount.",
         amount: 20,
       },
     ]);
-    const tied = notesOf(9700, [entry('2026-10-08', -64500)], { uploads: [upload(1, '2026-10-01', '2026-10-20')] });
-    expect(tied.difference).toBe(0); // no notes when there is nothing to explain
-    const even = notesOf(9700 + 3, [entry('2026-10-08', -64500), entry('2026-10-09', 3, 'Journal Entry')], {
-      uploads: [upload(1, '2026-10-01', '2026-10-20')],
+  });
+
+  test('several reports: their dates joined, overlaps merged, deposits between them left out', () => {
+    const r = notesOf(9700 + 100, [entry('2026-10-05', -48500), entry('2026-10-12', -16000), entry('2026-10-17', -99999), entry('2026-10-22', 100, 'Journal Entry')], {
+      uploads: [upload(1, '2026-10-01', '2026-10-10'), upload(2, '2026-10-08', '2026-10-15'), upload(3, '2026-10-20', '2026-10-31')],
+      rows: [givingRow(10, '2026-10-05', 50000, 1500, 1), regRow(11, '2026-10-06', 20000, 500, 2), { ...regRow(12, '2026-10-21', -3500, 0, 2), payoutUploadId: 3 }],
     });
-    expect(even.differenceNotes[0].text).toBe(
-      'Your payout reports show Stripe paid out $645.00 between Oct 1 and Oct 31, 2026. Deposits recorded against Clearing in that time total $645.00. ' +
-        'The payout total is incomplete until the payout reports for Oct 21 to Oct 31 are uploaded.',
-    );
+    expect(r.differenceNotes[0]).toEqual({
+      kind: 'deposits',
+      text: 'Your payout reports for Oct 1 to Oct 15 and Oct 20 to Oct 31 show Stripe paid out $645.00. Deposits recorded against Clearing on those dates total $645.00.',
+      amount: 0,
+    });
   });
 
-  test('no payout reports at all: the deposits are named, and why they cannot be checked', () => {
-    const r = computeOutstanding(inTransitDay({ clearing: clearing(9700 - 64500, [entry('2026-10-08', -64500)]) }));
-    expect(r.differenceNotes).toEqual([
-      {
-        kind: 'deposits',
-        text: "No payout reports for Oct 1 to Oct 31 have been uploaded yet, so the $645.00 of deposits recorded against Clearing in that time can't be checked against what Stripe paid out.",
-        amount: -645,
-      },
-    ]);
-  });
-
-  test('a report whose payouts start before the sync start date is not counted: CSP cannot split it', () => {
+  test('a report starting before the sync start date: left out of the note, still counted for coverage', () => {
     const r = computeOutstanding(
       inTransitDay({
         startDay: '2026-09-15',
         uploads: [upload(9, '2026-09-01', '2026-09-30'), OCT],
         rows: [givingRow(20, '2026-09-20', 30000, 900, 9), ...OCT_ROWS],
-        clearing: clearing(9700 - 29100, [entry('2026-09-22', -29100), entry('2026-10-08', -64500)]),
+        clearing: clearing(9700 + 1000, [entry('2026-09-22', -29100), entry('2026-10-08', -64500), entry('2026-10-09', 1000, 'Journal Entry')]),
       }),
     );
+    expect(r.coverage).toEqual({ complete: true, from: '2026-09-15', missing: [] });
+    expect(r.differenceNotes[0]).toEqual({
+      kind: 'deposits',
+      text: 'Your payout reports for Oct 1 to Oct 31 show Stripe paid out $645.00. Deposits recorded against Clearing on those dates total $645.00.',
+      amount: 0,
+    });
+  });
+
+  test("September uploaded as Sep 1-30 for a Sep 15 go-live: September's report says the deposits can't be checked, nothing more", () => {
+    const r = computeOutstanding(
+      inTransitDay({
+        month: '2026-09',
+        asOf: '2026-09-30',
+        startDay: '2026-09-15',
+        ledgers: [ledger('2026-09-29', 10000, 300)],
+        uploads: [upload(9, '2026-09-01', '2026-09-30')],
+        rows: [givingRow(20, '2026-09-20', 30000, 900, 9)],
+        clearing: clearing(9700 - 29100, [entry('2026-09-22', -29100)]),
+      }),
+    );
+    expect(r.coverage.complete).toBe(true);
     expect(r.differenceNotes).toEqual([
       {
         kind: 'deposits',
-        text:
-          'Your payout reports show Stripe paid out $645.00 between Sep 15 and Oct 31, 2026. Deposits recorded against Clearing in that time total $936.00. ' +
-          "They're $291.00 apart, but the payout total is incomplete until the payout reports for Sep 15 to Sep 30 are uploaded.",
-        amount: -291,
+        text: "No payout reports covering dates from Sep 15 to Sep 30 have been uploaded yet, so deposits recorded against Clearing can't be checked against what Stripe paid out.",
+        amount: 0,
+      },
+    ]);
+  });
+
+  test('no payout reports at all: the same sentence, no amount claimed', () => {
+    const r = computeOutstanding(inTransitDay({ clearing: clearing(9700 - 64500, [entry('2026-10-08', -64500)]) }));
+    expect(r.differenceNotes).toEqual([
+      {
+        kind: 'deposits',
+        text: "No payout reports covering dates from Oct 1 to Oct 31 have been uploaded yet, so deposits recorded against Clearing can't be checked against what Stripe paid out.",
+        amount: 0,
       },
     ]);
   });

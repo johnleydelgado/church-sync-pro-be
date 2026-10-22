@@ -446,9 +446,10 @@ const storeOtherRows = async (c: Classified, uploadId: number, userId: number) =
 
 /**
  * Every row of this file was paid out within its payout dates. A row that appears in several files
- * takes the earliest range (the month-end report's rule), so point it at this upload unless it is
- * already in one whose payouts ended no later. Re-uploading a file with corrected, earlier dates
- * therefore corrects its rows.
+ * takes the earliest range (the month-end report's rule) - of two ending the same day, the narrower,
+ * as `earlier` in outstanding.ts does - so point it at this upload unless it is already in one whose
+ * payouts ended sooner, or ended the same day and began no earlier. Re-uploading a file with
+ * corrected, earlier dates therefore corrects its rows.
  */
 const markPaidOutIn = async (userId: number, uploadId: number, payouts: PayoutRange, rows: PayoutRow[]) => {
   const keys = [...new Set(rows.map((r) => r.rowKey))];
@@ -458,9 +459,10 @@ const markPaidOutIn = async (userId: number, uploadId: number, payouts: PayoutRa
         WHERE t."userId" = :userId AND t."rowKey" IN (:keys)
           AND NOT EXISTS (
             SELECT 1 FROM "PayoutReportUploads" u
-             WHERE u.id = t."payoutUploadId" AND u."payoutTo" IS NOT NULL AND u."payoutTo" <= :payoutTo
+             WHERE u.id = t."payoutUploadId" AND u."payoutTo" IS NOT NULL
+               AND (u."payoutTo" < :payoutTo OR (u."payoutTo" = :payoutTo AND u."payoutFrom" >= :payoutFrom))
           )`,
-      { replacements: { uploadId, userId, keys: keys.slice(i, i + 1000), payoutTo: payouts.to } },
+      { replacements: { uploadId, userId, keys: keys.slice(i, i + 1000), payoutTo: payouts.to, payoutFrom: payouts.from } },
     );
   }
 };
