@@ -102,8 +102,23 @@ contract: `docs/plans/2026-10-08-registrations-import.md` in the frontend repo (
 - `parsePayoutReport` keys each row `registration|donation:<id>:<type>:<day>:<grossCents>`
   (a repeat in the same file gets `#2`). `Date` is the charge or refund date; the file has **no
   payout id**, so rows are recorded but not matched to a deposit.
-- `classifyRows` (pure): `to_post` / `already_recorded` / `before_start` / `giving` / `held`.
-  Anything not positively recognised is held for a person, never skipped.
+- `classifyRows` (pure): `to_post` / `already_recorded` / `before_start` / `giving` / `returned_line` /
+  `held`. Anything not positively recognised is held for a person, never skipped.
+- **Giving check (`givingCoverage`).** A gift is looked for on the file's date AND the day either side: a
+  late-evening gift is filed the next day in the file. A gift Planning Center marks failed is a returned gift:
+  - `returned_gift`: its day posted 0, or between the settled and refund-inclusive totals.
+  - `returned_after_posting`: the day holds more than the refund-inclusive total.
+  - `returned_day_unsettled`: the day holds less than the settled total.
+- **Returned gifts (`returnedGifts.ts`, pure; CSP posts nothing).** The real file's "Charge failure" / "Fee"
+  lines name only Stripe's `py_` id.
+  - A failure is tied to the one charge with the same donor, fund and amount, up to 14 days earlier, that
+    Planning Center marks failed. A gift is returned once.
+  - A fee goes with the failure that names the same `py_` id.
+  - Tied lines are `giving_covered` / `returned_gift_line` with `PayoutTransactions.giftDonationId`. The
+    charge is the one held item.
+  - `relinkStoredReturnLines` ties still-open lines after every upload and on "Check again", asking Planning
+    Center afresh.
+  - Design: `docs/plans/2026-11-10-payout-bounces.md` in the frontend repo.
 - `importPayoutReport` posts one entry per day and kind: `CSP-E-<day>-<n>` for charges (gross to
   the event's account + class, fee to the fee account, net to clearing) and `CSP-ER-<day>-<n>` for
   refunds. `n` comes from `DailyJeSync.registrationEntryCount`, kept apart from giving's
