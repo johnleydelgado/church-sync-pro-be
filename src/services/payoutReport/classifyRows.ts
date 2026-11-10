@@ -1,7 +1,8 @@
 import { PayoutRow } from './parsePayoutReport';
 import { RegistrationMappingV2, accountForSignup } from './registrationMapping';
+import { isGivingFailure, isGivingFee } from './returnedGifts';
 
-export type ClassifiedStatus = 'to_post' | 'already_recorded' | 'before_start' | 'giving' | 'held';
+export type ClassifiedStatus = 'to_post' | 'already_recorded' | 'before_start' | 'giving' | 'returned_line' | 'held';
 export interface ClassifiedRow {
   row: PayoutRow;
   status: ClassifiedStatus;
@@ -25,6 +26,9 @@ const held = (row: PayoutRow, reason: string): ClassifiedRow => ({ row, status: 
 export const classifyRows = (rows: PayoutRow[], ctx: ClassifyContext): ClassifiedRow[] =>
   rows.map((row) => {
     if (ctx.knownKeys.has(row.rowKey)) return { row, status: 'already_recorded' };
+    // Stripe's lines for a returned bank gift ("Charge failure", "Fee"): the import ties them to the
+    // gift, and holds any it can't (as unrecognised, if it isn't a returned gift's at all).
+    if (isGivingFailure(row) || isGivingFee(row)) return { row, status: 'returned_line' };
     if (row.type !== 'Charge' && row.type !== 'Refund') return held(row, 'unrecognised_type');
     if (row.source === 'Giving') return { row, status: 'giving' };
     if (row.source !== 'Registrations') return held(row, 'unrecognised_source');

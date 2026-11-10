@@ -53,3 +53,37 @@ test('no account mapped holds the row', () => {
   const none = { ...ctx, mapping: readRegistrationMapping({ version: 2, default: { account: null }, events: [] })! };
   expect(classifyRows([row({})], none)[0]).toMatchObject({ status: 'held', reason: 'no_account_mapped' });
 });
+
+describe("a returned gift's Stripe lines (2026-11-10)", () => {
+  const giving = (o: Partial<PayoutRow>) =>
+    row({ source: 'Giving', fundOrSignup: 'Tithes & Offerings', externalId: null, ...o });
+  test('go to the returned-gift check, though they name no donation', () => {
+    const failure = giving({
+      type: 'Charge failure',
+      grossCents: -60000,
+      feeCents: 75,
+      netCents: -60075,
+      rowKey: 'raw:a',
+      description: 'Funds reversed due to payment py_1 failed',
+    });
+    const fee = giving({
+      type: 'Fee',
+      grossCents: 0,
+      feeCents: -5,
+      netCents: 5,
+      rowKey: 'raw:b',
+      description: 'Application fee refund for py_1',
+    });
+    expect(classifyRows([failure, fee], ctx).map((c) => c.status)).toEqual(['returned_line', 'returned_line']);
+  });
+  test('once recorded they stay recorded', () => {
+    const fee = giving({ type: 'Fee', grossCents: 0, netCents: 5, rowKey: 'raw:c' });
+    expect(classifyRows([fee], { ...ctx, knownKeys: new Set(['raw:c']) })[0].status).toBe('already_recorded');
+  });
+  test('other unknown types are still held', () => {
+    expect(classifyRows([giving({ type: 'Dispute', rowKey: 'raw:d' })], ctx)[0]).toMatchObject({
+      status: 'held',
+      reason: 'unrecognised_type',
+    });
+  });
+});

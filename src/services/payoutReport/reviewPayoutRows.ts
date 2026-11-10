@@ -7,7 +7,8 @@ import DailyJeSync from '../../db/models/DailyJeSync';
 import PayoutReportUpload from '../../db/models/PayoutReportUpload';
 import PayoutTransaction from '../../db/models/PayoutTransaction';
 import { parseSyncStartDay } from '../dailyDonationSync';
-import { givingCoverage, loadDayCoverage } from './givingCoverage';
+import { givingCoverage, loadDayCoverage, RETURNED_REASONS } from './givingCoverage';
+import { donationIdOf, isGivingCharge, isGivingFailure, isGivingFee, returnCostCents } from './returnedGifts';
 import {
   errorMessage,
   loadSetup,
@@ -42,6 +43,12 @@ export interface PayoutReviewRow {
   classRef: string | null;
   qboEntryId: string | null;
   uploadedAt: string;
+  /**
+   * For a gift the donor's bank returned (its charge line, reason `returned_*`): the day it came back
+   * and what that cost in fees (dollars, positive = a cost) - null until a line taking it back is
+   * uploaded.
+   */
+  returned?: { returnedOn: string | null; cost: number | null };
 }
 
 export interface PayoutStatus {
@@ -115,15 +122,52 @@ export const listReview = async (
   });
   const now = Date.now();
   const all = (rows as any[]).map((r) => (typeof r.toJSON === 'function' ? r.toJSON() : r));
+  const returnedOf = await returnedGiftFacts(userId, all);
+  const withReturned = (r: any, status: PayoutReviewRow['status']) => {
+    const row = toReviewRow(r, status);
+    const facts = returnedOf.get(Number(r.id));
+    return facts ? { ...row, returned: facts } : row;
+  };
   return {
-    held: all.filter((r) => r.status === 'held').map((r) => toReviewRow(r, 'held')),
-    givingNotPosted: all.filter((r) => r.status === 'giving_not_posted').map((r) => toReviewRow(r, 'giving_not_posted')),
+    held: all.filter((r) => r.status === 'held').map((r) => withReturned(r, 'held')),
+    givingNotPosted: all.filter((r) => r.status === 'giving_not_posted').map((r) => withReturned(r, 'giving_not_posted')),
     postingInterrupted: all.filter((r) => isInterrupted(r, now)).map((r) => toReviewRow(r, 'posting_interrupted')),
   };
 };
 
+/**
+ * When each returned gift in the list came back and what that cost: from Stripe's lines the upload tied
+ * to it (`giftDonationId`). Keyed by the charge row's id.
+ */
+const returnedGiftFacts = async (userId: number, rows: any[]) => {
+  const charges = rows.filter((r) => RETURNED_REASONS.includes(String(r.reason ?? '')) && isGivingCharge({ source: r.source, type: r.type, grossCents: Number(r.grossCents) }));
+  const out = new Map<number, { returnedOn: string | null; cost: number | null }>();
+  if (!charges.length) return out;
+  const ids = charges.map((r) => donationIdOf({ rowKey: String(r.rowKey) })).filter((x): x is string => !!x);
+  const lines = (await PayoutTransaction.findAll({
+    where: { userId, giftDonationId: { [Op.in]: ids } } as any,
+    attributes: ['giftDonationId', 'day', 'type', 'source', 'grossCents', 'netCents'],
+  })) as any[];
+  for (const r of charges) {
+    const id = donationIdOf({ rowKey: String(r.rowKey) });
+    const own = lines
+      .filter((l) => String(l.giftDonationId) === id)
+      .map((l) => ({ day: String(l.day), type: String(l.type), source: String(l.source), grossCents: Number(l.grossCents), netCents: Number(l.netCents) }));
+    const back = own.filter(isGivingFailure).map((l) => l.day).sort();
+    const cost = returnCostCents({ netCents: Number(r.netCents) }, own);
+    out.set(Number(r.id), { returnedOn: back.length ? back[back.length - 1] : null, cost: cost === null ? null : dollars(cost) });
+  }
+  return out;
+};
+
 /** Only lines CSP can post the way it posts everything else: net = gross - fee, a charge's fee within it, a refund with no fee. */
 const assertPostable = (row: any) => {
+  // A gift's charge is posted by Daily Giving, and a returned gift's lines are booked by a person -
+  // never coded here as a line of its own (that would book a gift as income a second time).
+  const line = { source: String(row.source), type: String(row.type), grossCents: Number(row.grossCents) };
+  if (isGivingCharge(line) || isGivingFailure(line) || isGivingFee(line)) {
+    throw new PayoutReviewError("CSP doesn't post giving lines from here. Book it in QuickBooks yourself if it's needed, then mark it handled.");
+  }
   const gross = Number(row.grossCents);
   const fee = Number(row.feeCents);
   const net = Number(row.netCents);
@@ -340,7 +384,9 @@ export const recheckGiving = async (email: string): Promise<{ checked: number; n
   );
   let nowCovered = 0;
   for (const res of givingCoverage(rows, { givingStartDay, days })) {
-    const [n] = await PayoutTransaction.update({ status: res.status, reason: res.reason ?? null } as any, {
+    // A gift found to be returned is settled by a person, as the upload files it (held, with its state).
+    const held = res.reason === 'returned_gift' || res.reason === 'returned_after_posting';
+    const [n] = await PayoutTransaction.update({ status: held ? 'held' : res.status, reason: res.reason ?? null } as any, {
       where: { id: res.row.id, status: 'giving_not_posted' },
     });
     if (n === 1 && res.status === 'giving_covered') nowCovered++;

@@ -12,7 +12,8 @@ import { createLogger } from '../../utils/logger';
 import { parsePayoutReport, PayoutRow } from './parsePayoutReport';
 import { readRegistrationMapping, RegistrationMappingV2 } from './registrationMapping';
 import { classifyRows, ClassifiedRow } from './classifyRows';
-import { givingCoverage, loadDayCoverage, CoverageResult } from './givingCoverage';
+import { givingCoverage, loadDayCoverage, CoverageResult, RETURNED_REASONS } from './givingCoverage';
+import { ReturnLine, donationIdOf, isGivingCharge, isGivingFailure, linkReturnLines, returnCostCents } from './returnedGifts';
 import { registrationChargeEntry, registrationRefundEntry, registrationDocNumber } from './registrationEntries';
 import { assertPayoutRange, assertRowsWithinPayouts, PayoutRange } from './payoutRange';
 
@@ -78,6 +79,20 @@ export interface PayoutSummary {
     error?: string;
   }[];
   giving: { covered: number; notPosted: { day: string; count: number; net: number; reason: string }[] };
+  /**
+   * Gifts the donor's bank returned. `state` is what CSP's posting says: `returned_gift` (never in
+   * QuickBooks - only `cost` is left to book), `returned_after_posting` (CSP posted it first, so
+   * QuickBooks still has it) or `returned_day_unsettled` (its day isn't fully posted yet). `cost` is
+   * null until a line taking the gift back is uploaded. Nothing here is posted by CSP.
+   */
+  returned: {
+    ref: string;
+    givenOn: string;
+    returnedOn: string | null;
+    gift: number;
+    cost: number | null;
+    state: string;
+  }[];
   held: { line: number; day: string; type: string; source: string; fundOrSignup: string; net: number; reason: string }[];
 }
 
@@ -125,7 +140,109 @@ interface Classified {
   classified: ClassifiedRow[];
   coverage: Map<string, CoverageResult<PayoutRow>>; // giving rows, by rowKey
   stored: Map<string, { id: number; status: string }>; // rows of this file seen before, by rowKey
+  links: Map<string, string>; // Stripe's lines for a returned gift -> the gift's donation id
+  returned: PayoutSummary['returned'];
 }
+
+const toReturnLine = (r: any): ReturnLine => ({
+  rowKey: String(r.rowKey),
+  day: String(r.day),
+  type: String(r.type),
+  source: String(r.source),
+  name: r.name ?? null,
+  fundOrSignup: r.fundOrSignup ?? null,
+  description: r.description ?? null,
+  grossCents: Number(r.grossCents), // BIGINT arrives as a string from the database
+  netCents: Number(r.netCents),
+});
+
+/**
+ * Returned gifts (docs/plans/2026-11-10-payout-bounces.md): ties Stripe's "Charge failure" / "Fee"
+ * lines to their gift - this file's charges, or ones an earlier upload stored - and settles every line
+ * by updating `classified` and `coverage`:
+ * - a returned gift's charge becomes one item for a person, held with its state (`returned_gift`,
+ *   `returned_after_posting`); `returned_day_unsettled` waits like a day not yet posted;
+ * - Stripe's lines tied to a gift are covered by it (`returned_gift_line`), keeping the link;
+ * - Stripe's lines CSP can't tie wait for a person with the reason.
+ * Posts nothing.
+ */
+const settleReturnedGifts = async (
+  userId: number,
+  classified: ClassifiedRow[],
+  coverage: Map<string, CoverageResult<PayoutRow>>,
+): Promise<Pick<Classified, 'links' | 'returned'>> => {
+  const stripeLines = classified.filter((c) => c.status === 'returned_line');
+  const fileCharges = classified.filter((c) => c.status === 'giving' && isGivingCharge(c.row));
+  const returnedReason = (c: ClassifiedRow) => coverage.get(c.row.rowKey)?.reason ?? '';
+  const returnedIds = new Set(
+    fileCharges.filter((c) => RETURNED_REASONS.includes(returnedReason(c))).map((c) => donationIdOf(c.row)!).filter(Boolean),
+  );
+
+  // A return can come in the month after its gift: look among the charges earlier uploads stored.
+  const names = [...new Set(stripeLines.filter((c) => isGivingFailure(c.row)).map((c) => c.row.name).filter(Boolean))];
+  const stored = names.length
+    ? ((await PayoutTransaction.findAll({
+        where: { userId, source: 'Giving', type: 'Charge', name: { [Op.in]: names }, rowKey: { [Op.like]: 'donation:%' } } as any,
+        attributes: ['rowKey', 'day', 'type', 'source', 'name', 'fundOrSignup', 'description', 'grossCents', 'netCents', 'reason'],
+      })) as any[])
+    : [];
+  for (const r of stored) if (RETURNED_REASONS.includes(String(r.reason ?? ''))) returnedIds.add(donationIdOf({ rowKey: String(r.rowKey) })!);
+
+  const links = linkReturnLines(
+    stripeLines.map((c) => toReturnLine(c.row)),
+    [...fileCharges.map((c) => toReturnLine(c.row)), ...stored.map(toReturnLine)],
+    returnedIds,
+  );
+  const linesByGift = new Map<string, ReturnLine[]>();
+  for (const c of stripeLines) {
+    const gift = links.gift.get(c.row.rowKey);
+    if (gift) {
+      linesByGift.set(gift, [...(linesByGift.get(gift) ?? []), toReturnLine(c.row)]);
+      c.status = 'giving';
+      coverage.set(c.row.rowKey, { row: c.row, status: 'giving_covered', reason: 'returned_gift_line' });
+    } else {
+      c.status = 'held';
+      c.reason = links.unlinked.get(c.row.rowKey) ?? 'unrecognised_type';
+    }
+  }
+
+  const returned: PayoutSummary['returned'] = [];
+  const item = (id: string, charge: ReturnLine, state: string) => {
+    const lines = linesByGift.get(id) ?? [];
+    const cost = returnCostCents(charge, lines);
+    const back = lines.filter(isGivingFailure).map((l) => l.day).sort();
+    returned.push({
+      ref: `Donation #${id}`,
+      givenOn: charge.day,
+      returnedOn: back.length ? back[back.length - 1] : null,
+      gift: dollars(charge.grossCents),
+      cost: cost === null ? null : dollars(cost),
+      state,
+    });
+  };
+  const inFile = new Set<string>();
+  for (const c of fileCharges) {
+    const reason = returnedReason(c);
+    if (!RETURNED_REASONS.includes(reason)) continue;
+    const id = donationIdOf(c.row)!;
+    inFile.add(id);
+    item(id, toReturnLine(c.row), reason);
+    // The gift is the one item a person settles; `returned_day_unsettled` stays a giving line that
+    // "Check again" looks at once the day is posted.
+    if (reason !== 'returned_day_unsettled') {
+      c.status = 'held';
+      c.reason = reason;
+      coverage.delete(c.row.rowKey);
+    }
+  }
+  for (const id of linesByGift.keys()) {
+    if (inFile.has(id)) continue;
+    const charge = stored.find((r) => donationIdOf({ rowKey: String(r.rowKey) }) === id);
+    if (charge) item(id, toReturnLine(charge), String(charge.reason ?? 'returned_gift'));
+  }
+  return { links: links.gift, returned };
+};
+
 
 const classify = async (setup: PayoutSetup, email: string, csvText: string, payouts: PayoutRange): Promise<Classified> => {
   const rows = parsePayoutReport(csvText);
@@ -151,7 +268,8 @@ const classify = async (setup: PayoutSetup, email: string, csvText: string, payo
   const coverage = new Map(
     givingCoverage(givingRows, { givingStartDay: setup.givingStartDay, days }).map((c) => [c.row.rowKey, c] as const),
   );
-  return { rows, classified, coverage, stored };
+  const returned = await settleReturnedGifts(setup.userId, classified, coverage);
+  return { rows, classified, coverage, stored, ...returned };
 };
 
 const assertFeeAccount = (classified: ClassifiedRow[], setup: PayoutSetup) => {
@@ -225,16 +343,23 @@ const summarize = (
   const known = c.classified.filter((x) => x.status === 'already_recorded');
   const days = c.rows.map((r) => r.day).sort();
 
-  let covered = known.filter((x) => x.row.source === 'Giving').length; // settled by an earlier upload
+  // Settled by an earlier upload - not lines a person is still looking at.
+  let covered = known.filter(
+    (x) => x.row.source === 'Giving' && !['held', 'dismissed', 'failed', 'pending'].includes(c.stored.get(x.row.rowKey)?.status ?? ''),
+  ).length;
   const notPosted = new Map<string, { day: string; count: number; netCents: number; reason: string }>();
   for (const cov of c.coverage.values()) {
+    // A returned gift and its lines are listed under `returned`, not as giving in or out of QuickBooks.
+    if (cov.reason === 'returned_gift_line' || RETURNED_REASONS.includes(cov.reason ?? '')) continue;
     if (cov.status === 'giving_covered') {
       covered++;
       continue;
     }
     const reason = cov.reason ?? 'day_not_posted';
-    const key = `${cov.row.day}|${reason}`;
-    const n = notPosted.get(key) ?? { day: cov.row.day, count: 0, netCents: 0, reason };
+    // The day Planning Center files the gift on: the day to look at in Daily Giving.
+    const day = cov.day ?? cov.row.day;
+    const key = `${day}|${reason}`;
+    const n = notPosted.get(key) ?? { day, count: 0, netCents: 0, reason };
     n.count++;
     n.netCents += cov.row.netCents;
     notPosted.set(key, n);
@@ -265,8 +390,10 @@ const summarize = (
         .sort((a, b) => a.day.localeCompare(b.day))
         .map((n) => ({ day: n.day, count: n.count, net: dollars(n.netCents), reason: n.reason })),
     },
+    returned: c.returned,
     held: c.classified
-      .filter((x) => x.status === 'held')
+      // A returned gift's own line is its `returned` entry.
+      .filter((x) => x.status === 'held' && !RETURNED_REASONS.includes(x.reason ?? ''))
       .map((x) => ({
         line: x.row.line,
         day: x.row.day,
@@ -419,7 +546,7 @@ const rowFields = (row: PayoutRow) => ({
 /** Rows this upload does not post: stored once, and re-checked when an earlier upload left them open. */
 const storeOtherRows = async (c: Classified, uploadId: number, userId: number) => {
   const fresh: any[] = [];
-  const recheck: { id: number; prev: string; status: string; reason: string | null }[] = [];
+  const recheck: { id: number; prev: string; status: string; reason: string | null; giftDonationId: string | null }[] = [];
   for (const item of c.classified) {
     let status: string;
     let reason: string | null = null;
@@ -433,12 +560,13 @@ const storeOtherRows = async (c: Classified, uploadId: number, userId: number) =
       reason = cov?.reason ?? null;
     } else continue; // to_post rows were claimed above; already_recorded rows are settled
     const prev = c.stored.get(item.row.rowKey);
-    if (!prev) fresh.push({ ...rowFields(item.row), userId, uploadId, status, reason });
-    else if (RECHECKED_STATUSES.includes(prev.status)) recheck.push({ id: prev.id, prev: prev.status, status, reason });
+    const giftDonationId = c.links.get(item.row.rowKey) ?? null;
+    if (!prev) fresh.push({ ...rowFields(item.row), userId, uploadId, status, reason, giftDonationId });
+    else if (RECHECKED_STATUSES.includes(prev.status)) recheck.push({ id: prev.id, prev: prev.status, status, reason, giftDonationId });
   }
   if (fresh.length) await PayoutTransaction.bulkCreate(fresh, { ignoreDuplicates: true });
   for (const r of recheck) {
-    await PayoutTransaction.update({ status: r.status, reason: r.reason, uploadId } as any, {
+    await PayoutTransaction.update({ status: r.status, reason: r.reason, uploadId, giftDonationId: r.giftDonationId } as any, {
       where: { id: r.id, status: r.prev },
     });
   }

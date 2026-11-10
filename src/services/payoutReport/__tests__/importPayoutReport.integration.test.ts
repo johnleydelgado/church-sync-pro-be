@@ -21,6 +21,7 @@ import * as automation from '../../../controller/automation';
 import { loadDayCoverage, DayCoverage } from '../givingCoverage';
 import { importPayoutReport, previewPayoutReport, PayoutImportSetupError, PayoutImportBusyError } from '../importPayoutReport';
 import { PayoutReportFormatError } from '../parsePayoutReport';
+import { listReview, recheckGiving, resolvePayoutRow } from '../reviewPayoutRows';
 
 const mockedAutomation = automation as jest.Mocked<typeof automation>;
 const coverage = loadDayCoverage as jest.Mock;
@@ -43,16 +44,20 @@ const gift = (day: string, id: number, gross: number, fee: number) =>
 const file = (...lines: string[]) => [HEADER, ...lines].join('\n');
 
 /** The giving check's view of Planning Center + the ledger: unlisted days have nothing. */
-const pcoDays = (days: Record<string, Partial<Omit<DayCoverage, 'pcoIds'>> & { ids?: string[] }>) => {
+const pcoDays = (days: Record<string, Partial<Omit<DayCoverage, 'pcoIds' | 'failedIds'>> & { ids?: string[]; failed?: string[] }>) => {
   coverage.mockImplementation(async (_email: string, _userId: number, wanted: string[]) => {
     const m = new Map<string, DayCoverage>();
-    for (const d of wanted) {
+    // The real loader also returns the day either side of each wanted day: return the fixture's days too.
+    for (const d of new Set([...wanted, ...Object.keys(days)])) {
       const o = days[d] ?? {};
       m.set(d, {
         pcoGrossCents: o.pcoGrossCents ?? 0,
         postedGrossCents: o.postedGrossCents ?? 0,
         pcoIds: new Set(o.ids ?? []),
+        // Without refunds in the fixture, what Planning Center counts is its settled total.
+        knownGrossCents: o.knownGrossCents ?? o.pcoGrossCents ?? 0,
         refundedGrossCents: o.refundedGrossCents ?? 0,
+        failedIds: new Set(o.failed ?? []),
       });
     }
     return m;
@@ -518,5 +523,121 @@ describe('earlier uploads covering the same dates', () => {
     });
     expect(s.overlap.rowsSeenBefore).toBe(1);
     expect(s.overlap.previousUploads.map((u) => u.fileName)).toEqual(['first.csv']);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Returned gifts, in the real file format (Active Church, October 2026; donor name replaced).
+// docs/plans/2026-11-10-payout-bounces.md in the frontend repo.
+
+describe('returned gifts (real format)', () => {
+  const ID = '404799338';
+  const charge = `2026-10-04,Charge,Giving,Pat Donor,Tithes & Offerings,600.00,0.30,599.70,ach,,"Donation #${ID} - Pat Donor - Tithes & Offerings ($600.00)"`;
+  const fee = '2026-10-05,Fee,Giving,Pat Donor,Tithes & Offerings,0.00,-0.05,0.05,ach,,Application fee refund for py_3UMpawCdJd3pVWd30z8502Yi';
+  const failure = '2026-10-05,Charge failure,Giving,Pat Donor,Tithes & Offerings,-600.00,0.75,-600.75,ach,,Funds reversed due to payment py_3UMpawCdJd3pVWd30z8502Yi failed';
+  const late = gift('2026-10-16', 407356032, 187, 0.3);
+  const PCO = {
+    '2026-10-04': { pcoGrossCents: 0, postedGrossCents: 0, failed: [ID] }, // never posted: the gift failed first
+    '2026-10-15': { pcoGrossCents: 18700, postedGrossCents: 18700, ids: ['407356032'] }, // 11:53pm Pacific
+  };
+  const OCTOBER = file(charge, fee, failure, late);
+  const RETURNED_ITEM = { ref: `Donation #${ID}`, givenOn: '2026-10-04', returnedOn: '2026-10-05', gift: 600, cost: 1, state: 'returned_gift' };
+  const giftRows = async () =>
+    [...(await rowsByKey()).values()]
+      .filter((r: any) => r.source === 'Giving' && String(r.name) === 'Pat Donor')
+      .map((r: any) => [String(r.type), String(r.status), r.reason ?? null, r.giftDonationId ?? null]);
+
+  test('the preview explains the returned gift once, and calls nothing missing', async () => {
+    pcoDays(PCO);
+    const s = await previewPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCTOBER });
+    expect(s.returned).toEqual([RETURNED_ITEM]);
+    expect(s.giving).toEqual({ covered: 1, notPosted: [] }); // the late gift, found on 10/15
+    expect(s.held).toEqual([]);
+    expect(s.entries).toEqual([]);
+    expect((await rowsByKey()).size).toBe(0);
+  });
+
+  test('recording: one item for a person, Stripe lines tied to the gift, nothing posted', async () => {
+    pcoDays(PCO);
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCTOBER });
+    expect(s.returned).toEqual([RETURNED_ITEM]);
+    expect(posted).toHaveLength(0);
+    expect(await giftRows()).toEqual([
+      ['Charge', 'held', 'returned_gift', null],
+      ['Fee', 'giving_covered', 'returned_gift_line', ID],
+      ['Charge failure', 'giving_covered', 'returned_gift_line', ID],
+    ]);
+    const review = await listReview(EMAIL);
+    expect(review.held).toHaveLength(1);
+    expect(review.held[0]).toMatchObject({ type: 'Charge', reason: 'returned_gift', returned: { returnedOn: '2026-10-05', cost: 1 } });
+    expect(review.givingNotPosted).toEqual([]);
+  });
+
+  test('uploading the same file again changes nothing', async () => {
+    pcoDays(PCO);
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCTOBER });
+    const before = await giftRows();
+    const again = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCTOBER });
+    expect(again.returned).toEqual([]);
+    expect(again.held).toEqual([]);
+    expect(await giftRows()).toEqual(before);
+    expect(posted).toHaveLength(0);
+  });
+
+  test("the return in next month's file: the gift waits, then shows what it cost", async () => {
+    pcoDays(PCO);
+    const first = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge) });
+    expect(first.returned).toEqual([{ ...RETURNED_ITEM, returnedOn: null, cost: null }]);
+    const second = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(fee, failure) });
+    expect(second.returned).toEqual([RETURNED_ITEM]);
+    expect(second.held).toEqual([]);
+    expect((await listReview(EMAIL)).held[0]).toMatchObject({ reason: 'returned_gift', returned: { returnedOn: '2026-10-05', cost: 1 } });
+  });
+
+  test('CSP posted the gift before it came back: the item says QuickBooks still has it', async () => {
+    pcoDays({ '2026-10-04': { pcoGrossCents: 0, postedGrossCents: 60000, knownGrossCents: 0, failed: [ID] } });
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge, fee, failure) });
+    expect(s.returned).toEqual([{ ...RETURNED_ITEM, state: 'returned_after_posting' }]);
+    expect((await giftRows())[0]).toEqual(['Charge', 'held', 'returned_after_posting', null]);
+  });
+
+  test("a return Planning Center doesn't confirm is never tied to a gift on the file's word", async () => {
+    pcoDays({ '2026-10-04': { pcoGrossCents: 60000, postedGrossCents: 60000, ids: [ID] } }); // still succeeded
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge, fee, failure) });
+    expect(s.returned).toEqual([]);
+    expect(s.giving.covered).toBe(1);
+    expect(s.held.map((h) => [h.type, h.reason])).toEqual([
+      ['Fee', 'returned_unconfirmed'],
+      ['Charge failure', 'returned_unconfirmed'],
+    ]);
+  });
+
+  test('a return whose gift is in no upload waits for a person', async () => {
+    pcoDays(PCO);
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(fee, failure) });
+    expect(s.held.map((h) => [h.type, h.reason])).toEqual([
+      ['Fee', 'returned_without_charge'],
+      ['Charge failure', 'returned_without_charge'],
+    ]);
+  });
+
+  test('a returned gift on a day not fully posted waits; "Check again" files it once the day is', async () => {
+    pcoDays({ '2026-10-04': { pcoGrossCents: 50000, postedGrossCents: 20000, knownGrossCents: 50000, failed: [ID] } });
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge, fee, failure) });
+    expect(s.returned).toEqual([{ ...RETURNED_ITEM, state: 'returned_day_unsettled' }]);
+    expect((await giftRows())[0]).toEqual(['Charge', 'giving_not_posted', 'returned_day_unsettled', null]);
+    pcoDays({ '2026-10-04': { pcoGrossCents: 50000, postedGrossCents: 50000, knownGrossCents: 50000, failed: [ID] } });
+    await recheckGiving(EMAIL);
+    expect((await giftRows())[0]).toEqual(['Charge', 'held', 'returned_gift', null]);
+  });
+
+  test("the review list won't code a returned gift's charge as income", async () => {
+    pcoDays(PCO);
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: OCTOBER });
+    const [item] = (await listReview(EMAIL)).held;
+    await expect(
+      resolvePayoutRow({ email: EMAIL, id: item.id, action: 'post', account: { value: '77', label: 'Income' } }),
+    ).rejects.toThrow("doesn't post giving lines");
+    expect(posted).toHaveLength(0);
   });
 });

@@ -42,6 +42,7 @@ export interface PayoutTransactionAttributes {
   netCents?: number | string;
   paymentMethod?: string | null;
   description?: string | null;
+  giftDonationId?: string | null;
   status?: PayoutTransactionStatus;
   reason?: string | null;
   accountRef?: string | null;
@@ -76,6 +77,7 @@ class PayoutTransaction extends Model<PayoutTransactionAttributes> implements Pa
   public netCents!: number | string;
   public paymentMethod!: string | null;
   public description!: string | null;
+  public giftDonationId!: string | null;
   public status!: PayoutTransactionStatus;
   public reason!: string | null;
   public accountRef!: string | null;
@@ -153,6 +155,11 @@ PayoutTransaction.init(
     },
     description: {
       type: DataTypes.TEXT,
+      allowNull: true,
+    },
+    // The gift a returned payment's "Charge failure" / "Fee" line belongs to (migration 20261111000001).
+    giftDonationId: {
+      type: DataTypes.STRING(32),
       allowNull: true,
     },
     status: {
