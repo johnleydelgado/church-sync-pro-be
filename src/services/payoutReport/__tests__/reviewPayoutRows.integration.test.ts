@@ -265,13 +265,13 @@ describe('recheckGiving', () => {
       '2026-10-06': { pcoGrossCents: 5000, postedGrossCents: 5000, ids: ['101'] },
       '2026-10-07': { pcoGrossCents: 3000, postedGrossCents: 0, ids: ['102'] },
     });
-    expect(await recheckGiving(EMAIL)).toEqual({ checked: 2, nowCovered: 1, stillNotPosted: 1 });
+    expect(await recheckGiving(EMAIL)).toEqual({ checked: 2, nowCovered: 1, stillNotPosted: 1, returnedFiled: 0 });
     expect((await listReview(EMAIL)).givingNotPosted.map((r) => r.day)).toEqual(['2026-10-07']);
     expect(coverage).toHaveBeenLastCalledWith(EMAIL, USER_ID, ['2026-10-06', '2026-10-07']);
   });
 
   test('nothing to check', async () => {
-    expect(await recheckGiving(EMAIL)).toEqual({ checked: 0, nowCovered: 0, stillNotPosted: 0 });
+    expect(await recheckGiving(EMAIL)).toEqual({ checked: 0, nowCovered: 0, stillNotPosted: 0, returnedFiled: 0 });
   });
 });
 

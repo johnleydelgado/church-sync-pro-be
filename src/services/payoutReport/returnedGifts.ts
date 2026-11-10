@@ -22,6 +22,7 @@ export interface ReturnLine {
   description: string | null;
   grossCents: number;
   netCents: number;
+  feeCents?: number;
 }
 
 export type UnlinkedReason = 'returned_without_charge' | 'returned_unconfirmed' | 'returned_ambiguous';
@@ -75,13 +76,25 @@ export const linkReturnLines = (
   lines: ReturnLine[],
   charges: ReturnLine[],
   returnedGifts: Set<string>,
+  /** Gifts that already have their return tied to them: a gift is returned once. */
+  taken: Set<string> = new Set(),
 ): ReturnLinks => {
   const out: ReturnLinks = { gift: new Map(), unlinked: new Map() };
+  const used = new Set(taken);
   const byPayment = new Map<string, { gift?: string; reason?: UnlinkedReason }>();
-  for (const f of lines.filter(isGivingFailure)) {
-    let gift = donationIdOf(f);
+  // Oldest return first, so each takes the gift nearest before it while that one is still free.
+  const failures = lines
+    .filter(isGivingFailure)
+    .sort((a, b) => a.day.localeCompare(b.day) || a.rowKey.localeCompare(b.rowKey));
+  for (const f of failures) {
+    let gift: string | null = null;
     let reason: UnlinkedReason | undefined;
-    if (!gift) {
+    const keyed = donationIdOf(f);
+    if (keyed) {
+      // A line that names its gift still needs Planning Center to say that gift came back.
+      if (returnedGifts.has(keyed) && !used.has(keyed)) gift = keyed;
+      else reason = returnedGifts.has(keyed) ? 'returned_ambiguous' : 'returned_unconfirmed';
+    } else {
       const alike = charges.filter(
         (c) =>
           isGivingCharge(c) &&
@@ -93,27 +106,78 @@ export const linkReturnLines = (
           daysFrom(c.day, f.day) <= RETURN_WINDOW_DAYS,
       );
       const ids = [...new Set(alike.map((c) => donationIdOf(c)!))];
-      const confirmed = ids.filter((id) => returnedGifts.has(id));
+      const confirmed = ids.filter((id) => returnedGifts.has(id) && !used.has(id));
       if (confirmed.length === 1) gift = confirmed[0];
       else
         reason =
-          confirmed.length > 1 ? 'returned_ambiguous' : ids.length ? 'returned_unconfirmed' : 'returned_without_charge';
+          confirmed.length > 1
+            ? 'returned_ambiguous'
+            : ids.some((id) => returnedGifts.has(id))
+              ? 'returned_ambiguous' // the only matching returned gift already has its return
+              : ids.length
+                ? 'returned_unconfirmed'
+                : 'returned_without_charge';
     }
-    if (gift) out.gift.set(f.rowKey, gift);
-    else out.unlinked.set(f.rowKey, reason!);
+    if (gift) {
+      used.add(gift);
+      out.gift.set(f.rowKey, gift);
+    } else out.unlinked.set(f.rowKey, reason!);
     const payment = stripePaymentIdOf(f);
     if (payment) byPayment.set(payment, gift ? { gift } : { reason });
   }
   for (const fee of lines.filter(isGivingFee)) {
     const keyed = donationIdOf(fee);
     if (keyed) {
-      out.gift.set(fee.rowKey, keyed);
+      // Only a returned gift's own fee is part of it; any other fee line is not ours to explain.
+      if (returnedGifts.has(keyed)) out.gift.set(fee.rowKey, keyed);
       continue;
     }
     const payment = stripePaymentIdOf(fee);
     const failure = payment ? byPayment.get(payment) : undefined;
     if (failure?.gift) out.gift.set(fee.rowKey, failure.gift);
     else if (failure?.reason) out.unlinked.set(fee.rowKey, failure.reason);
+  }
+  return out;
+};
+
+/**
+ * Whether a return line's gift was charged before the church's sync start date: a gift like it (same
+ * donor, fund and amount, within the window before the return) exists, and every such gift is earlier
+ * than `startDay`. Giving from before the start is left alone, and so is its return.
+ */
+export const returnBeforeStart = (line: ReturnLine, charges: ReturnLine[], startDay: string | null): boolean => {
+  if (!startDay) return false;
+  if (!isGivingFailure(line)) return line.day < startDay;
+  const alike = charges.filter(
+    (c) =>
+      isGivingCharge(c) &&
+      sameText(c.name, line.name) &&
+      sameText(c.fundOrSignup, line.fundOrSignup) &&
+      Number(c.grossCents) === -Number(line.grossCents) &&
+      c.day <= line.day &&
+      daysFrom(c.day, line.day) <= RETURN_WINDOW_DAYS,
+  );
+  return alike.length ? alike.every((c) => c.day < startDay) : line.day < startDay;
+};
+
+/** The return lines (by rowKey) of gifts from before the sync start date: failures, and their fees. */
+export const preStartReturnLines = (
+  lines: ReturnLine[],
+  charges: ReturnLine[],
+  startDay: string | null,
+): Set<string> => {
+  const out = new Set<string>();
+  if (!startDay) return out;
+  const payments = new Set<string>();
+  for (const f of lines.filter(isGivingFailure)) {
+    if (!returnBeforeStart(f, charges, startDay)) continue;
+    out.add(f.rowKey);
+    const payment = stripePaymentIdOf(f);
+    if (payment) payments.add(payment);
+  }
+  for (const fee of lines.filter(isGivingFee)) {
+    const payment = stripePaymentIdOf(fee);
+    if ((payment && payments.has(payment)) || (!payment && fee.day < startDay)) out.add(fee.rowKey);
   }
   return out;
 };

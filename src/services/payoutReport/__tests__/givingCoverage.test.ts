@@ -86,8 +86,12 @@ describe('givingCoverage', () => {
     test('the day holds more than Planning Center counts: CSP posted it before it came back', () => {
       expect(returned({ postedGrossCents: 538848, knownGrossCents: 478848 })).toMatchObject({ reason: 'returned_after_posting' });
     });
+    test('a gift refunded before the day was posted does not make it look unsettled', () => {
+      // $500 settled and posted; a $100 gift refunded before posting (never posted); the $600 returned.
+      expect(returned({ pcoGrossCents: 50000, postedGrossCents: 50000, knownGrossCents: 60000 })).toMatchObject({ reason: 'returned_gift' });
+    });
     test("the day is only partly posted: CSP can't tell yet", () => {
-      expect(returned({ postedGrossCents: 300000, knownGrossCents: 478848 })).toMatchObject({ reason: 'returned_day_unsettled' });
+      expect(returned({ pcoGrossCents: 478848, postedGrossCents: 300000, knownGrossCents: 478848 })).toMatchObject({ reason: 'returned_day_unsettled' });
     });
     test('before the sync start: left alone', () => {
       expect(

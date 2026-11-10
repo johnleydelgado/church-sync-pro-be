@@ -16,6 +16,7 @@ import {
   PayoutSetup,
   postRegistrationGroup,
   PostedButNotRecordedError,
+  relinkStoredReturnLines,
 } from './importPayoutReport';
 
 /** A review action that can't be done; `status` is the HTTP status the controller answers with. */
@@ -363,12 +364,13 @@ export const resolvePayoutRow = async (p: {
 };
 
 /** "Check again": re-runs the giving check for lines whose day was not (fully) in QuickBooks. */
-export const recheckGiving = async (email: string): Promise<{ checked: number; nowCovered: number; stillNotPosted: number }> => {
+export const recheckGiving = async (
+  email: string,
+): Promise<{ checked: number; nowCovered: number; stillNotPosted: number; returnedFiled: number }> => {
   const userId = await userIdFor(email);
   const settings: any = await UserSettings.findOne({ where: { userId } });
   const givingStartDay = parseSyncStartDay(settings?.startDateAutomationFund);
   const stored = (await PayoutTransaction.findAll({ where: { userId, status: 'giving_not_posted' } })) as any[];
-  if (!stored.length) return { checked: 0, nowCovered: 0, stillNotPosted: 0 };
 
   const rows = stored.map((r) => ({
     id: Number(r.id),
@@ -377,21 +379,30 @@ export const recheckGiving = async (email: string): Promise<{ checked: number; n
     type: String(r.type),
     grossCents: Number(r.grossCents),
   }));
-  const days = await loadDayCoverage(
-    email,
-    userId,
-    rows.filter((r) => !givingStartDay || r.day >= givingStartDay).map((r) => r.day),
-  );
   let nowCovered = 0;
-  for (const res of givingCoverage(rows, { givingStartDay, days })) {
-    // A gift found to be returned is settled by a person, as the upload files it (held, with its state).
-    const held = res.reason === 'returned_gift' || res.reason === 'returned_after_posting';
-    const [n] = await PayoutTransaction.update({ status: held ? 'held' : res.status, reason: res.reason ?? null } as any, {
-      where: { id: res.row.id, status: 'giving_not_posted' },
-    });
-    if (n === 1 && res.status === 'giving_covered') nowCovered++;
+  const filed = new Set<string>(); // returned gifts filed for a person, by donation id
+  if (rows.length) {
+    const days = await loadDayCoverage(
+      email,
+      userId,
+      rows.filter((r) => !givingStartDay || r.day >= givingStartDay).map((r) => r.day),
+    );
+    for (const res of givingCoverage(rows, { givingStartDay, days })) {
+      // A gift found to be returned is settled by a person, as the upload files it (held, with its state).
+      const held = res.reason === 'returned_gift' || res.reason === 'returned_after_posting';
+      const [n] = await PayoutTransaction.update({ status: held ? 'held' : res.status, reason: res.reason ?? null } as any, {
+        where: { id: res.row.id, status: 'giving_not_posted' },
+      });
+      if (n === 1 && res.status === 'giving_covered') nowCovered++;
+      if (n === 1 && held) filed.add(res.row.externalId.replace(/^donation:/, ''));
+    }
   }
-  return { checked: rows.length, nowCovered, stillNotPosted: rows.length - nowCovered };
+  // Return lines still open (their gift came later, or Planning Center couldn't be read): tie them now.
+  for (const id of await relinkStoredReturnLines(email, userId, givingStartDay)) filed.add(id);
+  const stillNotPosted = rows.length
+    ? await PayoutTransaction.count({ where: { id: rows.map((r) => r.id), status: 'giving_not_posted' } })
+    : 0;
+  return { checked: rows.length, nowCovered, stillNotPosted, returnedFiled: filed.size };
 };
 
 /** The Clearing page card: last report loaded, what needs a person, and whether uploads can run. */

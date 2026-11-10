@@ -541,7 +541,7 @@ describe('returned gifts (real format)', () => {
     '2026-10-15': { pcoGrossCents: 18700, postedGrossCents: 18700, ids: ['407356032'] }, // 11:53pm Pacific
   };
   const OCTOBER = file(charge, fee, failure, late);
-  const RETURNED_ITEM = { ref: `Donation #${ID}`, givenOn: '2026-10-04', returnedOn: '2026-10-05', gift: 600, cost: 1, state: 'returned_gift' };
+  const RETURNED_ITEM = { ref: `Donation #${ID}`, givenOn: '2026-10-04', returnedOn: '2026-10-05', gift: 600, fee: 0.3, cost: 1, state: 'returned_gift' };
   const giftRows = async () =>
     [...(await rowsByKey()).values()]
       .filter((r: any) => r.source === 'Giving' && String(r.name) === 'Pat Donor')
@@ -639,5 +639,133 @@ describe('returned gifts (real format)', () => {
       resolvePayoutRow({ email: EMAIL, id: item.id, action: 'post', account: { value: '77', label: 'Income' } }),
     ).rejects.toThrow("doesn't post giving lines");
     expect(posted).toHaveLength(0);
+  });
+});
+
+describe('returned gifts: review findings of 2026-11-11', () => {
+  const ID = '404799338';
+  const charge = `2026-10-04,Charge,Giving,Pat Donor,Tithes & Offerings,600.00,0.30,599.70,ach,,"Donation #${ID} - Pat Donor - Tithes & Offerings ($600.00)"`;
+  const fee = '2026-10-05,Fee,Giving,Pat Donor,Tithes & Offerings,0.00,-0.05,0.05,ach,,Application fee refund for py_3UMpawCdJd3pVWd30z8502Yi';
+  const failure = '2026-10-05,Charge failure,Giving,Pat Donor,Tithes & Offerings,-600.00,0.75,-600.75,ach,,Funds reversed due to payment py_3UMpawCdJd3pVWd30z8502Yi failed';
+  const RETURNED = { '2026-10-04': { pcoGrossCents: 0, postedGrossCents: 0, failed: [ID] } };
+  const lines = async () =>
+    [...(await rowsByKey()).values()]
+      .filter((r: any) => r.source === 'Giving' && String(r.name).startsWith('Pat'))
+      .map((r: any) => [String(r.type), String(r.status), r.reason ?? null, r.giftDonationId ?? null]);
+  const store = (rows: [string, string, number, number, string, string, string][]) =>
+    PayoutTransaction.bulkCreate(
+      rows.map(([type, day, gross, fee2, status, reason, description], i) => ({
+        userId: USER_ID,
+        rowKey: type === 'Charge' ? `donation:${ID}:charge:${day}:${gross}` : `raw:${type}-${i}`,
+        line: i + 2,
+        day,
+        type,
+        source: 'Giving',
+        name: 'Pat Donor',
+        fundOrSignup: 'Tithes & Offerings',
+        description,
+        grossCents: gross,
+        feeCents: fee2,
+        netCents: gross - fee2,
+        status,
+        reason,
+      })) as any,
+    );
+  const PRE_FIX: [string, string, number, number, string, string, string][] = [
+    ['Charge', '2026-10-04', 60000, 30, 'giving_not_posted', 'not_in_planning_center', `Donation #${ID} - Pat Donor`],
+    ['Fee', '2026-10-05', 0, -5, 'held', 'unrecognised_type', 'Application fee refund for py_3UMp'],
+    ['Charge failure', '2026-10-05', -60000, 75, 'held', 'unrecognised_type', 'Funds reversed due to payment py_3UMp failed'],
+  ];
+
+  test('lines stored before this code (October as main recorded it) are tied by "Check again"', async () => {
+    pcoDays(RETURNED);
+    await store(PRE_FIX);
+    const res = await recheckGiving(EMAIL);
+    expect(res).toMatchObject({ checked: 1, nowCovered: 0, stillNotPosted: 0, returnedFiled: 1 });
+    expect(await lines()).toEqual([
+      ['Charge', 'held', 'returned_gift', null],
+      ['Fee', 'giving_covered', 'returned_gift_line', ID],
+      ['Charge failure', 'giving_covered', 'returned_gift_line', ID],
+    ]);
+    expect((await listReview(EMAIL)).held).toEqual([expect.objectContaining({ reason: 'returned_gift', returned: { returnedOn: '2026-10-05', cost: 1 } })]);
+  });
+
+  test('Planning Center down during the upload: said so, and tied by "Check again" once it is back', async () => {
+    coverage.mockImplementation(async () => null);
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge, fee, failure) });
+    expect(s.held.map((h) => [h.type, h.reason])).toEqual([
+      ['Fee', 'planning_center_unreachable'],
+      ['Charge failure', 'planning_center_unreachable'],
+    ]);
+    pcoDays(RETURNED);
+    expect((await recheckGiving(EMAIL)).returnedFiled).toBe(1);
+    expect((await lines()).map((l) => l[1])).toEqual(['held', 'giving_covered', 'giving_covered']);
+  });
+
+  test('the return uploaded before its gift: tied when the gift arrives', async () => {
+    pcoDays(RETURNED);
+    const first = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(fee, failure) });
+    expect(first.held.map((h) => h.reason)).toEqual(['returned_without_charge', 'returned_without_charge']);
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge) });
+    expect((await lines()).map((l) => [l[0], l[1], l[3]])).toEqual([
+      ['Fee', 'giving_covered', ID],
+      ['Charge failure', 'giving_covered', ID],
+      ['Charge', 'held', null],
+    ]);
+    expect((await listReview(EMAIL)).held[0]).toMatchObject({ returned: { returnedOn: '2026-10-05', cost: 1 } });
+  });
+
+  test('a gift CSP posted, then returned in a later file: refiled as "QuickBooks still has it"', async () => {
+    pcoDays({ '2026-10-04': { pcoGrossCents: 60000, postedGrossCents: 60000, ids: [ID] } }); // succeeded, posted
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge) });
+    expect((await lines())[0]).toEqual(['Charge', 'giving_covered', null, null]);
+    pcoDays({ '2026-10-04': { pcoGrossCents: 0, postedGrossCents: 60000, knownGrossCents: 0, failed: [ID] } }); // came back
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(fee, failure) });
+    expect(s.returned).toEqual([expect.objectContaining({ state: 'returned_after_posting', cost: 1, fee: 0.3 })]);
+    expect((await lines())[0]).toEqual(['Charge', 'held', 'returned_after_posting', null]);
+  });
+
+  test('a gift a person already handled is not announced again; its new lines are tied quietly', async () => {
+    pcoDays(RETURNED);
+    await store([['Charge', '2026-10-04', 60000, 30, 'dismissed', 'returned_gift', `Donation #${ID} - Pat Donor`]]);
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(fee, failure) });
+    expect(s.returned).toEqual([]);
+    expect(s.held).toEqual([]);
+    expect((await lines()).map((l) => [l[0], l[1]])).toEqual([
+      ['Charge', 'dismissed'],
+      ['Fee', 'giving_covered'],
+      ['Charge failure', 'giving_covered'],
+    ]);
+  });
+
+  test('two returned gifts that look alike: each return takes a free gift, never one already returned', async () => {
+    const OTHER = '500';
+    pcoDays({ '2026-10-01': { failed: [OTHER] }, '2026-10-15': { failed: [ID] } });
+    const giftOn = (id: string, day: string) => `${day},Charge,Giving,Pat Donor,Tithes & Offerings,600.00,0.30,599.70,ach,,"Donation #${id} - Pat Donor"`;
+    const back = (day: string, pay: string) => `${day},Charge failure,Giving,Pat Donor,Tithes & Offerings,-600.00,0.75,-600.75,ach,,Funds reversed due to payment ${pay} failed`;
+    const s = await importPayoutReport({
+      ...PAYOUTS,
+      email: EMAIL,
+      csvText: file(giftOn(OTHER, '2026-10-01'), giftOn(ID, '2026-10-15'), back('2026-10-17', 'py_OWN'), back('2026-10-20', 'py_LATE')),
+    });
+    expect(s.returned.find((r) => r.ref === `Donation #${ID}`)).toMatchObject({ cost: 1.05 });
+    expect(s.returned.find((r) => r.ref === `Donation #${OTHER}`)).toMatchObject({ cost: null });
+    expect(s.held.map((h) => [h.day, h.reason])).toEqual([['2026-10-20', 'returned_ambiguous']]);
+  });
+
+  test('the return of a gift from before the sync start date is left alone', async () => {
+    pcoDays({ '2026-09-30': { failed: [ID] } });
+    await UserSettings.update({ startDateAutomationFund: '10-01-2026' } as any, { where: { userId: USER_ID } });
+    const before = `2026-09-30,Charge,Giving,Pat Donor,Tithes & Offerings,600.00,0.30,599.70,ach,,"Donation #${ID} - Pat Donor"`;
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(before, fee, failure) });
+    expect(s.held).toEqual([]);
+    expect(s.returned).toEqual([]);
+  });
+
+  test("a fee line naming a gift that wasn't returned is held, as before", async () => {
+    pcoDays({ '2026-10-04': { pcoGrossCents: 60000, postedGrossCents: 60000, ids: [ID] } });
+    const named = `2026-10-06,Fee,Giving,Pat Donor,Tithes & Offerings,0.00,-0.10,0.10,ach,,"Fee adjustment for Donation #${ID}"`;
+    const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge, named) });
+    expect(s.held.map((h) => [h.type, h.reason])).toEqual([['Fee', 'unrecognised_type']]);
   });
 });

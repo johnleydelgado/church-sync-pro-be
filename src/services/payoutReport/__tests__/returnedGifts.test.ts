@@ -123,6 +123,36 @@ describe('linkReturnLines', () => {
     ).toBe('returned_without_charge');
   });
 
+  test('a gift is returned once: a second return never takes a gift that already has one', () => {
+    // Two $600 gifts from the same donor, both returned; the earlier gift's return came late.
+    const early = charge({ rowKey: 'donation:500:charge:2026-10-01:60000', day: '2026-10-01' });
+    const late = charge({ rowKey: 'donation:404799338:charge:2026-10-15:60000', day: '2026-10-15' });
+    const itsReturn = failure({
+      rowKey: 'raw:own',
+      day: '2026-10-17',
+      description: 'Funds reversed due to payment py_OWN failed',
+    });
+    const lateReturnOfEarly = failure({
+      rowKey: 'raw:late',
+      day: '2026-10-20',
+      description: 'Funds reversed due to payment py_LATE failed',
+    });
+    const links = linkReturnLines([lateReturnOfEarly, itsReturn], [early, late], new Set(['500', '404799338']));
+    expect(links.gift.get('raw:own')).toBe('404799338');
+    expect(links.unlinked.get('raw:late')).toBe('returned_ambiguous');
+  });
+
+  test('...and a gift whose return is already recorded is not free', () => {
+    const links = linkReturnLines([failure()], [charge()], RETURNED, new Set(['404799338']));
+    expect(links.unlinked.get('raw:failure-sha')).toBe('returned_ambiguous');
+  });
+
+  test('a line that names its gift is only part of it when Planning Center says the gift came back', () => {
+    const named = fee({ rowKey: 'donation:555:fee:2026-10-05:0', description: 'Fee adjustment for Donation #555' });
+    expect(linkReturnLines([named], [], RETURNED).gift.size).toBe(0);
+    expect(linkReturnLines([named], [], new Set(['555'])).gift.get('donation:555:fee:2026-10-05:0')).toBe('555');
+  });
+
   test('a fee that names no failure is not a returned gift line', () => {
     const links = linkReturnLines([fee({ description: 'Application fee refund for py_OTHER' })], [charge()], RETURNED);
     expect(links.gift.size + links.unlinked.size).toBe(0);

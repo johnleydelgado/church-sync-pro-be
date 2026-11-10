@@ -29,8 +29,9 @@ export interface CoverageResult<R extends CoverageRow = CoverageRow> {
 
 /**
  * A gift the donor's bank returned (Planning Center marks it failed), by what CSP's own posting says:
- * - `returned_gift`: its day holds nothing posted, or exactly Planning Center's total without it - so
- *   the gift was never in QuickBooks, and only what the return cost in fees is left to book;
+ * - `returned_gift`: its day holds nothing posted, or no more than every gift that ever succeeded that
+ *   day and no less than what is settled now - so the gift was never in QuickBooks, and only what the
+ *   return cost in fees is left to book;
  * - `returned_after_posting`: its day holds more than Planning Center counts - CSP posted it before it
  *   came back, so QuickBooks still has it;
  * - `returned_day_unsettled`: its day is only partly posted, so CSP can't tell yet.
@@ -79,9 +80,11 @@ export const givingCoverage = <R extends CoverageRow>(
       if (ctx.givingStartDay && failedDay < ctx.givingStartDay) return { row, status: 'giving_covered', reason: 'before_giving_start' };
       const f = ctx.days.get(failedDay)!;
       const at = failedDay === row.day ? {} : { day: failedDay };
+      // Posted at least what is settled and at most everything that ever succeeded (a gift refunded
+      // before the day was posted was never posted): the returned gift can't be in there.
       const posted = f.postedGrossCents;
       const reason =
-        posted === 0 || posted === f.knownGrossCents
+        posted === 0 || (posted >= f.pcoGrossCents && posted <= f.knownGrossCents)
           ? 'returned_gift'
           : posted > f.knownGrossCents
           ? 'returned_after_posting'
