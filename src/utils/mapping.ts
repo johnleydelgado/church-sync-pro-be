@@ -255,6 +255,21 @@ export const filterStripeElectronic = (donations: any[]): any[] => (donations ??
  * the day up by hand in Planning Center. Refunded gifts are excluded: a refund of a pending
  * gift is a cancellation, not money in transit.
  */
+/**
+ * A card or ACH gift Stripe charged and then failed: the donor's bank returned it (Active Church, 10/4/2026:
+ * a $600 ACH gift, failed two days later). Never posted - the engine takes succeeded gifts only - but the
+ * church should see it the day it happens, not in the payout report at month-end. A declined card fails
+ * at the moment of giving with no fee and moves no money, so it is not one.
+ */
+export const isStripeReturned = (donation: any): boolean => {
+  const a = donation?.attributes ?? {};
+  const method = (a.payment_method ?? '').toLowerCase();
+  if (!STRIPE_ELECTRONIC_METHODS.includes(method)) return false;
+  if ((a.payment_status ?? '').toLowerCase() !== 'failed') return false;
+  const fee = Number(a.fee_cents);
+  return !Number.isNaN(fee) && fee !== 0;
+};
+
 export const isStripeInTransit = (donation: any): boolean => {
   const a = donation?.attributes ?? {};
   const method = (a.payment_method ?? '').toLowerCase();
