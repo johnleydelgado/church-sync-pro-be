@@ -19,6 +19,7 @@ import {
   filterStripeElectronic,
   filterStripeInTransit,
   groupDonationsByDay,
+  isStripeReturned,
   stripeGivingDayDetail,
 } from '../utils/mapping';
 
@@ -337,6 +338,9 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
     // out of the entry until they settle, but a Posted day that silently omits them looks
     // complete when it is not. Reported separately so the page can say "3 in transit".
     const inTransitByDay = groupDonationsByDay(filterStripeInTransit(donations), orgTimeZone);
+    // Gifts the donor's bank returned: never posted and not in the totals, but listed on their day so a
+    // church sees them as they happen.
+    const returnedByDay = groupDonationsByDay((donations ?? []).filter(isStripeReturned), orgTimeZone);
 
     // What CSP has already done about these days. `donationId` holds the day for daily rows.
     const syncRows = await UserSync.findAll({
@@ -350,7 +354,7 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
 
     // A day whose only gifts are still in transit has nothing to post yet, but it is not
     // nothing: the church gave that day and the money is coming. List it.
-    const dayKeys = new Set([...Object.keys(byDay), ...Object.keys(inTransitByDay)]);
+    const dayKeys = new Set([...Object.keys(byDay), ...Object.keys(inTransitByDay), ...Object.keys(returnedByDay)]);
     const days = [...dayKeys]
       .sort()
       .reverse()
@@ -362,6 +366,7 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
         const feeCents = Math.abs(chargeableFeeCents(items));
         const inTransitCents = waiting.reduce((s, d) => s + (Number(d?.attributes?.amount_cents) || 0), 0);
         const posted = postedByDay.get(day);
+        const returned = returnedByDay[day] ?? [];
         return {
           date: day,
           donations: items.length,
@@ -372,6 +377,8 @@ export const getStripeGivingByDay = async (req: Request, res: Response) => {
           postedGross: posted ? toDollars(posted.postedGrossCents ?? 0) : 0,
           inTransit: waiting.length,
           inTransitGross: toDollars(inTransitCents),
+          returned: returned.length,
+          returnedGross: toDollars(returned.reduce((s, d) => s + (Number(d?.attributes?.amount_cents) || 0), 0)),
         };
       });
 
