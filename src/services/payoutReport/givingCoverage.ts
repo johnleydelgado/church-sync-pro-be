@@ -14,14 +14,29 @@ export interface DayCoverage {
   pcoGrossCents: number; // settled, unrefunded Stripe giving that day - what the engine posts
   postedGrossCents: number; // giving CSP has put in QuickBooks for the day (all its entries)
   pcoIds: Set<string>; // settled Stripe gifts received that day, refunded since or not
+  knownGrossCents: number; // the gross of those: everything CSP can have posted for the day
   refundedGrossCents: number; // what CSP has reversed on the day (refunds are dated the refund day)
+  failedIds: Set<string>; // card or ACH gifts received that day that failed: a bank gift that was returned
 }
 export type CoverageRow = Pick<PayoutRow, 'externalId' | 'day' | 'type' | 'grossCents'>;
 export interface CoverageResult<R extends CoverageRow = CoverageRow> {
   row: R;
   status: 'giving_covered' | 'giving_not_posted';
   reason?: string;
+  /** The day Planning Center files the gift on, when that is not the file's date (a late-evening gift). */
+  day?: string;
 }
+
+/**
+ * A gift the donor's bank returned (Planning Center marks it failed), by what CSP's own posting says:
+ * - `returned_gift`: its day holds nothing posted, or no more than every gift that ever succeeded that
+ *   day and no less than what is settled now - so the gift was never in QuickBooks, and only what the
+ *   return cost in fees is left to book;
+ * - `returned_after_posting`: its day holds more than Planning Center counts - CSP posted it before it
+ *   came back, so QuickBooks still has it;
+ * - `returned_day_unsettled`: its day is only partly posted, so CSP can't tell yet.
+ */
+export const RETURNED_REASONS = ['returned_gift', 'returned_after_posting', 'returned_day_unsettled'];
 
 /**
  * Matt's rule, for the giving half of a payout: a giving line counts as recorded only when CSP has
@@ -48,11 +63,41 @@ export const givingCoverage = <R extends CoverageRow>(
         : { row, status: 'giving_not_posted', reason: 'refund_not_posted' };
     }
     const id = String(row.externalId ?? '').replace(/^donation:/, '');
-    if (!d || !d.pcoIds.has(id)) return { row, status: 'giving_not_posted', reason: 'not_in_planning_center' };
-    if (d.postedGrossCents <= 0) return { row, status: 'giving_not_posted', reason: 'day_not_posted' };
-    if (d.postedGrossCents < d.pcoGrossCents) return { row, status: 'giving_not_posted', reason: 'day_partly_posted' };
-    return { row, status: 'giving_covered' };
+    // The file's date and Planning Center's day for a gift can differ by one (2026-10-15 at 11:53pm
+    // Pacific was 10/16 in the file), so the gift is looked for on the day either side too.
+    const near = [row.day, shiftDay(row.day, -1), shiftDay(row.day, 1)];
+    const home = near.find((day) => ctx.days?.get(day)?.pcoIds.has(id));
+    if (home) {
+      const at = home === row.day ? {} : { day: home };
+      if (ctx.givingStartDay && home < ctx.givingStartDay) return { row, status: 'giving_covered', reason: 'before_giving_start', ...at };
+      const h = ctx.days.get(home)!;
+      if (h.postedGrossCents <= 0) return { row, status: 'giving_not_posted', reason: 'day_not_posted', ...at };
+      if (h.postedGrossCents < h.pcoGrossCents) return { row, status: 'giving_not_posted', reason: 'day_partly_posted', ...at };
+      return { row, status: 'giving_covered', ...at };
+    }
+    const failedDay = near.find((day) => ctx.days?.get(day)?.failedIds?.has(id));
+    if (failedDay) {
+      if (ctx.givingStartDay && failedDay < ctx.givingStartDay) return { row, status: 'giving_covered', reason: 'before_giving_start' };
+      const f = ctx.days.get(failedDay)!;
+      const at = failedDay === row.day ? {} : { day: failedDay };
+      // Posted at least what is settled and at most everything that ever succeeded (a gift refunded
+      // before the day was posted was never posted): the returned gift can't be in there.
+      const posted = f.postedGrossCents;
+      const reason =
+        posted === 0 || (posted >= f.pcoGrossCents && posted <= f.knownGrossCents)
+          ? 'returned_gift'
+          : posted > f.knownGrossCents
+          ? 'returned_after_posting'
+          : 'returned_day_unsettled';
+      return { row, status: 'giving_not_posted', reason, ...at };
+    }
+    return { row, status: 'giving_not_posted', reason: 'not_in_planning_center' };
   });
+};
+
+const isFailedCardOrAch = (d: any): boolean => {
+  const a = d?.attributes ?? {};
+  return ['card', 'ach'].includes(String(a.payment_method ?? '').toLowerCase()) && String(a.payment_status ?? '').toLowerCase() === 'failed';
 };
 
 const shiftDay = (day: string, delta: number): string => {
@@ -69,12 +114,14 @@ const fetchPlanningCenterDays = async (email: string, sorted: string[]) => {
     const config = { headers: { Authorization: `Bearer ${token.access_token}` } };
     const tz = await getOrgTimeZone(config);
     if (!tz) return null;
-    // Planning Center filters received_at by UTC date, while days here are the church's local days:
-    // pad a day either side so a late-evening gift on the first or last day is not missed.
+    // Planning Center reads these date-only bounds in the church's time zone, which is how the days
+    // here are grouped too (donationSweep.ts). A day of margin either side costs little and keeps the
+    // first and last days whole should the two ever disagree about a gift's day.
     const { donations } = await fetchDonationsForRange(config, shiftDay(sorted[0], -1), shiftDay(sorted[sorted.length - 1], 1));
     return {
       settled: groupDonationsByDay(filterStripeElectronic(donations), tz),
       known: groupDonationsByDay((donations ?? []).filter(wasStripeElectronic), tz),
+      failed: groupDonationsByDay((donations ?? []).filter(isFailedCardOrAch), tz),
     };
   } catch (e) {
     logger.warn('loadDayCoverage: could not read Planning Center', { email, error: e instanceof Error ? e.message : String(e) });
@@ -93,7 +140,8 @@ export const loadDayCoverage = async (
   dayList: string[],
 ): Promise<Map<string, DayCoverage> | null> => {
   if (!dayList.length) return new Map();
-  const sorted = [...new Set(dayList)].sort();
+  // The day either side too: a gift may be filed on a neighbouring day (see givingCoverage).
+  const sorted = [...new Set(dayList.flatMap((d) => [shiftDay(d, -1), d, shiftDay(d, 1)]))].sort();
   const pco = await fetchPlanningCenterDays(email, sorted);
   if (!pco) return null;
 
@@ -114,7 +162,9 @@ export const loadDayCoverage = async (
       pcoGrossCents: (pco.settled[day] ?? []).reduce((s: number, g: any) => s + (Number(g?.attributes?.amount_cents) || 0), 0),
       postedGrossCents: Number(ledger?.postedGrossCents ?? 0),
       pcoIds: new Set((pco.known[day] ?? []).map((g: any) => String(g.id))),
+      knownGrossCents: (pco.known[day] ?? []).reduce((s: number, g: any) => s + (Number(g?.attributes?.amount_cents) || 0), 0),
       refundedGrossCents: Number(ledger?.refundedGrossCents ?? 0),
+      failedIds: new Set((pco.failed[day] ?? []).map((g: any) => String(g.id))),
     });
   }
   return out;

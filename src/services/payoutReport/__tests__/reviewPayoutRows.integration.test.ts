@@ -43,16 +43,20 @@ const DISPUTE = '2026-10-02,Dispute,Stripe,,,-25.00,15.00,-40.00,card,,Chargebac
 const STRIPE_ADJUSTMENT = '2026-10-05,Charge,Stripe,X,,25.00,1.00,24.00,card,,Adjustment';
 const file = (...lines: string[]) => [HEADER, ...lines].join('\n');
 
-const pcoDays = (days: Record<string, Partial<Omit<DayCoverage, 'pcoIds'>> & { ids?: string[] }>) => {
+const pcoDays = (days: Record<string, Partial<Omit<DayCoverage, 'pcoIds' | 'failedIds'>> & { ids?: string[]; failed?: string[] }>) => {
   coverage.mockImplementation(async (_email: string, _userId: number, wanted: string[]) => {
     const m = new Map<string, DayCoverage>();
-    for (const d of wanted) {
+    // The real loader also returns the day either side of each wanted day: return the fixture's days too.
+    for (const d of new Set([...wanted, ...Object.keys(days)])) {
       const o = days[d] ?? {};
       m.set(d, {
         pcoGrossCents: o.pcoGrossCents ?? 0,
         postedGrossCents: o.postedGrossCents ?? 0,
         pcoIds: new Set(o.ids ?? []),
+        // Without refunds in the fixture, what Planning Center counts is its settled total.
+        knownGrossCents: o.knownGrossCents ?? o.pcoGrossCents ?? 0,
         refundedGrossCents: o.refundedGrossCents ?? 0,
+        failedIds: new Set(o.failed ?? []),
       });
     }
     return m;
@@ -261,13 +265,13 @@ describe('recheckGiving', () => {
       '2026-10-06': { pcoGrossCents: 5000, postedGrossCents: 5000, ids: ['101'] },
       '2026-10-07': { pcoGrossCents: 3000, postedGrossCents: 0, ids: ['102'] },
     });
-    expect(await recheckGiving(EMAIL)).toEqual({ checked: 2, nowCovered: 1, stillNotPosted: 1 });
+    expect(await recheckGiving(EMAIL)).toEqual({ checked: 2, nowCovered: 1, stillNotPosted: 1, returnedFiled: 0 });
     expect((await listReview(EMAIL)).givingNotPosted.map((r) => r.day)).toEqual(['2026-10-07']);
     expect(coverage).toHaveBeenLastCalledWith(EMAIL, USER_ID, ['2026-10-06', '2026-10-07']);
   });
 
   test('nothing to check', async () => {
-    expect(await recheckGiving(EMAIL)).toEqual({ checked: 0, nowCovered: 0, stillNotPosted: 0 });
+    expect(await recheckGiving(EMAIL)).toEqual({ checked: 0, nowCovered: 0, stillNotPosted: 0, returnedFiled: 0 });
   });
 });
 

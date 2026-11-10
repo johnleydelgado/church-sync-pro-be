@@ -15,7 +15,9 @@ const cov = (o: Partial<DayCoverage>): DayCoverage => ({
   pcoGrossCents: 0,
   postedGrossCents: 0,
   pcoIds: new Set<string>(),
+  knownGrossCents: 0,
   refundedGrossCents: 0,
+  failedIds: new Set<string>(),
   ...o,
 });
 
@@ -36,6 +38,69 @@ describe('givingCoverage', () => {
     const [result] = givingCoverage([charge(id, day)], { givingStartDay: '2026-09-15', days });
     expect(result.status).toBe(status);
     expect(result.reason).toBe(reason);
+  });
+
+  // Active Church, October 2026 (2026-11-09): the two lines its upload wrongly called missing.
+  test('a late-evening gift the file dates the next day is found on its own day', () => {
+    const late = new Map([
+      ['2026-10-15', cov({ pcoGrossCents: 160816, postedGrossCents: 160816, pcoIds: new Set(['407356032']) })],
+      ['2026-10-16', cov({ pcoGrossCents: 154571, postedGrossCents: 154571, pcoIds: new Set(['1']) })],
+    ]);
+    expect(givingCoverage([charge('407356032', '2026-10-16', 18700)], { givingStartDay: '2026-09-15', days: late })[0]).toMatchObject({
+      status: 'giving_covered',
+      day: '2026-10-15',
+    });
+  });
+
+  test('...judged on that day: not posted there means not posted', () => {
+    const late = new Map([['2026-10-15', cov({ pcoGrossCents: 18700, postedGrossCents: 0, pcoIds: new Set(['9']) })]]);
+    expect(givingCoverage([charge('9', '2026-10-16')], { givingStartDay: '2026-09-15', days: late })[0]).toMatchObject({
+      status: 'giving_not_posted',
+      reason: 'day_not_posted',
+      day: '2026-10-15',
+    });
+  });
+
+  test('...and before the sync start it is before the start', () => {
+    const early = new Map([['2026-09-30', cov({ pcoIds: new Set(['9']) })]]);
+    expect(givingCoverage([charge('9', '2026-10-01')], { givingStartDay: '2026-10-01', days: early })[0]).toMatchObject({
+      status: 'giving_covered',
+      reason: 'before_giving_start',
+    });
+  });
+
+  describe('a gift the donor\'s bank returned (failed in Planning Center)', () => {
+    const returned = (o: Partial<DayCoverage>) =>
+      givingCoverage([charge('404799338', '2026-10-04', 60000)], {
+        givingStartDay: '2026-09-15',
+        days: new Map([['2026-10-04', cov({ failedIds: new Set(['404799338']), ...o })]]),
+      })[0];
+
+    test('its day posted exactly what Planning Center counts without it: never in QuickBooks', () => {
+      // 10/4 as it really is: CSP posted $4,788.48, Planning Center's total without the $600.
+      expect(returned({ postedGrossCents: 478848, knownGrossCents: 478848 })).toMatchObject({ status: 'giving_not_posted', reason: 'returned_gift' });
+    });
+    test('nothing posted that day: never in QuickBooks', () => {
+      expect(returned({ postedGrossCents: 0, knownGrossCents: 5000 })).toMatchObject({ reason: 'returned_gift' });
+    });
+    test('the day holds more than Planning Center counts: CSP posted it before it came back', () => {
+      expect(returned({ postedGrossCents: 538848, knownGrossCents: 478848 })).toMatchObject({ reason: 'returned_after_posting' });
+    });
+    test('a gift refunded before the day was posted does not make it look unsettled', () => {
+      // $500 settled and posted; a $100 gift refunded before posting (never posted); the $600 returned.
+      expect(returned({ pcoGrossCents: 50000, postedGrossCents: 50000, knownGrossCents: 60000 })).toMatchObject({ reason: 'returned_gift' });
+    });
+    test("the day is only partly posted: CSP can't tell yet", () => {
+      expect(returned({ pcoGrossCents: 478848, postedGrossCents: 300000, knownGrossCents: 478848 })).toMatchObject({ reason: 'returned_day_unsettled' });
+    });
+    test('before the sync start: left alone', () => {
+      expect(
+        givingCoverage([charge('404799338', '2026-10-04', 60000)], {
+          givingStartDay: '2026-10-10',
+          days: new Map([['2026-10-04', cov({ failedIds: new Set(['404799338']) })]]),
+        })[0],
+      ).toMatchObject({ status: 'giving_covered', reason: 'before_giving_start' });
+    });
   });
 
   test('Planning Center unreachable: nothing is called covered', () => {
@@ -100,8 +165,19 @@ describe('loadDayCoverage', () => {
   test("days are the church's local days, and the fetch is padded so late-evening gifts are found", async () => {
     (fetchDonationsForRange as jest.Mock).mockResolvedValue({ donations: [gift('7', '2026-10-06T02:00:00Z')] });
     const map = await loadDayCoverage('a@b.test', 1, ['2026-10-05']);
-    expect((fetchDonationsForRange as jest.Mock).mock.calls[0].slice(1)).toEqual(['2026-10-04', '2026-10-06']);
+    // The day either side is covered too (a gift may be filed there), with a day of margin.
+    expect((fetchDonationsForRange as jest.Mock).mock.calls[0].slice(1)).toEqual(['2026-10-03', '2026-10-07']);
     expect([...map!.get('2026-10-05')!.pcoIds]).toEqual(['7']);
+    expect([...map!.keys()]).toEqual(['2026-10-04', '2026-10-05', '2026-10-06']);
+  });
+
+  test('a card or ACH gift that failed is listed as failed, not as a gift', async () => {
+    const g = gift('8', '2026-10-05T18:00:00Z');
+    (fetchDonationsForRange as jest.Mock).mockResolvedValue({ donations: [{ ...g, attributes: { ...g.attributes, payment_status: 'failed' } }] });
+    const day = (await loadDayCoverage('a@b.test', 1, ['2026-10-05']))!.get('2026-10-05')!;
+    expect([...day.failedIds]).toEqual(['8']);
+    expect([...day.pcoIds]).toEqual([]);
+    expect(day.knownGrossCents).toBe(0);
   });
 
   test('cannot read Planning Center -> null, never an empty "all clear"', async () => {
