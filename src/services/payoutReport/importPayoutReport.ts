@@ -19,6 +19,7 @@ import {
   isGivingCharge,
   isGivingFailure,
   linkReturnLines,
+  chargesForReturns,
   preStartReturnLines,
   returnCostCents,
 } from './returnedGifts';
@@ -225,6 +226,24 @@ const askAboutStoredCharges = async (
   return out;
 };
 
+/**
+ * Gifts from before the sync start date that Planning Center marks returned, among the charges that could
+ * be these return lines' gifts. The giving check stops at the start date, so they are asked about here,
+ * and only to decide that a return belongs to giving the church left alone.
+ */
+const preStartReturnedGifts = async (
+  email: string,
+  userId: number,
+  givingStartDay: string | null,
+  charges: ReturnLine[],
+  lines: ReturnLine[],
+): Promise<Set<string>> => {
+  if (!givingStartDay) return new Set();
+  const early = chargesForReturns(charges, lines).filter((c) => c.day < givingStartDay);
+  const asked = await askAboutStoredCharges(email, userId, null, early);
+  return new Set(early.filter((c) => RETURNED_REASONS.includes(asked?.get(c.rowKey) ?? '')).map((c) => donationIdOf(c)!));
+};
+
 /** Gifts (donation ids) that already have a return line tied to them: a gift is returned once. */
 const giftsWithReturn = async (userId: number, ids: string[]): Promise<Set<string>> => {
   if (!ids.length) return new Set();
@@ -275,25 +294,54 @@ const settleReturnedGifts = async (
   // A return can come in the month after its gift: look among the charges earlier uploads stored.
   const fileKeys = new Set(fileCharges.map((c) => c.row.rowKey));
   const names = [...new Set(stripeLines.filter((c) => isGivingFailure(c.row)).map((c) => c.row.name).filter(Boolean))];
-  const stored = (await storedChargesNamed(userId, names)).filter((r) => !fileKeys.has(String(r.rowKey)));
+  const stored = chargesForReturns(
+    (await storedChargesNamed(userId, names)).filter((r) => !fileKeys.has(String(r.rowKey))).map((r) => ({ ...toReturnLine(r), id: r.id, status: r.status, reason: r.reason })),
+    stripeLines.map((c) => toReturnLine(c.row)),
+  );
   const asked = await askAboutStoredCharges(email, userId, givingStartDay, stored);
   const reached = planningCenterReached && asked !== null;
   const storedReason = (r: any) => asked?.get(String(r.rowKey));
   for (const r of stored) if (RETURNED_REASONS.includes(storedReason(r) ?? '')) returnedIds.add(donationIdOf({ rowKey: String(r.rowKey) })!);
 
   const allCharges = [...fileCharges.map((c) => toReturnLine(c.row)), ...stored.map(toReturnLine)];
+  // Return lines an earlier upload left waiting for this file's gifts: read here so the preview shows
+  // their cost; the relink after recording is what ties them.
+  const returnedNames = [
+    ...new Set(fileCharges.filter((c) => RETURNED_REASONS.includes(returnedReason(c))).map((c) => c.row.name).filter(Boolean)),
+  ];
+  const waiting = returnedNames.length
+    ? ((await PayoutTransaction.findAll({
+        where: {
+          userId,
+          source: 'Giving',
+          status: 'held',
+          giftDonationId: null,
+          name: { [Op.in]: returnedNames },
+          [Op.or]: [{ type: { [Op.iLike]: '%fail%' } }, { type: { [Op.iLike]: 'fee' } }],
+        } as any,
+        attributes: ['rowKey', 'day', 'type', 'source', 'name', 'fundOrSignup', 'description', 'grossCents', 'netCents'],
+      })) as any[]).map(toReturnLine)
+    : [];
+  const fileLineKeys = new Set(stripeLines.map((c) => c.row.rowKey));
+  const waitingElsewhere = waiting.filter((l) => !fileLineKeys.has(l.rowKey));
   const links = linkReturnLines(
-    stripeLines.map((c) => toReturnLine(c.row)),
+    [...stripeLines.map((c) => toReturnLine(c.row)), ...waitingElsewhere],
     allCharges,
     returnedIds,
     await giftsWithReturn(userId, [...returnedIds]),
   );
+  const returnLines = stripeLines.map((c) => toReturnLine(c.row));
   const preStart = preStartReturnLines(
-    stripeLines.map((c) => toReturnLine(c.row)),
+    returnLines,
     allCharges,
     givingStartDay,
+    new Set([...returnedIds, ...(await preStartReturnedGifts(email, userId, givingStartDay, allCharges, returnLines))]),
   );
   const linesByGift = new Map<string, ReturnLine[]>();
+  for (const l of waitingElsewhere) {
+    const gift = links.gift.get(l.rowKey);
+    if (gift) linesByGift.set(gift, [...(linesByGift.get(gift) ?? []), l]);
+  }
   for (const c of stripeLines) {
     const gift = links.gift.get(c.row.rowKey);
     if (gift) {
@@ -357,6 +405,30 @@ const settleReturnedGifts = async (
   return { links: links.gift, returned, chargeUpdates };
 };
 
+/**
+ * Returned gifts whose cost wasn't known when the file was read: filled in from the return lines tied to
+ * them since (the relink after recording can tie lines from an earlier upload).
+ */
+const refreshReturnedCosts = async (userId: number, items: PayoutSummary['returned']): Promise<PayoutSummary['returned']> => {
+  const unknown = items.filter((g) => g.cost === null);
+  if (!unknown.length) return items;
+  const idOf = (g: PayoutSummary['returned'][number]) => g.ref.replace(/^Donation #/, '');
+  const lines = (await PayoutTransaction.findAll({
+    where: { userId, giftDonationId: { [Op.in]: unknown.map(idOf) } } as any,
+    attributes: ['giftDonationId', 'day', 'type', 'source', 'grossCents', 'netCents'],
+  })) as any[];
+  return items.map((g) => {
+    if (g.cost !== null) return g;
+    const own = lines
+      .filter((l) => String(l.giftDonationId) === idOf(g))
+      .map((l) => ({ day: String(l.day), type: String(l.type), source: String(l.source), grossCents: Number(l.grossCents), netCents: Number(l.netCents) }));
+    const cost = returnCostCents({ netCents: Math.round((g.gift - g.fee) * 100) }, own);
+    if (cost === null) return g;
+    const back = own.filter(isGivingFailure).map((l) => l.day).sort();
+    return { ...g, cost: dollars(cost), returnedOn: back[back.length - 1] ?? g.returnedOn };
+  });
+};
+
 /** Stored charges refiled by the returned-gift rules, each only if nothing else moved it meanwhile. */
 const applyChargeUpdates = async (updates: ChargeUpdate[]) => {
   for (const u of updates) {
@@ -384,14 +456,27 @@ export const relinkStoredReturnLines = async (email: string, userId: number, giv
   })) as any[];
   const failures = open.filter((r) => isGivingFailure(toReturnLine(r)));
   if (!failures.length) return new Set();
-  const charges = await storedChargesNamed(userId, [...new Set(failures.map((f) => f.name).filter(Boolean))] as string[]);
+  const charges = chargesForReturns(
+    (await storedChargesNamed(userId, [...new Set(failures.map((f) => f.name).filter(Boolean))] as string[])).map((r) => ({
+      ...toReturnLine(r),
+      id: r.id,
+      status: r.status,
+      reason: r.reason,
+    })),
+    open.map(toReturnLine),
+  );
   const asked = await askAboutStoredCharges(email, userId, givingStartDay, charges);
   if (asked === null) return new Set();
   const returnedIds = new Set(
     charges.filter((c) => RETURNED_REASONS.includes(asked.get(String(c.rowKey)) ?? '')).map((c) => donationIdOf({ rowKey: String(c.rowKey) })!),
   );
-  const links = linkReturnLines(open.map(toReturnLine), charges.map(toReturnLine), returnedIds, await giftsWithReturn(userId, [...returnedIds]));
-  const preStart = preStartReturnLines(open.map(toReturnLine), charges.map(toReturnLine), givingStartDay);
+  const links = linkReturnLines(open.map(toReturnLine), charges, returnedIds, await giftsWithReturn(userId, [...returnedIds]));
+  const preStart = preStartReturnLines(
+    open.map(toReturnLine),
+    charges,
+    givingStartDay,
+    new Set([...returnedIds, ...(await preStartReturnedGifts(email, userId, givingStartDay, charges, open.map(toReturnLine)))]),
+  );
   const tied = new Set<string>();
   for (const l of open) {
     const gift = links.gift.get(String(l.rowKey));
@@ -422,7 +507,14 @@ export const relinkStoredReturnLines = async (email: string, userId: number, giv
     }
   }
   await applyChargeUpdates(updates);
-  return tied;
+  // A gift a person already marked handled is tied quietly, and one still waiting on its day isn't ready
+  // to settle: only the others are news.
+  const notNews = new Set(
+    charges
+      .filter((c) => c.status === 'dismissed' || asked.get(String(c.rowKey)) === 'returned_day_unsettled')
+      .map((c) => donationIdOf({ rowKey: String(c.rowKey) })),
+  );
+  return new Set([...tied].filter((id) => !notNews.has(id)));
 };
 
 const classify = async (setup: PayoutSetup, email: string, csvText: string, payouts: PayoutRange): Promise<Classified> => {
@@ -949,6 +1041,7 @@ export const importPayoutReport = async (
     // open - from this upload or earlier ones - now that this file's gifts are stored too.
     await applyChargeUpdates(c.chargeUpdates);
     await relinkStoredReturnLines(p.email, setup.userId, setup.givingStartDay);
+    c.returned = await refreshReturnedCosts(setup.userId, c.returned);
     await markPaidOutIn(setup.userId, Number(upload.id), payouts, c.rows);
     const previous = await earlierUploads(setup.userId, days[0] ?? null, days[days.length - 1] ?? null, Number(upload.id));
     const summary = summarize(c, entries, previous, payouts);

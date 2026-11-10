@@ -706,7 +706,9 @@ describe('returned gifts: review findings of 2026-11-11', () => {
     pcoDays(RETURNED);
     const first = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(fee, failure) });
     expect(first.held.map((h) => h.reason)).toEqual(['returned_without_charge', 'returned_without_charge']);
-    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge) });
+    const second = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge) });
+    // The result says what the review list says: the return was tied when the gift arrived.
+    expect(second.returned).toEqual([expect.objectContaining({ ref: `Donation #${ID}`, cost: 1, returnedOn: '2026-10-05' })]);
     expect((await lines()).map((l) => [l[0], l[1], l[3]])).toEqual([
       ['Fee', 'giving_covered', ID],
       ['Charge failure', 'giving_covered', ID],
@@ -760,6 +762,41 @@ describe('returned gifts: review findings of 2026-11-11', () => {
     const s = await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(before, fee, failure) });
     expect(s.held).toEqual([]);
     expect(s.returned).toEqual([]);
+  });
+
+  test('near go-live, a return uploaded before its gift is not mistaken for a pre-start gift', async () => {
+    // A look-alike gift from before the start (not returned) must not decide it.
+    await UserSettings.update({ startDateAutomationFund: '09-15-2026' } as any, { where: { userId: USER_ID } });
+    pcoDays({ '2026-09-10': { pcoGrossCents: 60000, postedGrossCents: 0, ids: ['111'] }, '2026-09-16': { failed: [ID] } });
+    const lookAlike = '2026-09-10,Charge,Giving,Pat Donor,Tithes & Offerings,600.00,0.30,599.70,ach,,"Donation #111 - Pat Donor"';
+    const back = '2026-09-17,Charge failure,Giving,Pat Donor,Tithes & Offerings,-600.00,0.75,-600.75,ach,,Funds reversed due to payment py_X failed';
+    const s = await importPayoutReport({ ...PAYOUTS, payoutFrom: '2026-09-01', payoutTo: '2026-09-30', email: EMAIL, csvText: file(lookAlike, back) });
+    // A gift like it exists but isn't returned: unconfirmed, not "before the start".
+    expect(s.held.map((h) => h.reason)).toEqual(['returned_unconfirmed']);
+    const itsGift = `2026-09-16,Charge,Giving,Pat Donor,Tithes & Offerings,600.00,0.30,599.70,ach,,"Donation #${ID} - Pat Donor"`;
+    const second = await importPayoutReport({ ...PAYOUTS, payoutFrom: '2026-09-01', payoutTo: '2026-09-30', email: EMAIL, csvText: file(itsGift) });
+    expect(second.returned).toEqual([expect.objectContaining({ ref: `Donation #${ID}`, cost: 1.05 })]);
+  });
+
+  test("the preview of the gift's report already shows the cost of a return uploaded earlier", async () => {
+    pcoDays(RETURNED);
+    await importPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(fee, failure) });
+    const preview = await previewPayoutReport({ ...PAYOUTS, email: EMAIL, csvText: file(charge) });
+    expect(preview.returned).toEqual([expect.objectContaining({ ref: `Donation #${ID}`, cost: 1, returnedOn: '2026-10-05' })]);
+    expect((await lines()).map((l) => l[1])).toEqual(['held', 'held']); // the preview wrote nothing
+  });
+
+  test('a gift already marked handled is tied quietly, not counted as filed', async () => {
+    pcoDays(RETURNED);
+    await store([
+      ['Charge', '2026-10-04', 60000, 30, 'dismissed', 'not_in_planning_center', `Donation #${ID} - Pat Donor`],
+      ['Charge failure', '2026-10-05', -60000, 75, 'held', 'unrecognised_type', 'Funds reversed due to payment py_3UMp failed'],
+    ]);
+    expect((await recheckGiving(EMAIL)).returnedFiled).toBe(0);
+    expect((await lines()).map((l) => [l[0], l[1]])).toEqual([
+      ['Charge', 'dismissed'],
+      ['Charge failure', 'giving_covered'],
+    ]);
   });
 
   test("a fee line naming a gift that wasn't returned is held, as before", async () => {

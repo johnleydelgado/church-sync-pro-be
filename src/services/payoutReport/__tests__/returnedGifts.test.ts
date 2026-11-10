@@ -1,5 +1,6 @@
 import {
   ReturnLine,
+  chargesForReturns,
   donationIdOf,
   isGivingFailure,
   isGivingFee,
@@ -171,5 +172,14 @@ describe('returnCostCents', () => {
   test('unknown until a line taking it back is uploaded', () => {
     expect(returnCostCents(charge(), [])).toBeNull();
     expect(returnCostCents(charge(), [fee()])).toBeNull();
+  });
+});
+
+describe('chargesForReturns', () => {
+  test("only charges that could be a return line's gift are worth asking Planning Center about", () => {
+    const near = charge();
+    const months = charge({ rowKey: 'donation:1:charge:2026-07-01:60000', day: '2026-07-01' });
+    const other = charge({ rowKey: 'donation:2:charge:2026-10-04:50000', grossCents: 50000 });
+    expect(chargesForReturns([near, months, other], [failure(), fee()]).map((c) => c.rowKey)).toEqual([near.rowKey]);
   });
 });

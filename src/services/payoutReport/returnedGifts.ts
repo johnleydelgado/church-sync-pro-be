@@ -145,19 +145,38 @@ export const linkReturnLines = (
  * donor, fund and amount, within the window before the return) exists, and every such gift is earlier
  * than `startDay`. Giving from before the start is left alone, and so is its return.
  */
-export const returnBeforeStart = (line: ReturnLine, charges: ReturnLine[], startDay: string | null): boolean => {
+export const returnBeforeStart = (
+  line: ReturnLine,
+  charges: ReturnLine[],
+  startDay: string | null,
+  /** Gifts Planning Center marks returned: only those can be this return's gift. */
+  returnedGifts: Set<string>,
+): boolean => {
   if (!startDay) return false;
   if (!isGivingFailure(line)) return line.day < startDay;
-  const alike = charges.filter(
+  const alike = chargesLike(line, charges).filter((c) => returnedGifts.has(donationIdOf(c) ?? ''));
+  return alike.length ? alike.every((c) => c.day < startDay) : line.day < startDay;
+};
+
+/** Charges that could be this return's gift: same donor, fund and amount, within the window before it. */
+const chargesLike = (failure: ReturnLine, charges: ReturnLine[]) =>
+  charges.filter(
     (c) =>
       isGivingCharge(c) &&
-      sameText(c.name, line.name) &&
-      sameText(c.fundOrSignup, line.fundOrSignup) &&
-      Number(c.grossCents) === -Number(line.grossCents) &&
-      c.day <= line.day &&
-      daysFrom(c.day, line.day) <= RETURN_WINDOW_DAYS,
+      sameText(c.name, failure.name) &&
+      sameText(c.fundOrSignup, failure.fundOrSignup) &&
+      Number(c.grossCents) === -Number(failure.grossCents) &&
+      c.day <= failure.day &&
+      daysFrom(c.day, failure.day) <= RETURN_WINDOW_DAYS,
   );
-  return alike.length ? alike.every((c) => c.day < startDay) : line.day < startDay;
+
+/**
+ * The charges worth asking Planning Center about for these return lines: those that could be one of
+ * their gifts. Keeps the lookup to the return window, however long a donor has been giving.
+ */
+export const chargesForReturns = <C extends ReturnLine>(charges: C[], lines: ReturnLine[]): C[] => {
+  const failures = lines.filter(isGivingFailure);
+  return charges.filter((c) => failures.some((f) => chargesLike(f, [c]).length > 0));
 };
 
 /** The return lines (by rowKey) of gifts from before the sync start date: failures, and their fees. */
@@ -165,12 +184,13 @@ export const preStartReturnLines = (
   lines: ReturnLine[],
   charges: ReturnLine[],
   startDay: string | null,
+  returnedGifts: Set<string>,
 ): Set<string> => {
   const out = new Set<string>();
   if (!startDay) return out;
   const payments = new Set<string>();
   for (const f of lines.filter(isGivingFailure)) {
-    if (!returnBeforeStart(f, charges, startDay)) continue;
+    if (!returnBeforeStart(f, charges, startDay, returnedGifts)) continue;
     out.add(f.rowKey);
     const payment = stripePaymentIdOf(f);
     if (payment) payments.add(payment);
