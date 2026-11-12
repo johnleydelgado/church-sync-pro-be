@@ -2,13 +2,16 @@
  * Journal entries for registration (event) money from Planning Center's payout report.
  *
  * Same shape as a day of giving - gross to income, Stripe's fee to the fee account, net to the
- * clearing account - so Clearing keeps matching the net deposits. Grouped by account AND class:
- * per-event mapping may send two events to the same account under different classes, which the
- * giving builder (grouping by account only) would silently merge.
+ * clearing account - so Clearing keeps matching the net deposits. One income line per account,
+ * class AND event, named after the event: bookkeepers report income by event. With every event on
+ * one unnamed line, Active Church's bookkeepers typed each event's name into every October 2026 entry
+ * by hand, splitting the line on days with more than one event.
  */
 export interface RegistrationEntryLine {
   accountRef: string;
   classRef?: string;
+  /** The event (Planning Center signup) the payment is for: the payout report's Fund/Signup. */
+  event?: string | null;
   grossCents: number;
   feeCents: number;
 }
@@ -26,16 +29,24 @@ const detail = (postingType: 'Debit' | 'Credit', accountRef: { value: string; na
   AccountRef: accountRef,
   ...(classRef ? { ClassRef: { value: classRef } } : {}),
 });
-const line = (cents: number, d: any) => ({ Amount: amount(cents), DetailType: 'JournalEntryLineDetail', JournalEntryLineDetail: d });
+const line = (cents: number, d: any, description?: string) => ({
+  Amount: amount(cents),
+  ...(description ? { Description: description } : {}),
+  DetailType: 'JournalEntryLineDetail',
+  JournalEntryLineDetail: d,
+});
 
 export const registrationDocNumber = (day: string, sequence: number, kind: 'charge' | 'refund'): string =>
   `CSP-${kind === 'refund' ? 'ER' : 'E'}-${day}-${sequence}`.slice(0, 21);
 
-const groupByAccountClass = (lines: RegistrationEntryLine[]) => {
-  const out = new Map<string, { accountRef: string; classRef?: string; cents: number }>();
+const eventName = (event?: string | null) => String(event ?? '').trim().replace(/\s+/g, ' ');
+
+/** In the order they first appear. Spacing and capitals don't make another event, as in the per-event mapping. */
+const groupByAccountClassEvent = (lines: RegistrationEntryLine[]) => {
+  const out = new Map<string, { accountRef: string; classRef?: string; event: string; cents: number }>();
   for (const l of lines) {
-    const key = `${l.accountRef}|${l.classRef ?? ''}`;
-    const prev = out.get(key) ?? { accountRef: l.accountRef, classRef: l.classRef, cents: 0 };
+    const key = `${l.accountRef}|${l.classRef ?? ''}|${eventName(l.event).toLowerCase()}`;
+    const prev = out.get(key) ?? { accountRef: l.accountRef, classRef: l.classRef, event: eventName(l.event), cents: 0 };
     prev.cents += Math.abs(l.grossCents);
     out.set(key, prev);
   }
@@ -62,7 +73,7 @@ export const registrationChargeEntry = (lines: RegistrationEntryLine[], o: Regis
   if (feeCents > 0 && !o.fees.value) throw new Error('No Stripe fee account is mapped');
   return assertBalanced({
     Line: [
-      ...groupByAccountClass(lines).map((g) => line(g.cents, detail('Credit', { value: g.accountRef }, g.classRef))),
+      ...groupByAccountClassEvent(lines).map((g) => line(g.cents, detail('Credit', { value: g.accountRef }, g.classRef), g.event)),
       ...(feeCents > 0 ? [line(feeCents, detail('Debit', { value: o.fees.value, name: o.fees.name }, o.fees.classRef))] : []),
       line(grossCents - feeCents, detail('Debit', o.clearing)),
     ],
@@ -79,7 +90,7 @@ export const registrationRefundEntry = (lines: RegistrationEntryLine[], o: Regis
   const cents = lines.reduce((s, l) => s + Math.abs(l.grossCents), 0);
   return assertBalanced({
     Line: [
-      ...groupByAccountClass(lines).map((g) => line(g.cents, detail('Debit', { value: g.accountRef }, g.classRef))),
+      ...groupByAccountClassEvent(lines).map((g) => line(g.cents, detail('Debit', { value: g.accountRef }, g.classRef), g.event)),
       line(cents, detail('Credit', o.clearing)),
     ],
     TxnDate: o.day,

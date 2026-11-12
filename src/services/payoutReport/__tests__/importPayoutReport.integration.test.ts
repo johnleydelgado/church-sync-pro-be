@@ -388,6 +388,30 @@ describe('import', () => {
       ['78', 'ya', 500],
     ]);
   });
+
+  test('each event gets its own income line, named, on charges and refunds', async () => {
+    await importPayoutReport({
+      ...PAYOUTS,
+      email: EMAIL,
+      csvText: file(
+        reg('2026-10-05', 1, 60, 1.59),
+        reg('2026-10-05', 2, 125, 3.4, 'Young Adult Retreat 2027'),
+        reg('2026-10-05', 3, 60, 1.59),
+        regRefund('2026-10-06', 4, 55, 'Young Adult Retreat 2027'),
+      ),
+    });
+    const named = (je: any) => je.Line.map((l: any) => [l.JournalEntryLineDetail.PostingType, l.JournalEntryLineDetail.AccountRef.value, l.Amount, l.Description]);
+    expect(named(posted[0])).toEqual([
+      ['Credit', '77', 120, 'SHE Conference 2026'],
+      ['Credit', '77', 125, 'Young Adult Retreat 2027'],
+      ['Debit', '5', 6.58, undefined],
+      ['Debit', CLEARING, 238.42, undefined],
+    ]);
+    expect(named(posted[1])).toEqual([
+      ['Debit', '77', 55, 'Young Adult Retreat 2027'],
+      ['Credit', CLEARING, 55, undefined],
+    ]);
+  });
 });
 
 describe('setup', () => {

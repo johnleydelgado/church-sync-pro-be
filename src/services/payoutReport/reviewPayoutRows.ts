@@ -204,7 +204,16 @@ const postOne = async (p: {
       setup: p.setup,
       day: p.row.day,
       kind: gross < 0 ? 'refund' : 'charge',
-      lines: [{ id: Number(p.row.id), grossCents: gross, feeCents: Number(p.row.feeCents), accountRef: p.accountRef, classRef: p.classRef }],
+      lines: [
+        {
+          id: Number(p.row.id),
+          grossCents: gross,
+          feeCents: Number(p.row.feeCents),
+          accountRef: p.accountRef,
+          classRef: p.classRef,
+          event: p.row.fundOrSignup ?? null,
+        },
+      ],
       uploadId: p.row.uploadId ?? null,
       finalStatus: p.finalStatus,
       extra: { ...p.extra, accountRef: p.accountRef, classRef: p.classRef },

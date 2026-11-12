@@ -123,6 +123,13 @@ contract: `docs/plans/2026-10-08-registrations-import.md` in the frontend repo (
   the event's account + class, fee to the fee account, net to clearing) and `CSP-ER-<day>-<n>` for
   refunds. `n` comes from `DailyJeSync.registrationEntryCount`, kept apart from giving's
   `entryCount`, under the same row lock the giving engine takes.
+- **One income line per event, named** (`registrationEntries.ts`). Each event gets its own line, with
+  the file's Fund/Signup as the line's `Description`, even when several events share an account and
+  class. Fee and clearing lines stay one each.
+  - Spacing and capitals don't make a separate event, as in the per-event mapping.
+  - Review-list posts ("post", "post now") name their line the same way.
+  - Why: Active Church's bookkeepers split all 23 October 2026 entries by hand, typing each event's name
+    (Matt, 2026-11-11). Entries posted before this change keep their single unnamed line.
 - **Exactly once.** `PayoutTransactions` is unique on `(userId, rowKey)`, and one upload runs at a
   time per church (`pg_try_advisory_xact_lock(74010, userId)`; a second gets 409 "busy").
   `failed` (QuickBooks said no) is retried by the next upload. `pending` is **never** retried: a
