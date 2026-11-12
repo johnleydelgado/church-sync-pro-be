@@ -155,6 +155,8 @@ describe('resolvePayoutRow', () => {
       ['Debit', '5', 1],
       ['Debit', CLEARING, 24],
     ]);
+    // A Stripe line names no event, so nothing names its line.
+    expect(posted[0].Line.filter((l: any) => 'Description' in l)).toEqual([]);
     const row: any = await PayoutTransaction.findByPk(held.id);
     expect(row).toMatchObject({ status: 'resolved', accountRef: '80', classRef: 'gf', resolvedBy: 'bk@example.test', reason: null, qboEntryId: 'JE1' });
     expect(row.resolvedAt).toBeInstanceOf(Date);
@@ -247,6 +249,7 @@ describe('resolvePayoutRow', () => {
     ]);
     expect(posted).toHaveLength(1);
     expect(posted[0]).toMatchObject({ TxnDate: '2026-10-04', DocNumber: 'CSP-E-2026-10-04-1' });
+    expect(posted[0].Line[0]).toMatchObject({ Amount: 60, Description: 'SHE Conference 2026' });
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
     expect(rejected.reason).toMatchObject({ status: 409 });

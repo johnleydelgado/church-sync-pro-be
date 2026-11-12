@@ -699,6 +699,8 @@ export interface GroupLine {
   feeCents: number;
   accountRef: string;
   classRef?: string | null;
+  /** The row's Fund/Signup: names its income line. */
+  event?: string | null;
 }
 
 /**
@@ -740,6 +742,7 @@ export const postRegistrationGroup = async (p: {
       const lines = p.lines.map((l) => ({
         accountRef: String(l.accountRef),
         classRef: l.classRef || undefined,
+        event: l.event ?? null,
         grossCents: Number(l.grossCents),
         feeCents: Number(l.feeCents),
       }));
@@ -1010,6 +1013,7 @@ export const importPayoutReport = async (
             feeCents: i.row.feeCents,
             accountRef: i.accountRef,
             classRef: i.classRef,
+            event: i.row.fundOrSignup,
           })),
           uploadId: upload.id,
         });
